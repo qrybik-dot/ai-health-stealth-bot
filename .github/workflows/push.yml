@@ -13,14 +13,29 @@ jobs:
   push:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read
     steps:
       - uses: actions/checkout@v4
+
+      - name: Get latest Sync run ID
+        id: sync-run
+        run: |
+          RUN_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=50&status=success" \
+            | jq -r '[.workflow_runs[] | select(.name == "Sync Garmin Cache")] | .[0].id')
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::No successful Sync run found. Run Sync Garmin Cache workflow first."
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
       - name: Download latest cache artifact
         uses: actions/download-artifact@v4
         with:
           name: cache
           path: .
+          run-id: ${{ steps.sync-run.outputs.run_id }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
