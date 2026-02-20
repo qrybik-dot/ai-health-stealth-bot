@@ -13,7 +13,12 @@ from garminconnect import Garmin
 load_dotenv()
 
 from cache import write_cache, write_minimal_error_cache, read_cache
-from prompts import SYSTEM_PROMPT, CODEX_RULES
+from prompts import SYSTEM_PROMPT
+
+def generate_message(...):
+    if not SYSTEM_PROMPT:
+        raise RuntimeError("Missing GEMINI_SYSTEM_PROMPT (set it in GitHub Secrets)")
+    ...
 
 logging.basicConfig(
     level=logging.INFO,
