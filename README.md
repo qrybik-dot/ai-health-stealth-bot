@@ -11,6 +11,7 @@
 
 | Секрет | Что подставить |
 |--------|-----------------|
+| `REPO_ACCESS_TOKEN` | [Personal Access Token](https://github.com/settings/tokens) с правом `repo` (нужен, если checkout даёт «Repository not found») |
 | `TELEGRAM_BOT_TOKEN` | Токен бота от [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Твой chat ID (можно узнать у [@userinfobot](https://t.me/userinfobot)) |
 | `GARMIN_EMAIL` | Логин Garmin Connect |
@@ -18,6 +19,8 @@
 | `GEMINI_API_KEY` | Ключ Google AI (Gemini) |
 | `GEMINI_MODEL` | Модель, например `gemini-1.5-flash` |
 | `GEMINI_SYSTEM_PROMPT` | Полный системный промпт для бота (инструкция, как он должен себя вести и что писать) |
+
+**Как создать REPO_ACCESS_TOKEN:** GitHub → [Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens) → Generate new token (classic) → отметь **repo** → сгенерируй и скопируй. В репозитории: Settings → Secrets → New repository secret → имя `REPO_ACCESS_TOKEN`, значение — вставленный токен. Если репозиторий в организации с SSO — после создания токена нажми **Configure SSO** и выдай доступ этому репо.
 
 После этого включи Actions для репозитория — расписание само будет подтягивать данные Garmin и отправлять сообщения.
 
