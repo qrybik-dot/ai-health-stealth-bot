@@ -13,6 +13,12 @@ jobs:
   push:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,30 +42,12 @@ jobs:
 
       - name: Push morning
         if: github.event.schedule == '30 7 * * *' || github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
         run: python main.py push morning
 
       - name: Push midday
         if: github.event.schedule == '00 12 * * *'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
         run: python main.py push midday
 
       - name: Push evening
         if: github.event.schedule == '30 18 * * *'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
         run: python main.py push evening
