@@ -17,7 +17,7 @@
 | `GARMIN_EMAIL` | Логин Garmin Connect |
 | `GARMIN_PASSWORD` | Пароль Garmin Connect |
 | `GEMINI_API_KEY` | Ключ Google AI (Gemini) |
-| `GEMINI_MODEL` | Модель, например `gemini-1.5-flash` |
+| `GEMINI_MODEL` | Модель: `gemini-2.0-flash` или `gemini-2.5-flash` (не `gemini-1.5-flash` — снята с поддержки) |
 | `GEMINI_SYSTEM_PROMPT` | Полный системный промпт для бота (инструкция, как он должен себя вести и что писать) |
 
 **Как создать REPO_ACCESS_TOKEN:** GitHub → [Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens) → Generate new token (classic) → отметь **repo** → сгенерируй и скопируй. В репозитории: Settings → Secrets → New repository secret → имя `REPO_ACCESS_TOKEN`, значение — вставленный токен. Если репозиторий в организации с SSO — после создания токена нажми **Configure SSO** и выдай доступ этому репо.
