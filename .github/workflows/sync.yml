@@ -8,47 +8,78 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run sync
+      - name: Run Garmin sync
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-        run: python3 main.py sync
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+        run: |
+          python main.py sync
 
-      - name: Sync cache.json to Gist (via GitHub API)
+      - name: Upload cache.json to GitHub Gist
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
         run: |
           set -e
 
+          echo "Checking cache.json exists..."
           if [ ! -f cache.json ]; then
-            echo "cache.json not found"
+            echo "ERROR: cache.json not found"
             exit 1
           fi
 
-          CONTENT=$(python -c "import json; print(json.dumps(open('cache.json','r',encoding='utf-8').read()))")
+          echo "Uploading cache.json to Gist..."
 
-          curl -sS -X PATCH \
-            -H "Authorization: token ${GIST_SYNC_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/gists/${CACHE_GIST_ID} \
-            -d "{\"files\":{\"cache.json\":{\"content\":${CONTENT}}}}"
+          python - <<'EOF'
+import os
+import requests
 
-          echo "✅ Gist updated"
-          
+gist_id = os.environ["CACHE_GIST_ID"]
+token = os.environ["GIST_SYNC_TOKEN"]
+
+with open("cache.json", "r", encoding="utf-8") as f:
+    content = f.read()
+
+payload = {
+    "files": {
+        "cache.json": {
+            "content": content
+        }
+    }
+}
+
+response = requests.patch(
+    f"https://api.github.com/gists/{gist_id}",
+    headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    },
+    json=payload,
+    timeout=30,
+)
+
+print("Status:", response.status_code)
+print("Response:", response.text)
+
+if response.status_code >= 300:
+    raise SystemExit("Failed to update gist")
+EOF
+
+          echo "Gist successfully updated"
