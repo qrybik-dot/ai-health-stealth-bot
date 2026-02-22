@@ -4,9 +4,9 @@ on:
   schedule:
     # GitHub cron is UTC.
     # Moscow: UTC+3.
-    - cron: "32 5 * * *"   # ~08:32 MSK
-    - cron: "02 10 * * *"  # ~13:02 MSK
-    - cron: "32 16 * * *"  # ~19:32 MSK
+    - cron: "00 6 * * *"   # 09:00 MSK
+    - cron: "00 11 * * *"  # 14:00 MSK
+    - cron: "00 16 * * *"  # 19:00 MSK
   workflow_dispatch:
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Push morning
-        if: github.event.schedule == '32 5 * * *'
+        if: github.event.schedule == '00 6 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -43,7 +43,7 @@ jobs:
         run: python main.py push morning
 
       - name: Push midday
-        if: github.event.schedule == '02 10 * * *'
+        if: github.event.schedule == '00 11 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -53,7 +53,7 @@ jobs:
         run: python main.py push midday
 
       - name: Push evening
-        if: github.event.schedule == '32 16 * * *'
+        if: github.event.schedule == '00 16 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -61,3 +61,4 @@ jobs:
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
         run: python main.py push evening
+
