@@ -13,7 +13,10 @@ from garminconnect import Garmin
 load_dotenv()
 
 import datetime as dt
+import uvicorn
+from fastapi import FastAPI, Request, Response
 from cache import save_daily_snapshot, load_cache
+
 
 from prompts import SYSTEM_PROMPT, CODEX_RULES
 
@@ -169,23 +172,104 @@ def run_push(push_kind: str) -> None:
         # Do not re-raise: we sent a message (heartbeat/error report). Job succeeds.
 
 
+def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
+    """Builds the user prompt for conversational chat."""
+    return (
+        "Write in Russian.\n"
+        f"User query: {query}\n"
+        "Here is the data history context:\n"
+        f"{json.dumps(cache, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def generate_chat_message(gemini_key: str, model_name: str, cache: Dict[str, Any], query: str) -> str:
+    """Generates a conversational response based on history and a user query."""
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=SYSTEM_PROMPT,
+    )
+    prompt = build_chat_prompt(cache, query)
+    resp = model.generate_content(prompt)
+    text = (resp.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned empty text for chat")
+    return text
+
+
+# --- FastAPI Server ---
+app = FastAPI()
+
+
+@app.get("/health")
+def health_check():
+    return "ok"
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    """Telegram webhook endpoint."""
+    tg_token = env("TELEGRAM_BOT_TOKEN")
+    chat_id = env("TELEGRAM_CHAT_ID")
+    try:
+        data = await request.json()
+        log.info("Webhook received: %s", data)
+
+        message = data.get("message", {})
+        text = message.get("text", "").strip()
+
+        if not text:
+            return Response(status_code=200)
+
+        # Acknowledge receipt to prevent Telegram retries
+        # and do the heavy lifting after.
+        # Here we just send a "typing..." indicator.
+        url = f"https://api.telegram.org/bot{tg_token}/sendChatAction"
+        requests.post(url, json={"chat_id": chat_id, "action": "typing"})
+
+        # Load the latest cache from Gist
+        history_cache = load_cache()
+
+        # Generate a conversational response
+        response_msg = generate_chat_message(
+            env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
+        )
+
+        telegram_send(tg_token, chat_id, response_msg)
+
+    except Exception:
+        log.exception("Webhook processing failed")
+        # Silently fail to prevent error loops with Telegram,
+        # but log the error for debugging.
+
+    return Response(status_code=200)
+
+
+# --- CLI ---
+def run_serve() -> None:
+    """Starts the Uvicorn server."""
+    log.info("Starting web server")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        raise RuntimeError("Usage: python main.py sync|push [morning|midday|evening]")
+        print("Usage: python3 main.py [sync|push|serve]")
+        return
 
     mode = sys.argv[1].strip().lower()
 
     if mode == "sync":
         run_sync()
     elif mode == "push":
-        push_kind = (sys.argv[2] if len(sys.argv) >= 3 else "morning").strip().lower()
-        if push_kind not in ("morning", "midday", "evening"):
-            raise RuntimeError("push must be morning|midday|evening")
+        push_kind = (sys.argv[2] if len(sys.argv) > 2 else "morning").strip().lower()
+        if push_kind not in ["morning", "midday", "evening"]:
+            print("Error: push mode requires a valid kind [morning|midday|evening]")
+            return
         run_push(push_kind)
+    elif mode == "serve":
+        run_serve()
     else:
-        raise RuntimeError("Unknown mode. Use sync or push.")
+        print(f"Error: Unknown mode '{mode}'. Use sync, push, or serve.")
 
-
-if __name__ == "__main__":
-    main()
     
