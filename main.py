@@ -83,6 +83,7 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
 
 
 def build_user_prompt(cache: Dict[str, Any], push_kind: str) -> str:
+    """Builds the user prompt for a scheduled push, using the strict codex."""
     return (
         "Write in Russian.\n"
         f"Push type: {push_kind}\n"
@@ -96,16 +97,22 @@ def build_user_prompt(cache: Dict[str, Any], push_kind: str) -> str:
     )
 
 
-def generate_message(gemini_key: str, model_name: str, cache: Dict[str, Any], push_kind: str) -> str:
+def generate_message(
+    gemini_key: str, model_name: str, cache: Dict[str, Any], push_kind: str
+) -> str:
+    """Generates a daily push message using the strict CODEX_RULES."""
     genai.configure(api_key=gemini_key)
+    # For pushes, we use a dedicated model/config that understands the strict rules.
+    # The system prompt is minimal as the rules are in the user prompt.
     model = genai.GenerativeModel(
         model_name=model_name,
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction="You are a health assistant bot. Follow the user's instructions precisely.",
     )
-    resp = model.generate_content(build_user_prompt(cache, push_kind))
+    prompt = build_user_prompt(cache, push_kind)
+    resp = model.generate_content(prompt)
     text = (resp.text or "").strip()
     if not text:
-        raise RuntimeError("Gemini returned empty text")
+        raise RuntimeError("Gemini returned empty text for push")
     return text
 
 
@@ -271,5 +278,6 @@ def main() -> None:
         run_serve()
     else:
         print(f"Error: Unknown mode '{mode}'. Use sync, push, or serve.")
+        sys.exit(1)
 
     
