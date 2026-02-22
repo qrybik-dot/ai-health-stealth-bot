@@ -12,7 +12,9 @@ from garminconnect import Garmin
 
 load_dotenv()
 
-from cache import write_cache, write_minimal_error_cache, read_cache
+import datetime as dt
+from cache import save_daily_snapshot, load_cache
+
 from prompts import SYSTEM_PROMPT, CODEX_RULES
 
 logging.basicConfig(
@@ -108,11 +110,17 @@ def run_sync() -> None:
     log.info("Sync started")
     try:
         data = fetch_garmin_minimal(env("GARMIN_EMAIL"), env("GARMIN_PASSWORD"))
-        write_cache(data)
-        log.info("Sync ok, cache written")
+        save_daily_snapshot(data)
+        log.info("Sync ok, cache updated for today")
     except Exception as e:
         log.exception("Sync failed")
-        write_minimal_error_cache("sync_failed", str(e))
+        error_data = {
+            "source": "garmin",
+            "error": "sync_failed",
+            "errors": [{"metric": "sync", "error": str(e)}],
+            "fetched_at_utc": utc_now_iso(),
+        }
+        save_daily_snapshot(error_data)
         raise
 
 
@@ -121,16 +129,34 @@ def run_push(push_kind: str) -> None:
     chat_id = env("TELEGRAM_CHAT_ID")
     log.info("Push started: %s", push_kind)
 
-    cache = read_cache()
+    full_history = load_cache()
 
-    if cache.get("error") == "cache_missing":
+    if not full_history:
         msg = "⚠️ Кэш пока пуст (SYNC ещё не выполнялся). Я живой 🙂"
         telegram_send(tg_token, chat_id, msg)
         log.info("Push: sent heartbeat (no cache)")
         return
 
+    # For daily pushes, we only need the most recent context.
+    # Let's provide today's and yesterday's data to the model for comparison.
+    today_str = dt.date.today().strftime("%Y-%m-%d")
+    yesterday_str = (dt.date.today() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    prompt_cache = {
+        "today": full_history.get(today_str),
+        "yesterday": full_history.get(yesterday_str),
+    }
+
+    # Do not send push if today's data is missing.
+    if not prompt_cache.get("today"):
+        log.warning("Push skipped: no data for today in cache.")
+        # We don't send a message here, as this is an expected state between syncs.
+        return
+
     try:
-        msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), cache, push_kind)
+        msg = generate_message(
+            env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, push_kind
+        )
         telegram_send(tg_token, chat_id, msg)
         log.info("Push ok: insight sent")
     except Exception as e:
