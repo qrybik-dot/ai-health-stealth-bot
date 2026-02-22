@@ -30,9 +30,25 @@ jobs:
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
         run: python3 main.py sync
 
-      - name: Sync cache to Gist
-        uses: exiled-out/simple-gist-sync@v2
-        with:
-          gist-id: ${{ secrets.CACHE_GIST_ID }}
-          gist-token: ${{ secrets.GIST_SYNC_TOKEN }}
-          file-path: cache.json
+        - name: Sync cache.json to Gist (via GitHub API)
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
+        run: |
+          set -e
+
+          if [ ! -f cache.json ]; then
+            echo "cache.json not found"
+            exit 1
+          fi
+
+          CONTENT=$(python -c "import json; print(json.dumps(open('cache.json','r',encoding='utf-8').read()))")
+
+          curl -sS -X PATCH \
+            -H "Authorization: token ${GIST_SYNC_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/gists/${CACHE_GIST_ID} \
+            -d "{\"files\":{\"cache.json\":{\"content\":${CONTENT}}}}"
+
+          echo "✅ Gist updated"
+          
