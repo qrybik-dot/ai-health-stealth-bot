@@ -280,4 +280,7 @@ def main() -> None:
         print(f"Error: Unknown mode '{mode}'. Use sync, push, or serve.")
         sys.exit(1)
 
+if __name__ == "__main__":
+    main()
+    
     
