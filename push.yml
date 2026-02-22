@@ -3,10 +3,10 @@ name: Push Daily Insights
 on:
   schedule:
     # GitHub cron is UTC.
-    # Paris winter: UTC+1; Paris summer: UTC+2 (летом сдвинется на час).
-    - cron: "30 7 * * *"   # ~08:30 Paris in winter
-    - cron: "00 12 * * *"  # ~13:00 Paris in winter
-    - cron: "30 18 * * *"  # ~19:30 Paris in winter
+    # Moscow: UTC+3.
+    - cron: "32 5 * * *"   # ~08:32 MSK
+    - cron: "02 10 * * *"  # ~13:02 MSK
+    - cron: "32 16 * * *"  # ~19:32 MSK
   workflow_dispatch:
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Push morning
-        if: github.event.schedule == '30 7 * * *'
+        if: github.event.schedule == '32 5 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -43,7 +43,7 @@ jobs:
         run: python main.py push morning
 
       - name: Push midday
-        if: github.event.schedule == '00 12 * * *'
+        if: github.event.schedule == '02 10 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -53,7 +53,7 @@ jobs:
         run: python main.py push midday
 
       - name: Push evening
-        if: github.event.schedule == '30 18 * * *'
+        if: github.event.schedule == '32 16 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
