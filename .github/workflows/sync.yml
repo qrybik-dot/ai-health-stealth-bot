@@ -28,12 +28,11 @@ jobs:
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-        run: python main.py sync
+        run: python3 main.py sync
 
-      - name: Upload cache artifact
-        uses: actions/upload-artifact@v4
+      - name: Sync cache to Gist
+        uses: exiled-out/simple-gist-sync@v2
         with:
-          name: cache
-          path: cache.json
-          if-no-files-found: error
-          retention-days: 2
+          gist-id: ${{ secrets.CACHE_GIST_ID }}
+          gist-token: ${{ secrets.GIST_SYNC_TOKEN }}
+          file-path: cache.json
