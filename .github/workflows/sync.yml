@@ -32,54 +32,9 @@ jobs:
         run: |
           python main.py sync
 
-          - name: Upload cache.json to GitHub Gist
-          env:
-            CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-            GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
-          run: |
-            set -e
-  
-            echo "Checking cache.json exists..."
-            if [ ! -f cache.json ]; then
-              echo "ERROR: cache.json not found"
-              exit 1
-            fi
-  
-            echo "Uploading cache.json to Gist..."
-  
-            python - <<'EOF'
-            import os
-            import requests
-  
-            gist_id = os.environ["CACHE_GIST_ID"]
-            token = os.environ["GIST_SYNC_TOKEN"]
-  
-            with open("cache.json", "r", encoding="utf-8") as f:
-                content = f.read()
-  
-            payload = {
-                "files": {
-                    "cache.json": {
-                        "content": content
-                    }
-                }
-            }
-  
-            response = requests.patch(
-                f"https://api.github.com/gists/{gist_id}",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                json=payload,
-                timeout=30,
-            )
-  
-            print("Status:", response.status_code)
-            print("Response:", response.text)
-  
-            if response.status_code >= 300:
-                raise SystemExit("Failed to update gist")
-            EOF
-  
-            echo "Gist successfully updated"
+      - name: Upload cache.json to GitHub Gist
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
+        run: |
+          python scripts/gist_upload.py
