@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from garminconnect import Garmin
 
+# Web server dependencies for the new feature
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
 load_dotenv()
 
 from cache import write_cache, write_minimal_error_cache, read_cache
@@ -21,6 +26,24 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+# --- FastAPI App Initialization ---
+app = FastAPI(
+    title="Garmin AI Insights API",
+    description="An API to interact with Garmin data through an AI chat.",
+    version="1.0.0",
+)
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+# ----------------------------------
 
 
 def env(name: str) -> str:
@@ -46,7 +69,7 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
     api.login()
 
     today = dt.date.today().strftime("%Y-%m-%d")
-    out: Dict[str, Any] = {
+    out: Dict[str, Any = {
         "source": "garmin",
         "date": today,
         "fetched_at_utc": utc_now_iso(),
@@ -58,11 +81,10 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
         out["body_battery"] = api.get_body_battery(today)
     except Exception as e:
         out["errors"].append({"metric": "body_battery", "error": str(e)})
-
     try:
         out["stress"] = api.get_stress_data(today)
     except Exception as e:
-        out["errors"].append({"metric": "stress", "error": str(e)})
+        out["errors".append({"metric": "stress", "error": str(e)})
 
     try:
         out["sleep"] = api.get_sleep_data(today)
@@ -91,17 +113,75 @@ def build_user_prompt(cache: Dict[str, Any], push_kind: str) -> str:
     )
 
 
+def build_chat_prompt(cache: Dict[str, Any], user_message: str) -> str:
+    return (
+        "Write in Russian.\n"
+        "You are a helpful assistant answering questions based on the provided health data.\n"
+        "User is recovering after clavicle fracture: DO NOT push sport/training.\n"
+        "If the data is insufficient to answer, say so politely.\n"
+        "Answer the user's question concisely.\n\n"
+        "Available Data (Input JSON):\n"
+        f"{json.dumps(cache, ensure_ascii=False)}\n\n"
+        "User's Question:\n"
+        f"{user_message}"
+    )
+
+
 def generate_message(gemini_key: str, model_name: str, cache: Dict[str, Any], push_kind: str) -> str:
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel(
         model_name=model_name,
         system_instruction=SYSTEM_PROMPT,
     )
-    resp = model.generate_content(build_user_prompt(cache, push_kind))
+    prompt = build_user_prompt(cache, push_kind)
+    resp = model.generate_content(prompt)
     text = (resp.text or "").strip()
     if not text:
         raise RuntimeError("Gemini returned empty text")
     return text
+
+
+def generate_chat_response(gemini_key: str, model_name: str, cache: Dict[str, Any], user_message: str) -> str:
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        # Using a simpler system instruction for chat mode
+        system_instruction="You are a helpful and friendly AI assistant for Garmin health data. You communicate in Russian.",
+    )
+    prompt = build_chat_prompt(cache, user_message)
+    resp = model.generate_content(prompt)
+    text = (resp.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned empty text for chat")
+    return text
+
+
+@app.post("/chat", response_model=ChatResponse)
+def handle_chat(request: ChatRequest):
+    """
+    Handles an interactive chat message, using the latest cached Garmin data as context.
+    """
+    log.info("Received chat message: '%s'", request.message)
+    cache = read_cache()
+
+    if cache.get("error") == "cache_missing":
+        log.warning("Chat endpoint called but cache is missing.")
+        raise HTTPException(
+            status_code=503,
+            detail="Service is not ready. Data cache is empty. Please run the 'sync' command first.",
+        )
+
+    try:
+        gemini_key = env("GEMINI_API_KEY")
+        model_name = env("GEMINI_MODEL")
+        reply_text = generate_chat_response(gemini_key, model_name, cache, request.message)
+        log.info("Generated chat reply: '%s'", reply_text)
+        return ChatResponse(reply=reply_text)
+    except Exception as e:
+        log.exception("Chat generation failed")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate AI response: {e}"
+        )
 
 
 def run_sync() -> None:
@@ -143,11 +223,17 @@ def run_push(push_kind: str) -> None:
         # Do not re-raise: we sent a message (heartbeat/error report). Job succeeds.
 
 
+def run_serve(host: str, port: int) -> None:
+    """Starts the FastAPI web server."""
+    log.info(f"Starting web server on http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port)
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        raise RuntimeError("Usage: python main.py sync|push [morning|midday|evening]")
+        raise RuntimeError("Usage: python main.py sync|push|serve [args...]")
 
-    mode = sys.argv[1].strip().lower()
+    mode = sys.argv[1.strip().lower()
 
     if mode == "sync":
         run_sync()
@@ -156,9 +242,14 @@ def main() -> None:
         if push_kind not in ("morning", "midday", "evening"):
             raise RuntimeError("push must be morning|midday|evening")
         run_push(push_kind)
+    elif mode == "serve":
+        host = sys.argv[2] if len(sys.argv) >= 3 else "127.0.0.1"
+        port = int(sys.argv[3]) if len(sys.argv) >= 4 else 8000
+        run_serve(host, port)
     else:
-        raise RuntimeError("Unknown mode. Use sync or push.")
+        raise RuntimeError("Unknown mode. Use sync, push, or serve.")
 
 
 if __name__ == "__main__":
     main()
+
