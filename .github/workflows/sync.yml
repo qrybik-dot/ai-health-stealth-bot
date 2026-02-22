@@ -30,7 +30,7 @@ jobs:
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
         run: python3 main.py sync
 
-        - name: Sync cache.json to Gist (via GitHub API)
+      - name: Sync cache.json to Gist (via GitHub API)
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
