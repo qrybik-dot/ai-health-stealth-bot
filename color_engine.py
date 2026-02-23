@@ -225,9 +225,9 @@ def _build_period_domain_line(color: WeeklyColor) -> str:
 
 def _build_real_life_line(color: WeeklyColor) -> str:
     variants = [
-        "Чаще замечается в упаковке, тканях и интерфейсных акцентах. 🎛️🧥",
-        "Обычно встречается в обуви, аксессуарах и бытовых деталях. 👟💡",
-        "Хорошо читается в фасадах, полиграфии и предметах интерьера. 🧱🏗️",
+        "Заметьте его в одежде и интерфейсных акцентах: 👕🎛️",
+        "Часто встречается в бумаге и печати: 📄🖨️",
+        "Хорошо читается в фасадах и бытовом свете: 🧱💡",
     ]
     return variants[_seed_for_week(color.week_id + "real_life") % len(variants)]
 
@@ -270,11 +270,11 @@ def generate_color_card_image(week_id: str, hex_color: str, out_dir: str = "arti
         ratio = y / (h - 1)
         for x in range(w):
             x_ratio = x / (w - 1)
-            drift = (x_ratio - 0.5) * 18 + (ratio - 0.5) * 24
-            r = max(0, min(255, int(base_r + drift - 16 + ratio * 28)))
-            g = max(0, min(255, int(base_g + drift * 0.8 + x_ratio * 22)))
-            b = max(0, min(255, int(base_b + drift * 0.9 - ratio * 18)))
-            noise = rng.randint(-5, 5)
+            drift = (x_ratio - 0.5) * 12 + (ratio - 0.5) * 16
+            r = max(0, min(255, int(base_r + drift - 8 + ratio * 16)))
+            g = max(0, min(255, int(base_g + drift * 0.65 + x_ratio * 14)))
+            b = max(0, min(255, int(base_b + drift * 0.75 - ratio * 10)))
+            noise = rng.randint(-3, 3)
             px[x, y] = (
                 max(0, min(255, r + noise)),
                 max(0, min(255, g + noise)),
@@ -282,24 +282,156 @@ def generate_color_card_image(week_id: str, hex_color: str, out_dir: str = "arti
             )
 
     draw = ImageDraw.Draw(image, "RGBA")
-    for _ in range(1 + rng.randint(0, 1)):
-        x1 = rng.randint(80, 460)
-        y1 = rng.randint(120, 720)
-        x2 = x1 + rng.randint(320, 620)
-        y2 = y1 + rng.randint(220, 420)
-        alpha = rng.randint(25, 45)
-        draw.ellipse((x1, y1, x2, y2), fill=(255, 255, 255, alpha))
+    x1 = rng.randint(40, 220)
+    y1 = rng.randint(80, 260)
+    x2 = x1 + rng.randint(640, 860)
+    y2 = y1 + rng.randint(560, 740)
+    draw.ellipse((x1, y1, x2, y2), fill=(255, 255, 255, rng.randint(30, 46)))
 
-    for _ in range(1 + rng.randint(0, 1)):
-        x1 = rng.randint(120, 700)
-        y1 = rng.randint(200, 860)
-        x2 = x1 + rng.randint(180, 320)
-        y2 = y1 + rng.randint(130, 260)
-        alpha = rng.randint(30, 65)
-        draw.rounded_rectangle((x1, y1, x2, y2), radius=rng.randint(36, 90), fill=(20, 20, 24, alpha))
+    ax1 = rng.randint(740, 900)
+    ay1 = rng.randint(140, 260)
+    ax2 = ax1 + rng.randint(130, 210)
+    ay2 = ay1 + rng.randint(130, 230)
+    draw.rounded_rectangle((ax1, ay1, ax2, ay2), radius=rng.randint(34, 78), fill=(26, 26, 30, rng.randint(44, 68)))
 
     image.save(path, format="PNG", optimize=True)
     return str(path)
+
+
+def _mix_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+    t = max(0.0, min(1.0, t))
+    return (
+        int(a[0] * (1 - t) + b[0] * t),
+        int(a[1] * (1 - t) + b[1] * t),
+        int(a[2] * (1 - t) + b[2] * t),
+    )
+
+
+def _build_daily_palette(week_color_hex: str, mode_tag: str) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], Tuple[int, int, int]]:
+    base = _hex_to_rgb(week_color_hex)
+    if mode_tag == "no_data":
+        gray = int(base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11)
+        start = (max(36, gray - 26), max(36, gray - 20), max(40, gray - 14))
+        end = (min(186, gray + 28), min(186, gray + 30), min(192, gray + 34))
+        accent = (max(80, gray - 6), max(80, gray - 2), max(84, gray + 4))
+        return start, end, accent
+    if mode_tag == "recovery":
+        return _mix_rgb(base, (235, 235, 242), 0.46), _mix_rgb(base, (250, 250, 252), 0.63), _mix_rgb(base, (255, 255, 255), 0.55)
+    if mode_tag == "push":
+        return _mix_rgb(base, (18, 20, 26), 0.32), _mix_rgb(base, (10, 12, 18), 0.22), _mix_rgb(base, (255, 255, 255), 0.14)
+    return _mix_rgb(base, (228, 230, 240), 0.36), _mix_rgb(base, (248, 248, 252), 0.54), _mix_rgb(base, (255, 255, 255), 0.3)
+
+
+def generate_today_card_image(
+    chat_id: str,
+    day: str,
+    week_id: str,
+    week_color_hex: str,
+    mode_tag: str,
+    out_dir: str = "generated/today_cards",
+) -> str:
+    from PIL import Image, ImageDraw
+
+    os.makedirs(out_dir, exist_ok=True)
+    path = Path(out_dir) / f"{chat_id}_{day}.png"
+    if path.exists():
+        return str(path)
+
+    w, h = 1080, 1080
+    seed = _seed_for_week(f"{chat_id}|{day}|{mode_tag}|{week_id}")
+    rng = random.Random(seed)
+    start, end, accent = _build_daily_palette(week_color_hex, mode_tag)
+    shape_count = {"recovery": 1, "steady": 2, "push": 3, "no_data": 1}.get(mode_tag, 2)
+
+    try:
+        image = Image.new("RGB", (w, h))
+        px = image.load()
+        for y in range(h):
+            y_ratio = y / (h - 1)
+            for x in range(w):
+                x_ratio = x / (w - 1)
+                mix = y_ratio * 0.75 + x_ratio * 0.25
+                r, g, b = _mix_rgb(start, end, mix)
+                grain = rng.randint(-3, 3)
+                px[x, y] = (
+                    max(0, min(255, r + grain)),
+                    max(0, min(255, g + grain)),
+                    max(0, min(255, b + grain)),
+                )
+
+        draw = ImageDraw.Draw(image, "RGBA")
+        bx1 = rng.randint(60, 180)
+        by1 = rng.randint(130, 260)
+        bx2 = bx1 + rng.randint(620, 860)
+        by2 = by1 + rng.randint(560, 780)
+        draw.ellipse((bx1, by1, bx2, by2), fill=(*accent, 52 if mode_tag != "push" else 44))
+
+        if shape_count >= 2:
+            sx1 = rng.randint(760, 900)
+            sy1 = rng.randint(120, 260)
+            sx2 = sx1 + rng.randint(120, 210)
+            sy2 = sy1 + rng.randint(120, 230)
+            draw.rounded_rectangle((sx1, sy1, sx2, sy2), radius=rng.randint(30, 80), fill=(24, 24, 28, 55 if mode_tag == "push" else 40))
+        if shape_count >= 3:
+            tx1 = rng.randint(160, 300)
+            ty1 = rng.randint(760, 880)
+            tx2 = tx1 + rng.randint(200, 320)
+            ty2 = ty1 + rng.randint(90, 170)
+            draw.ellipse((tx1, ty1, tx2, ty2), fill=(255, 255, 255, 34))
+
+        image.save(path, format="PNG", optimize=True)
+        return str(path)
+    except Exception:
+        fallback = Image.new("RGB", (w, h))
+        fp = fallback.load()
+        for y in range(h):
+            mix = y / (h - 1)
+            row = _mix_rgb(start, end, mix)
+            for x in range(w):
+                fp[x, y] = row
+        fallback.save(path, format="PNG", optimize=True)
+        return str(path)
+
+
+def self_check_today_card() -> List[str]:
+    problems: List[str] = []
+    try:
+        from PIL import Image
+    except ModuleNotFoundError:
+        return ["Pillow is not installed"]
+
+    day = "2026-05-02"
+    week_id = "2026-W18"
+    mode_tags = ["recovery", "steady", "push", "no_data"]
+    for mode_tag in mode_tags:
+        path = generate_today_card_image(
+            chat_id=f"check_{mode_tag}",
+            day=day,
+            week_id=week_id,
+            week_color_hex="#6B7FA6",
+            mode_tag=mode_tag,
+        )
+        if not os.path.exists(path):
+            problems.append(f"{mode_tag}: image not created")
+            continue
+        mtime1 = os.path.getmtime(path)
+        with Image.open(path) as img:
+            if img.size != (1080, 1080):
+                problems.append(f"{mode_tag}: invalid image size {img.size}")
+            if img.format != "PNG":
+                problems.append(f"{mode_tag}: invalid image format {img.format}")
+
+        path2 = generate_today_card_image(
+            chat_id=f"check_{mode_tag}",
+            day=day,
+            week_id=week_id,
+            week_color_hex="#6B7FA6",
+            mode_tag=mode_tag,
+        )
+        mtime2 = os.path.getmtime(path2)
+        if path != path2 or mtime1 != mtime2:
+            problems.append(f"{mode_tag}: cache miss on second generation")
+    return problems
 
 
 def self_check_color_engine() -> List[str]:

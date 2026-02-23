@@ -26,11 +26,13 @@ from cache import (
 from color_engine import (
     build_color_metaphor_line,
     build_color_story,
+    generate_today_card_image,
     generate_weekly_color,
     iso_week_id,
     generate_color_card_image,
     self_check_color_card,
     self_check_color_engine,
+    self_check_today_card,
     weekly_color_from_dict,
 )
 
@@ -285,7 +287,7 @@ def build_color_caption(color: Dict[str, Any]) -> str:
     color_obj = weekly_color_from_dict(color)
     rarity_label = map_rarity_ru(color_obj.rarity_level)
     return (
-        f"Цвет недели: {color_obj.name_ru} · {color_obj.hex}\n"
+        f"Цвет недели: {color_obj.name_ru} ({color_obj.hex})\n"
         f"Фокус: {build_color_metaphor_line(color_obj)}\n"
         f"Известность названия: {rarity_label}"
     )
@@ -302,6 +304,95 @@ def build_color_keyboard(week_id: str) -> Dict[str, Any]:
             ],
         ]
     }
+
+
+def classify_mode_tag(today_payload: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(today_payload, dict):
+        return "no_data"
+
+    body = today_payload.get("body_battery")
+    stress = today_payload.get("stress")
+
+    body_level = None
+    if isinstance(body, dict):
+        body_level = body.get("mostRecentValue") or body.get("chargedValue")
+
+    stress_level = None
+    if isinstance(stress, dict):
+        stress_level = stress.get("avgStressLevel") or stress.get("overallStressLevel")
+
+    if body_level is None and stress_level is None:
+        return "no_data"
+    if body_level is not None and body_level < 35:
+        return "recovery"
+    if stress_level is not None and stress_level > 62:
+        return "recovery"
+    if body_level is not None and body_level > 70:
+        return "push"
+    if stress_level is not None and stress_level < 30:
+        return "push"
+    return "steady"
+
+
+def build_today_keyboard(day: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅", "callback_data": f"today_vote:{day}:yes"},
+                {"text": "➖", "callback_data": f"today_vote:{day}:partial"},
+                {"text": "❌", "callback_data": f"today_vote:{day}:no"},
+            ]
+        ]
+    }
+
+
+def handle_today_vote_callback(tg_token: str, chat_id: str, callback_query: Dict[str, Any]) -> None:
+    callback_id = callback_query.get("id")
+    callback_data = callback_query.get("data", "")
+    parts = callback_data.split(":")
+    vote_date = parts[1] if len(parts) > 1 else dt.date.today().isoformat()
+    vote_value = parts[2] if len(parts) > 2 else "partial"
+    week_id = iso_week_id(dt.date.fromisoformat(vote_date))
+    upsert_color_vote(chat_id=chat_id, vote_date=vote_date, vote_value=vote_value, week_id=week_id)
+    if callback_id:
+        telegram_answer_callback(tg_token, callback_id, text="Голос учтён")
+    message = callback_query.get("message", {})
+    message_id = message.get("message_id")
+    if message_id is not None:
+        telegram_edit_message_reply_markup(tg_token, chat_id, int(message_id))
+
+
+def handle_today_command(tg_token: str, chat_id: str) -> None:
+    day = dt.date.today().isoformat()
+    history = load_cache()
+    today_payload = history.get(day)
+    week_color = get_or_create_weekly_color_state()
+    mode_tag = classify_mode_tag(today_payload)
+    image_path = generate_today_card_image(
+        chat_id=chat_id,
+        day=day,
+        week_id=week_color["week_id"],
+        week_color_hex=week_color["hex"],
+        mode_tag=mode_tag,
+    )
+
+    if mode_tag == "no_data":
+        insight = "Данных за сегодня пока мало. День лучше вести в спокойном темпе и без перегруза."
+    elif mode_tag == "recovery":
+        insight = "Фон дня мягкий: лучше ровный ритм и короткие циклы дел. Ставка на восстановление ресурса."
+    elif mode_tag == "push":
+        insight = "День выглядит собранно: можно держать плотный, но контролируемый темп. Главное — не сжигать запас к вечеру."
+    else:
+        insight = "Режим дня выглядит стабильным: рабочий темп без резких скачков. Держите фокус на последовательности."
+
+    caption = f"{insight}\n\nЦвет недели: {week_color['name_ru']} ({week_color['hex']})"
+    telegram_send_photo_with_markup(
+        tg_token,
+        chat_id,
+        image_path,
+        caption,
+        build_today_keyboard(day),
+    )
 
 
 def handle_color_command(tg_token: str, chat_id: str) -> None:
@@ -410,6 +501,8 @@ async def webhook(request: Request):
                 handle_color_story_callback(tg_token, callback_chat_id, callback_query)
             elif callback_data.startswith("color_vote"):
                 handle_color_vote_callback(tg_token, callback_chat_id, callback_query)
+            elif callback_data.startswith("today_vote"):
+                handle_today_vote_callback(tg_token, callback_chat_id, callback_query)
             return Response(status_code=200)
 
         message = data.get("message", {})
@@ -427,6 +520,9 @@ async def webhook(request: Request):
 
         if text.lower() == "/color":
             handle_color_command(tg_token, message_chat_id)
+            return Response(status_code=200)
+        if text.lower() == "/today":
+            handle_today_command(tg_token, message_chat_id)
             return Response(status_code=200)
         if text.lower() == "/help":
             telegram_send(tg_token, message_chat_id, build_help_message())
@@ -459,7 +555,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|serve|color-self-check|color-card-self-check]")
+        print("Usage: python3 main.py [sync|push|serve|color-self-check|color-card-self-check|today-card-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -490,8 +586,16 @@ def main() -> None:
                 print(problem)
             sys.exit(1)
         print("color-card-self-check ok")
+    elif mode == "today-card-self-check":
+        problems = self_check_today_card()
+        if problems:
+            print("today-card-self-check failed")
+            for problem in problems:
+                print(problem)
+            sys.exit(1)
+        print("today-card-self-check ok")
     else:
-        print(f"Error: Unknown mode '{mode}'. Use sync, push, serve, color-self-check, or color-card-self-check.")
+        print(f"Error: Unknown mode '{mode}'. Use sync, push, serve, color-self-check, color-card-self-check, or today-card-self-check.")
         sys.exit(1)
 
 if __name__ == "__main__":
