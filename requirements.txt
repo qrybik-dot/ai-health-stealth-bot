@@ -4,3 +4,5 @@ garminconnect==0.2.8
 python-dotenv==1.0.1
 fastapi
 uvicorn
+
+Pillow==10.4.0
