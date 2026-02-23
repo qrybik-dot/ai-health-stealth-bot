@@ -98,6 +98,38 @@ def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     return tuple(int(raw[i : i + 2], 16) for i in (0, 2, 4))
 
 
+def _hex_to_hsl(hex_color: str) -> Tuple[int, int, int]:
+    r, g, b = _hex_to_rgb(hex_color)
+    h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+    return int(h * 360) % 360, int(s * 100), int(l * 100)
+
+
+def generate_daily_accent_hex(chat_id: str, day: str, week_id: str, week_color_hex: str) -> str:
+    week_h, _, _ = _hex_to_hsl(week_color_hex)
+    seed = _seed_for_week(f"{chat_id}|{day}|{week_id}")
+    rng = random.Random(seed)
+    variants = ["complementary", "triad", "split_lo", "split_hi", "controlled"]
+    variant = variants[rng.randrange(len(variants))]
+
+    if variant == "complementary":
+        hue = (week_h + 180) % 360
+    elif variant == "triad":
+        hue = (week_h + 120) % 360
+    elif variant == "split_lo":
+        hue = (week_h + 150) % 360
+    elif variant == "split_hi":
+        hue = (week_h + 210) % 360
+    else:
+        hue = (week_h + 90 + rng.randint(-35, 35)) % 360
+
+    sat = 52 + rng.randint(0, 24)
+    lig = 45 + rng.randint(0, 20)
+    accent_hex = _hsl_to_hex(hue, sat, lig)
+    if accent_hex.upper() == week_color_hex.upper():
+        accent_hex = _hsl_to_hex((hue + 37) % 360, sat, lig)
+    return accent_hex
+
+
 def _pick_rarity(rng: random.Random) -> str:
     roll = rng.random()
     if roll < 0.08:
@@ -307,19 +339,20 @@ def _mix_rgb(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tupl
     )
 
 
-def _build_daily_palette(week_color_hex: str, mode_tag: str) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], Tuple[int, int, int]]:
+def _build_daily_palette(week_color_hex: str, accent_hex: str, mode_tag: str) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], Tuple[int, int, int]]:
     base = _hex_to_rgb(week_color_hex)
+    accent_base = _hex_to_rgb(accent_hex)
     if mode_tag == "no_data":
         gray = int(base[0] * 0.3 + base[1] * 0.59 + base[2] * 0.11)
         start = (max(36, gray - 26), max(36, gray - 20), max(40, gray - 14))
         end = (min(186, gray + 28), min(186, gray + 30), min(192, gray + 34))
-        accent = (max(80, gray - 6), max(80, gray - 2), max(84, gray + 4))
+        accent = _mix_rgb(accent_base, (180, 180, 186), 0.5)
         return start, end, accent
     if mode_tag == "recovery":
-        return _mix_rgb(base, (235, 235, 242), 0.46), _mix_rgb(base, (250, 250, 252), 0.63), _mix_rgb(base, (255, 255, 255), 0.55)
+        return _mix_rgb(base, (235, 235, 242), 0.46), _mix_rgb(base, (250, 250, 252), 0.63), _mix_rgb(accent_base, (255, 255, 255), 0.35)
     if mode_tag == "push":
-        return _mix_rgb(base, (18, 20, 26), 0.32), _mix_rgb(base, (10, 12, 18), 0.22), _mix_rgb(base, (255, 255, 255), 0.14)
-    return _mix_rgb(base, (228, 230, 240), 0.36), _mix_rgb(base, (248, 248, 252), 0.54), _mix_rgb(base, (255, 255, 255), 0.3)
+        return _mix_rgb(base, (18, 20, 26), 0.32), _mix_rgb(base, (10, 12, 18), 0.22), _mix_rgb(accent_base, (255, 255, 255), 0.14)
+    return _mix_rgb(base, (228, 230, 240), 0.36), _mix_rgb(base, (248, 248, 252), 0.54), _mix_rgb(accent_base, (255, 255, 255), 0.2)
 
 
 def generate_today_card_image(
@@ -328,19 +361,21 @@ def generate_today_card_image(
     week_id: str,
     week_color_hex: str,
     mode_tag: str,
+    accent_hex: str,
     out_dir: str = "generated/today_cards",
 ) -> str:
     from PIL import Image, ImageDraw
 
     os.makedirs(out_dir, exist_ok=True)
-    path = Path(out_dir) / f"{chat_id}_{day}.png"
+    safe_chat = str(chat_id).replace("/", "_")
+    path = Path(out_dir) / f"{safe_chat}_{day}_{mode_tag}_{week_id}.png"
     if path.exists():
         return str(path)
 
     w, h = 1080, 1080
-    seed = _seed_for_week(f"{chat_id}|{day}|{mode_tag}|{week_id}")
+    seed = _seed_for_week(f"{chat_id}|{day}|{mode_tag}|{week_id}|{accent_hex}")
     rng = random.Random(seed)
-    start, end, accent = _build_daily_palette(week_color_hex, mode_tag)
+    start, end, accent = _build_daily_palette(week_color_hex, accent_hex, mode_tag)
     shape_count = {"recovery": 1, "steady": 2, "push": 3, "no_data": 1}.get(mode_tag, 2)
 
     try:
@@ -364,14 +399,14 @@ def generate_today_card_image(
         by1 = rng.randint(130, 260)
         bx2 = bx1 + rng.randint(620, 860)
         by2 = by1 + rng.randint(560, 780)
-        draw.ellipse((bx1, by1, bx2, by2), fill=(*accent, 52 if mode_tag != "push" else 44))
+        draw.ellipse((bx1, by1, bx2, by2), fill=(*accent, 72 if mode_tag != "push" else 58))
 
         if shape_count >= 2:
             sx1 = rng.randint(760, 900)
             sy1 = rng.randint(120, 260)
             sx2 = sx1 + rng.randint(120, 210)
             sy2 = sy1 + rng.randint(120, 230)
-            draw.rounded_rectangle((sx1, sy1, sx2, sy2), radius=rng.randint(30, 80), fill=(24, 24, 28, 55 if mode_tag == "push" else 40))
+            draw.rounded_rectangle((sx1, sy1, sx2, sy2), radius=rng.randint(30, 80), fill=(*_mix_rgb(accent, (20, 20, 24), 0.75), 70 if mode_tag == "push" else 48))
         if shape_count >= 3:
             tx1 = rng.randint(160, 300)
             ty1 = rng.randint(760, 880)
@@ -411,6 +446,7 @@ def self_check_today_card() -> List[str]:
             week_id=week_id,
             week_color_hex="#6B7FA6",
             mode_tag=mode_tag,
+            accent_hex="#D96A4A",
         )
         if not os.path.exists(path):
             problems.append(f"{mode_tag}: image not created")
@@ -428,6 +464,7 @@ def self_check_today_card() -> List[str]:
             week_id=week_id,
             week_color_hex="#6B7FA6",
             mode_tag=mode_tag,
+            accent_hex="#D96A4A",
         )
         mtime2 = os.path.getmtime(path2)
         if path != path2 or mtime1 != mtime2:
