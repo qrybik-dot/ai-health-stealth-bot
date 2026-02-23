@@ -4,7 +4,7 @@ import json
 import logging
 import datetime as dt
 import requests
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -13,15 +13,20 @@ from garminconnect import Garmin
 load_dotenv()
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from cache import (
+    get_color_vote,
+    get_week_vote_accuracy,
     get_weekly_vote_stats,
     load_cache,
     load_weekly_state,
+    mark_slot_sent,
     save_daily_snapshot,
     save_weekly_state,
     upsert_color_vote,
+    was_slot_sent,
 )
 from color_engine import (
     build_color_metaphor_line,
@@ -179,49 +184,80 @@ def run_sync() -> None:
         raise
 
 
+def _now_msk() -> dt.datetime:
+    return dt.datetime.now(ZoneInfo("Europe/Moscow"))
+
+
+def _in_window(now_msk: dt.datetime, hh: int, mm: int, tolerance_min: int = 5) -> bool:
+    target = now_msk.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    delta = abs((now_msk - target).total_seconds())
+    return delta <= tolerance_min * 60
+
+
+def _resolve_push_slot(now_msk: dt.datetime) -> Optional[str]:
+    windows: Dict[str, Tuple[int, int]] = {
+        "morning": (8, 30),
+        "midday": (13, 0),
+        "evening": (19, 30),
+    }
+    for slot, (hour, minute) in windows.items():
+        if _in_window(now_msk, hour, minute, tolerance_min=5):
+            return slot
+    return None
+
+
 def run_push(push_kind: str) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
-    log.info("Push started: %s", push_kind)
+    now_msk = _now_msk()
+    today_str = now_msk.date().isoformat()
+    resolved_slot = _resolve_push_slot(now_msk)
 
+    if resolved_slot is None:
+        log.info("Push skipped: outside MSK send windows at %s", now_msk.isoformat())
+        return
+
+    if push_kind != "auto" and push_kind != resolved_slot:
+        log.info("Push skipped: requested kind '%s' does not match active slot '%s'", push_kind, resolved_slot)
+        return
+
+    if was_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot):
+        log.info("Push skipped: slot already sent (%s, %s)", today_str, resolved_slot)
+        return
+
+    log.info("Push started: kind=%s msk_now=%s", push_kind, now_msk.isoformat())
     full_history = load_cache()
 
     if not full_history:
         msg = "⚠️ Кэш пока пуст (SYNC ещё не выполнялся). Я живой 🙂"
         telegram_send(tg_token, chat_id, msg)
+        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
         log.info("Push: sent heartbeat (no cache)")
         return
 
-    # For daily pushes, we only need the most recent context.
-    # Let's provide today's and yesterday's data to the model for comparison.
-    today_str = dt.date.today().strftime("%Y-%m-%d")
-    yesterday_str = (dt.date.today() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
-
+    yesterday_str = (now_msk.date() - dt.timedelta(days=1)).isoformat()
     prompt_cache = {
         "today": full_history.get(today_str),
         "yesterday": full_history.get(yesterday_str),
     }
 
-    # Do not send push if today's data is missing.
     if not prompt_cache.get("today"):
         log.warning("Push skipped: no data for today in cache.")
-        # We don't send a message here, as this is an expected state between syncs.
         return
 
     try:
-        msg = generate_message(
-            env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, push_kind
-        )
+        effective_kind = resolved_slot if push_kind == "auto" else push_kind
+        msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, effective_kind)
         telegram_send(tg_token, chat_id, msg)
+        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
         log.info("Push ok: insight sent")
     except Exception as e:
         log.exception("Push: insight generation failed")
         err_msg = (
-            f"⚠️ Я споткнулся при генерации сообщения ({push_kind}).\n"
+            f"⚠️ Я споткнулся при генерации сообщения ({resolved_slot}).\n"
             f"{type(e).__name__}: {e}"
         )
         telegram_send(tg_token, chat_id, err_msg)
-        # Do not re-raise: we sent a message (heartbeat/error report). Job succeeds.
 
 
 def get_or_create_weekly_color_state() -> Dict[str, Any]:
@@ -290,11 +326,19 @@ def map_rarity_ru(rarity_level: str) -> str:
     return "классический"
 
 
+def vote_label(vote_value: str) -> str:
+    return {
+        "yes": "✅ Попало",
+        "partial": "➖ Частично",
+        "no": "❌ Мимо",
+    }.get(vote_value, "➖ Частично")
+
+
 def build_color_caption(color: Dict[str, Any]) -> str:
     color_obj = weekly_color_from_dict(color)
     rarity_label = map_rarity_ru(color_obj.rarity_level)
     return (
-        f"Цвет недели: {color_obj.name_ru} ({color_obj.hex})\n"
+        f"Цвет недели: {color_obj.name_ru} · {color_obj.hex}\n"
         f"Фокус: {build_color_metaphor_line(color_obj)}\n"
         f"Известность названия: {rarity_label}"
     )
@@ -325,6 +369,10 @@ def build_color_vote_keyboard(week_id: str) -> Dict[str, Any]:
     }
 
 
+def build_color_voted_keyboard(vote_value: str) -> Dict[str, Any]:
+    return {"inline_keyboard": [[{"text": f"🗳 Ваш выбор: {vote_label(vote_value)}", "callback_data": "noop"}]]}
+
+
 def classify_mode_tag(today_payload: Optional[Dict[str, Any]]) -> str:
     if not isinstance(today_payload, dict):
         return "no_data"
@@ -351,6 +399,25 @@ def classify_mode_tag(today_payload: Optional[Dict[str, Any]]) -> str:
     if stress_level is not None and stress_level < 30:
         return "push"
     return "steady"
+
+
+def build_fact_of_day(mode_tag: str, today_payload: Optional[Dict[str, Any]]) -> str:
+    confidence = 0
+    if isinstance(today_payload, dict):
+        if isinstance(today_payload.get("body_battery"), dict):
+            confidence += 1
+        if isinstance(today_payload.get("stress"), dict):
+            confidence += 1
+        if isinstance(today_payload.get("sleep"), dict):
+            confidence += 1
+
+    if confidence <= 1 or mode_tag == "no_data":
+        return "Даже без полного набора метрик заметнее всего не уровень, а форма дня: ровный ритм обычно читается лучше, чем отдельные пики."
+    if mode_tag == "recovery":
+        return "Когда день идёт мягче обычного, контраст между утренним и вечерним темпом становится ключевым маркером состояния режима."
+    if mode_tag == "push":
+        return "В собранные дни важен не максимум, а устойчивость: резкие всплески чаще уступают ровной серии отрезков."
+    return "Стабильные дни обычно выглядят как повторяемый рисунок нагрузки и пауз, а не как набор случайных интенсивных блоков."
 
 
 def build_today_keyboard(day: str) -> Dict[str, Any]:
@@ -409,7 +476,12 @@ def handle_today_command(tg_token: str, chat_id: str) -> None:
     else:
         insight = "Режим дня выглядит стабильным: рабочий темп без резких скачков. Держите фокус на последовательности."
 
-    caption = f"{insight}\n\nЦвет недели: {week_color['name_ru']} ({week_color['hex']})"
+    fact_block = build_fact_of_day(mode_tag, today_payload)
+    caption = (
+        f"{insight}\n\n"
+        f"🟡 Факт дня\n{fact_block}\n\n"
+        f"Цвет недели: {week_color['name_ru']} ({week_color['hex']})"
+    )
     telegram_send_photo_with_markup(
         tg_token,
         chat_id,
@@ -422,12 +494,17 @@ def handle_today_command(tg_token: str, chat_id: str) -> None:
 def handle_color_command(tg_token: str, chat_id: str) -> None:
     color = get_or_create_weekly_color_state()
     image_path = generate_color_card_image(color["week_id"], color["hex"])
+    today = dt.date.today().isoformat()
+    existing_vote = get_color_vote(chat_id=chat_id, vote_date=today)
+    keyboard = build_color_keyboard(color["week_id"])
+    if existing_vote:
+        keyboard = build_color_voted_keyboard(existing_vote.get("vote_value", "partial"))
     telegram_send_photo_with_markup(
         tg_token,
         chat_id,
         image_path,
         build_color_caption(color),
-        build_color_keyboard(color["week_id"]),
+        keyboard,
     )
 
 
@@ -450,12 +527,13 @@ def handle_color_story_callback(tg_token: str, chat_id: str, callback_query: Dic
     message = callback_query.get("message", {})
     message_id = message.get("message_id")
     if message_id is not None:
-        telegram_edit_message_reply_markup(
-            tg_token,
-            chat_id,
-            int(message_id),
-            build_color_vote_keyboard(week_id),
-        )
+        today = dt.date.today().isoformat()
+        existing_vote = get_color_vote(chat_id=chat_id, vote_date=today)
+        if existing_vote:
+            markup = build_color_voted_keyboard(existing_vote.get("vote_value", "partial"))
+        else:
+            markup = build_color_vote_keyboard(week_id)
+        telegram_edit_message_reply_markup(tg_token, chat_id, int(message_id), markup)
 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
@@ -468,15 +546,68 @@ def handle_color_vote_callback(tg_token: str, chat_id: str, callback_query: Dict
     week_id = parts[1] if len(parts) > 1 else iso_week_id()
     vote_value = parts[2] if len(parts) > 2 else "partial"
     today = dt.date.today().isoformat()
-    upsert_color_vote(chat_id=chat_id, vote_date=today, vote_value=vote_value, week_id=week_id)
-    stats = get_weekly_vote_stats(week_id)
+
+    existing_vote = get_color_vote(chat_id=chat_id, vote_date=today)
+    if existing_vote:
+        existing_label = vote_label(existing_vote.get("vote_value", "partial"))
+        if callback_id:
+            telegram_answer_callback(tg_token, callback_id, text=f"Уже учтено: {existing_label}")
+        message = callback_query.get("message", {})
+        message_id = message.get("message_id")
+        if message_id is not None:
+            telegram_edit_message_reply_markup(
+                tg_token,
+                chat_id,
+                int(message_id),
+                build_color_voted_keyboard(existing_vote.get("vote_value", "partial")),
+            )
+        return
+
+    inserted = upsert_color_vote(
+        chat_id=chat_id,
+        vote_date=today,
+        vote_value=vote_value,
+        week_id=week_id,
+        vote_ts=utc_now_iso(),
+    )
     if callback_id:
         telegram_answer_callback(tg_token, callback_id, text="Голос учтён")
+
+    message = callback_query.get("message", {})
+    message_id = message.get("message_id")
+    if message_id is not None:
+        final_vote = vote_value if inserted else "partial"
+        telegram_edit_message_reply_markup(
+            tg_token,
+            chat_id,
+            int(message_id),
+            build_color_voted_keyboard(final_vote),
+        )
+
+    stats = get_weekly_vote_stats(week_id)
     log.info("Color vote stored: week=%s vote=%s stats=%s", week_id, vote_value, stats)
 
 
 def build_help_message() -> str:
     return "Команды:\n/today\n/color\n/week\n/help"
+
+
+def handle_week_command(tg_token: str, chat_id: str) -> None:
+    week_id = iso_week_id()
+    stats = get_week_vote_accuracy(week_id=week_id, chat_id=chat_id)
+    total = int(stats["total"])
+    if total == 0:
+        telegram_send(tg_token, chat_id, "Итог недели: пока нет голосов по карточкам цвета.")
+        return
+    accuracy_pct = round(stats["accuracy"] * 100)
+    message = (
+        f"Итог недели ({week_id})\n"
+        f"✅ Попало: {int(stats['yes_count'])}\n"
+        f"➖ Частично: {int(stats['partial_count'])}\n"
+        f"❌ Мимо: {int(stats['no_count'])}\n"
+        f"Точность: {accuracy_pct}%"
+    )
+    telegram_send(tg_token, chat_id, message)
 
 
 def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
@@ -532,6 +663,10 @@ async def webhook(request: Request):
                 handle_color_vote_callback(tg_token, callback_chat_id, callback_query)
             elif callback_data.startswith("today_vote"):
                 handle_today_vote_callback(tg_token, callback_chat_id, callback_query)
+            elif callback_data == "noop":
+                callback_id = callback_query.get("id")
+                if callback_id:
+                    telegram_answer_callback(tg_token, callback_id)
             return Response(status_code=200)
 
         message = data.get("message", {})
@@ -555,6 +690,9 @@ async def webhook(request: Request):
             return Response(status_code=200)
         if text.lower() == "/help":
             telegram_send(tg_token, message_chat_id, build_help_message())
+            return Response(status_code=200)
+        if text.lower() == "/week":
+            handle_week_command(tg_token, message_chat_id)
             return Response(status_code=200)
 
         # Load the latest cache from Gist
@@ -597,9 +735,9 @@ def main() -> None:
     if mode == "sync":
         run_sync()
     elif mode == "push":
-        push_kind = (sys.argv[2] if len(sys.argv) > 2 else "morning").strip().lower()
-        if push_kind not in ["morning", "midday", "evening"]:
-            print("Error: push mode requires a valid kind [morning|midday|evening]")
+        push_kind = (sys.argv[2] if len(sys.argv) > 2 else "auto").strip().lower()
+        if push_kind not in ["auto", "morning", "midday", "evening"]:
+            print("Error: push mode requires a valid kind [auto|morning|midday|evening]")
             return
         run_push(push_kind)
     elif mode == "serve":

@@ -2,10 +2,7 @@ name: Push Daily Insights
 
 on:
   schedule:
-    # GitHub cron is UTC. Moscow is UTC+3.
-    - cron: "30 5 * * *"    # 08:30 MSK
-    - cron: "0 10 * * *"    # 13:00 MSK
-    - cron: "30 16 * * *"   # 19:30 MSK
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -26,32 +23,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Push morning
-        if: github.event.schedule == '30 5 * * *'
+      - name: Push with MSK gate
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-        run: python main.py push morning
-
-      - name: Push midday
-        if: github.event.schedule == '0 10 * * *'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-        run: python main.py push midday
-
-      - name: Push evening
-        if: github.event.schedule == '30 16 * * *'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-        run: python main.py push evening
+        run: python main.py push auto
