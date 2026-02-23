@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 CACHE_FILE = "cache.json"
 MEMORY_DAYS = 120
+WEEKLY_STATE_KEY = "_weekly_state"
 
 
 def load_cache() -> Dict[str, Any]:
@@ -59,6 +60,9 @@ def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
     cutoff_date = date.today() - timedelta(days=MEMORY_DAYS)
     
     for date_str, data in cache.items():
+        if date_str.startswith("_"):
+            pruned_cache[date_str] = data
+            continue
         try:
             entry_date = date.fromisoformat(date_str)
             if entry_date >= cutoff_date:
@@ -69,3 +73,21 @@ def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
 
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(pruned_cache, f, ensure_ascii=False, indent=2)
+
+
+def load_weekly_state() -> Dict[str, Any]:
+    cache = load_cache()
+    state = cache.get(WEEKLY_STATE_KEY, {})
+    if isinstance(state, dict):
+        return state
+    return {}
+
+
+def save_weekly_state(week_id: str, weekly_payload: Dict[str, Any]) -> None:
+    cache = load_cache()
+    if WEEKLY_STATE_KEY not in cache or not isinstance(cache[WEEKLY_STATE_KEY], dict):
+        cache[WEEKLY_STATE_KEY] = {}
+    cache[WEEKLY_STATE_KEY][week_id] = weekly_payload
+
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)

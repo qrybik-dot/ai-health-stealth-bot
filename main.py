@@ -15,7 +15,15 @@ load_dotenv()
 import datetime as dt
 import uvicorn
 from fastapi import FastAPI, Request, Response
-from cache import save_daily_snapshot, load_cache
+from cache import save_daily_snapshot, load_cache, load_weekly_state, save_weekly_state
+from color_engine import (
+    build_color_signal_line,
+    build_color_story,
+    generate_weekly_color,
+    iso_week_id,
+    self_check_color_engine,
+    weekly_color_from_dict,
+)
 
 
 from prompts import SYSTEM_PROMPT, CODEX_RULES
@@ -40,6 +48,19 @@ def telegram_send(token: str, chat_id: str, text: str) -> None:
     r = requests.post(url, json={"chat_id": chat_id, "text": text})
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
+
+
+def telegram_send_with_markup(token: str, chat_id: str, text: str, reply_markup: Dict[str, Any]) -> None:
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+    r = requests.post(url, json=payload)
+    if r.status_code != 200:
+        raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
+
+
+def telegram_answer_callback(token: str, callback_query_id: str) -> None:
+    url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+    requests.post(url, json={"callback_query_id": callback_query_id}, timeout=10)
 
 
 def utc_now_iso() -> str:
@@ -179,6 +200,54 @@ def run_push(push_kind: str) -> None:
         # Do not re-raise: we sent a message (heartbeat/error report). Job succeeds.
 
 
+def get_or_create_weekly_color_state() -> Dict[str, Any]:
+    week_id = iso_week_id()
+    color = generate_weekly_color(week_id).to_dict()
+    try:
+        state = load_weekly_state()
+        if week_id in state and isinstance(state[week_id], dict):
+            return state[week_id]
+        save_weekly_state(week_id, color)
+        return color
+    except Exception:
+        log.exception("Failed to load/save weekly color state, using deterministic fallback")
+        return color
+
+
+def build_color_message(color: Dict[str, Any]) -> str:
+    title = f"Цвет недели: {color['name_ru']} {color['hex']}"
+    signal = build_color_signal_line(weekly_color_from_dict(color))
+    rarity = f"Редкость: {color['rarity_level']}"
+    return f"{title}\n{signal}\n{rarity}"
+
+
+def handle_color_command(tg_token: str, chat_id: str) -> None:
+    color = get_or_create_weekly_color_state()
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "🎨 История цвета", "callback_data": f"color_story:{color['week_id']}"}]
+        ]
+    }
+    telegram_send_with_markup(tg_token, chat_id, build_color_message(color), keyboard)
+
+
+def handle_color_story_callback(tg_token: str, chat_id: str, callback_query: Dict[str, Any]) -> None:
+    callback_id = callback_query.get("id")
+    callback_data = callback_query.get("data", "")
+    week_id = callback_data.split(":", 1)[1] if ":" in callback_data else iso_week_id()
+
+    color_state = get_or_create_weekly_color_state()
+    if color_state.get("week_id") != week_id:
+        # if asked for past/future week - still deterministic and independent from Garmin data
+        color_state = generate_weekly_color(week_id).to_dict()
+
+    story = build_color_story(weekly_color_from_dict(color_state))
+    telegram_send(tg_token, chat_id, story)
+
+    if callback_id:
+        telegram_answer_callback(tg_token, callback_id)
+
+
 def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
     """Builds the user prompt for conversational chat."""
     return (
@@ -222,6 +291,13 @@ async def webhook(request: Request):
         data = await request.json()
         log.info("Webhook received: %s", data)
 
+        callback_query = data.get("callback_query")
+        if callback_query:
+            callback_data = callback_query.get("data", "")
+            if callback_data.startswith("color_story"):
+                handle_color_story_callback(tg_token, chat_id, callback_query)
+            return Response(status_code=200)
+
         message = data.get("message", {})
         text = message.get("text", "").strip()
 
@@ -233,6 +309,10 @@ async def webhook(request: Request):
         # Here we just send a "typing..." indicator.
         url = f"https://api.telegram.org/bot{tg_token}/sendChatAction"
         requests.post(url, json={"chat_id": chat_id, "action": "typing"})
+
+        if text.lower() == "/color":
+            handle_color_command(tg_token, chat_id)
+            return Response(status_code=200)
 
         # Load the latest cache from Gist
         history_cache = load_cache()
@@ -261,7 +341,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|serve]")
+        print("Usage: python3 main.py [sync|push|serve|color-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -276,8 +356,16 @@ def main() -> None:
         run_push(push_kind)
     elif mode == "serve":
         run_serve()
+    elif mode == "color-self-check":
+        problems = self_check_color_engine()
+        if problems:
+            print("color-self-check failed")
+            for problem in problems:
+                print(problem)
+            sys.exit(1)
+        print("color-self-check ok")
     else:
-        print(f"Error: Unknown mode '{mode}'. Use sync, push, or serve.")
+        print(f"Error: Unknown mode '{mode}'. Use sync, push, serve, or color-self-check.")
         sys.exit(1)
 
 if __name__ == "__main__":
