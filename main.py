@@ -71,15 +71,22 @@ def telegram_send_with_markup(token: str, chat_id: str, text: str, reply_markup:
 
 
 
-def telegram_set_my_commands(token: str) -> None:
+def ensure_bot_commands(token: str) -> None:
     url = f"https://api.telegram.org/bot{token}/setMyCommands"
     commands = [
-        {"command": "today", "description": "Короткий инсайт дня"},
-        {"command": "color", "description": "Цвет недели"},
-        {"command": "week", "description": "Сводка недели"},
-        {"command": "help", "description": "Список команд"},
+        {"command": "today", "description": "карточка дня"},
+        {"command": "color", "description": "цвет недели"},
+        {"command": "week", "description": "отчёт недели"},
+        {"command": "help", "description": "подсказка"},
     ]
-    requests.post(url, json={"commands": commands}, timeout=15)
+    response = requests.post(url, json={"commands": commands}, timeout=15)
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram setMyCommands error {response.status_code}: {response.text}")
+    payload = response.json()
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram setMyCommands rejected: {payload}")
+
+
 def utc_now_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -264,15 +271,15 @@ def telegram_answer_callback(token: str, callback_query_id: str, text: str = "")
     requests.post(url, json=payload, timeout=10)
 
 
-def telegram_edit_message_reply_markup(token: str, chat_id: str, message_id: int) -> None:
+def telegram_edit_message_reply_markup(token: str, chat_id: str, message_id: int, reply_markup: Dict[str, Any]) -> None:
     url = f"https://api.telegram.org/bot{token}/editMessageReplyMarkup"
     response = requests.post(
         url,
-        json={"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}},
+        json={"chat_id": chat_id, "message_id": message_id, "reply_markup": reply_markup},
         timeout=15,
     )
     if response.status_code != 200:
-        log.warning("Failed to clear inline keyboard: %s", response.text)
+        log.warning("Failed to edit inline keyboard: %s", response.text)
 
 
 def map_rarity_ru(rarity_level: str) -> str:
@@ -297,6 +304,18 @@ def build_color_keyboard(week_id: str) -> Dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "🎨 История цвета", "callback_data": f"color_story:{week_id}"}],
+            [
+                {"text": "✅ Попало", "callback_data": f"color_vote:{week_id}:yes"},
+                {"text": "➖ Частично", "callback_data": f"color_vote:{week_id}:partial"},
+                {"text": "❌ Мимо", "callback_data": f"color_vote:{week_id}:no"},
+            ],
+        ]
+    }
+
+
+def build_color_vote_keyboard(week_id: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
             [
                 {"text": "✅ Попало", "callback_data": f"color_vote:{week_id}:yes"},
                 {"text": "➖ Частично", "callback_data": f"color_vote:{week_id}:partial"},
@@ -359,7 +378,12 @@ def handle_today_vote_callback(tg_token: str, chat_id: str, callback_query: Dict
     message = callback_query.get("message", {})
     message_id = message.get("message_id")
     if message_id is not None:
-        telegram_edit_message_reply_markup(tg_token, chat_id, int(message_id))
+        telegram_edit_message_reply_markup(
+            tg_token,
+            chat_id,
+            int(message_id),
+            {"inline_keyboard": []},
+        )
 
 
 def handle_today_command(tg_token: str, chat_id: str) -> None:
@@ -426,7 +450,12 @@ def handle_color_story_callback(tg_token: str, chat_id: str, callback_query: Dic
     message = callback_query.get("message", {})
     message_id = message.get("message_id")
     if message_id is not None:
-        telegram_edit_message_reply_markup(tg_token, chat_id, int(message_id))
+        telegram_edit_message_reply_markup(
+            tg_token,
+            chat_id,
+            int(message_id),
+            build_color_vote_keyboard(week_id),
+        )
 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
@@ -549,6 +578,11 @@ async def webhook(request: Request):
 # --- CLI ---
 def run_serve() -> None:
     """Starts the Uvicorn server."""
+    try:
+        ensure_bot_commands(env("TELEGRAM_BOT_TOKEN"))
+        log.info("Telegram commands ensured")
+    except Exception:
+        log.exception("Failed to ensure Telegram commands at startup")
     log.info("Starting web server")
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
 
