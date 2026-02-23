@@ -2,25 +2,19 @@ name: Push Daily Insights
 
 on:
   schedule:
-    # GitHub cron is UTC.
-    # Moscow: UTC+3.
-    - cron: "00 6 * * *"   # 09:00 MSK
-    - cron: "00 11 * * *"  # 14:00 MSK
-    - cron: "00 16 * * *"  # 19:00 MSK
+    # GitHub cron is UTC. Moscow is UTC+3.
+    - cron: "30 5 * * *"    # 08:30 MSK
+    - cron: "0 10 * * *"    # 13:00 MSK
+    - cron: "30 16 * * *"   # 19:30 MSK
   workflow_dispatch:
 
 jobs:
   push:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download latest cache artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: cache
-          path: .
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -33,32 +27,31 @@ jobs:
           pip install -r requirements.txt
 
       - name: Push morning
-        if: github.event.schedule == '00 6 * * *'
+        if: github.event.schedule == '30 5 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
         run: python main.py push morning
 
       - name: Push midday
-        if: github.event.schedule == '00 11 * * *'
+        if: github.event.schedule == '0 10 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
         run: python main.py push midday
 
       - name: Push evening
-        if: github.event.schedule == '00 16 * * *'
+        if: github.event.schedule == '30 16 * * *'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
         run: python main.py push evening
-

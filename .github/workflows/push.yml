@@ -2,27 +2,19 @@ name: Push Daily Insights
 
 on:
   schedule:
-    # GitHub cron is UTC.
-    # Paris winter: UTC+1; Paris summer: UTC+2 (летом сдвинется на час).
-    - cron: "30 7 * * *"   # ~08:30 Paris in winter
-    - cron: "00 12 * * *"  # ~13:00 Paris in winter
-    - cron: "30 18 * * *"  # ~19:30 Paris in winter
+    # GitHub cron is UTC. Moscow is UTC+3.
+    - cron: "30 5 * * *"    # 08:30 MSK
+    - cron: "0 10 * * *"    # 13:00 MSK
+    - cron: "30 16 * * *"   # 19:30 MSK
   workflow_dispatch:
 
 jobs:
   push:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-      GEMINI_SYSTEM_PROMPT: ${{ secrets.GEMINI_SYSTEM_PROMPT }}
+    timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,20 +26,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Sync Garmin (fresh cache for this run)
-        env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-        run: python main.py sync
-
       - name: Push morning
-        if: github.event.schedule == '30 7 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '30 5 * * *'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
         run: python main.py push morning
 
       - name: Push midday
-        if: github.event.schedule == '00 12 * * *'
+        if: github.event.schedule == '0 10 * * *'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
         run: python main.py push midday
 
       - name: Push evening
-        if: github.event.schedule == '30 18 * * *'
+        if: github.event.schedule == '30 16 * * *'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
         run: python main.py push evening
