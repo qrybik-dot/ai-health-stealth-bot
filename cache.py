@@ -91,3 +91,36 @@ def save_weekly_state(week_id: str, weekly_payload: Dict[str, Any]) -> None:
 
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def upsert_color_vote(chat_id: str, vote_date: str, vote_value: str, week_id: str) -> None:
+    cache = load_cache()
+    if WEEKLY_STATE_KEY not in cache or not isinstance(cache[WEEKLY_STATE_KEY], dict):
+        cache[WEEKLY_STATE_KEY] = {}
+    if week_id not in cache[WEEKLY_STATE_KEY] or not isinstance(cache[WEEKLY_STATE_KEY][week_id], dict):
+        cache[WEEKLY_STATE_KEY][week_id] = {}
+
+    week_payload = cache[WEEKLY_STATE_KEY][week_id]
+    votes_key = "votes_by_date_chat"
+    if votes_key not in week_payload or not isinstance(week_payload[votes_key], dict):
+        week_payload[votes_key] = {}
+
+    composite_key = f"{vote_date}|{chat_id}"
+    week_payload[votes_key][composite_key] = vote_value
+
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def get_weekly_vote_stats(week_id: str) -> Dict[str, int]:
+    state = load_weekly_state()
+    week_payload = state.get(week_id, {})
+    votes = week_payload.get("votes_by_date_chat", {}) if isinstance(week_payload, dict) else {}
+    stats = {"yes": 0, "partial": 0, "no": 0}
+    if not isinstance(votes, dict):
+        return stats
+
+    for vote in votes.values():
+        if vote in stats:
+            stats[vote] += 1
+    return stats
