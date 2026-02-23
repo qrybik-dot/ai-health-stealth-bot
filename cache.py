@@ -8,6 +8,8 @@ CACHE_FILE = "cache.json"
 MEMORY_DAYS = 120
 WEEKLY_STATE_KEY = "_weekly_state"
 DAILY_VOTES_KEY = "_daily_votes"
+TODAY_VOTES_KEY = "_today_votes"
+TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
 
 
@@ -173,6 +175,117 @@ def get_week_vote_accuracy(week_id: str, chat_id: Optional[str] = None) -> Dict[
         vote_value = payload.get("vote_value")
         if vote_value == "yes":
             stats["yes_count"] += 1
+        elif vote_value == "partial":
+            stats["partial_count"] += 1
+        elif vote_value == "no":
+            stats["no_count"] += 1
+
+    total = stats["yes_count"] + stats["partial_count"] + stats["no_count"]
+    stats["total"] = total
+    if total > 0:
+        stats["accuracy"] = (stats["yes_count"] + 0.5 * stats["partial_count"]) / total
+    return stats
+
+
+def _composite_key(chat_id: str, value_date: str) -> str:
+    return f"{value_date}|{chat_id}"
+
+
+def get_today_vote(chat_id: str, vote_date: str) -> Optional[Dict[str, Any]]:
+    cache = load_cache()
+    votes = cache.get(TODAY_VOTES_KEY, {})
+    raw = votes.get(_composite_key(chat_id, vote_date)) if isinstance(votes, dict) else None
+    if isinstance(raw, dict) and raw.get("vote") in {"yes", "partial", "no"}:
+        return raw
+    return None
+
+
+def upsert_today_vote(chat_id: str, vote_date: str, vote_value: str, vote_ts: str) -> bool:
+    cache = load_cache()
+    votes = cache.get(TODAY_VOTES_KEY)
+    if not isinstance(votes, dict):
+        votes = {}
+        cache[TODAY_VOTES_KEY] = votes
+    key = _composite_key(chat_id, vote_date)
+    existing = votes.get(key)
+    if isinstance(existing, dict) and existing.get("vote") in {"yes", "partial", "no"}:
+        return False
+    votes[key] = {"vote": vote_value, "ts": vote_ts}
+    _write_cache(cache)
+    return True
+
+
+def upsert_today_state(chat_id: str, value_date: str, state_payload: Dict[str, Any]) -> Dict[str, Any]:
+    cache = load_cache()
+    state = cache.get(TODAY_STATE_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[TODAY_STATE_KEY] = state
+
+    key = _composite_key(chat_id, value_date)
+    existing = state.get(key)
+    if isinstance(existing, dict):
+        return existing
+
+    payload = {
+        "status_tag": str(state_payload.get("status_tag", "steady")),
+        "confidence": float(state_payload.get("confidence", 0.0)),
+        "amplitude": float(state_payload.get("amplitude", 0.0)),
+        "accent_hex": str(state_payload.get("accent_hex", "#808080")),
+        "week_id": str(state_payload.get("week_id", "")),
+    }
+    state[key] = payload
+    _write_cache(cache)
+    return payload
+
+
+def get_today_state(chat_id: str, value_date: str) -> Optional[Dict[str, Any]]:
+    cache = load_cache()
+    state = cache.get(TODAY_STATE_KEY, {})
+    raw = state.get(_composite_key(chat_id, value_date)) if isinstance(state, dict) else None
+    return raw if isinstance(raw, dict) else None
+
+
+def get_today_vote_accuracy(week_id: str, chat_id: Optional[str] = None) -> Dict[str, float]:
+    cache = load_cache()
+    votes = cache.get(TODAY_VOTES_KEY, {})
+    states = cache.get(TODAY_STATE_KEY, {})
+    stats = {
+        "yes_count": 0,
+        "partial_count": 0,
+        "no_count": 0,
+        "total": 0,
+        "accuracy": 0.0,
+        "yes_by_rarity": {"common": 0, "rare": 0, "exotic": 0},
+    }
+    if not isinstance(votes, dict):
+        return stats
+
+    weekly = load_weekly_state()
+    rarity_by_week = {
+        key: value.get("rarity_level", "common")
+        for key, value in weekly.items()
+        if isinstance(value, dict)
+    }
+
+    for composite_key, payload in votes.items():
+        if chat_id and not composite_key.endswith(f"|{chat_id}"):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        state = states.get(composite_key) if isinstance(states, dict) else None
+        if not isinstance(state, dict):
+            continue
+        if state.get("week_id") != week_id:
+            continue
+
+        vote_value = payload.get("vote")
+        if vote_value == "yes":
+            stats["yes_count"] += 1
+            rarity = rarity_by_week.get(week_id, "common")
+            if rarity in stats["yes_by_rarity"]:
+                stats["yes_by_rarity"][rarity] += 1
         elif vote_value == "partial":
             stats["partial_count"] += 1
         elif vote_value == "no":
