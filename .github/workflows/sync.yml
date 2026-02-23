@@ -33,4 +33,4 @@ jobs:
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
-        run: python gist_upload.py
+        run: python scripts/gist_upload.py
