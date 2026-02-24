@@ -218,21 +218,20 @@ def run_push(push_kind: str) -> None:
     chat_id = env("TELEGRAM_CHAT_ID")
     now_msk = _now_msk()
     today_str = now_msk.date().isoformat()
-    resolved_slot = _resolve_push_slot(now_msk)
 
-    if resolved_slot is None:
-        log.info("Push skipped: outside MSK send windows at %s", now_msk.isoformat())
-        return
-
-    if push_kind != "auto" and push_kind != resolved_slot:
-        log.info("Push skipped: requested kind '%s' does not match active slot '%s'", push_kind, resolved_slot)
-        return
+    if push_kind == "scheduled":
+        resolved_slot = _resolve_push_slot(now_msk)
+        if resolved_slot is None:
+            log.info("Push skipped: outside window at %s", now_msk.isoformat())
+            return
+    else:
+        resolved_slot = push_kind
 
     if was_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot):
-        log.info("Push skipped: slot already sent (%s, %s)", today_str, resolved_slot)
+        log.info("Push skipped: already sent (%s, %s)", today_str, resolved_slot)
         return
 
-    log.info("Push started: kind=%s msk_now=%s", push_kind, now_msk.isoformat())
+    log.info("Push started: kind=%s slot=%s msk_now=%s", push_kind, resolved_slot, now_msk.isoformat())
     full_history = load_cache()
 
     if not full_history:
@@ -253,8 +252,7 @@ def run_push(push_kind: str) -> None:
         return
 
     try:
-        effective_kind = resolved_slot if push_kind == "auto" else push_kind
-        msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, effective_kind)
+        msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, resolved_slot)
         telegram_send(tg_token, chat_id, msg)
         mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
         log.info("Push ok: insight sent")
@@ -265,6 +263,27 @@ def run_push(push_kind: str) -> None:
             f"{type(e).__name__}: {e}"
         )
         telegram_send(tg_token, chat_id, err_msg)
+
+
+def run_schedule_self_check() -> None:
+    now_msk = _now_msk()
+    slot = _resolve_push_slot(now_msk)
+    today_str = now_msk.date().isoformat()
+    test_chat_id = "schedule-self-check"
+
+    print(f"msk_now={now_msk.isoformat()}")
+    print(f"active_slot={slot if slot else 'none'}")
+
+    if slot is None:
+        print("simulate: skipped (outside window)")
+        return
+
+    already_sent_before = was_slot_sent(chat_id=test_chat_id, send_date=today_str, slot=slot)
+    print(f"simulate_before_mark={already_sent_before}")
+    mark_slot_sent(chat_id=test_chat_id, send_date=today_str, slot=slot, sent_ts=utc_now_iso())
+    already_sent_after = was_slot_sent(chat_id=test_chat_id, send_date=today_str, slot=slot)
+    print(f"simulate_after_mark={already_sent_after}")
+    print(f"simulate_second_run_would_skip={already_sent_after}")
 
 
 def get_or_create_weekly_color_state() -> Dict[str, Any]:
@@ -930,7 +949,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|serve|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|push|serve|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -938,13 +957,15 @@ def main() -> None:
     if mode == "sync":
         run_sync()
     elif mode == "push":
-        push_kind = (sys.argv[2] if len(sys.argv) > 2 else "auto").strip().lower()
-        if push_kind not in ["auto", "morning", "midday", "evening"]:
-            print("Error: push mode requires a valid kind [auto|morning|midday|evening]")
+        push_kind = (sys.argv[2] if len(sys.argv) > 2 else "scheduled").strip().lower()
+        if push_kind not in ["scheduled", "morning", "midday", "evening"]:
+            print("Error: push mode requires a valid kind [scheduled|morning|midday|evening]")
             return
         run_push(push_kind)
     elif mode == "serve":
         run_serve()
+    elif mode == "schedule-self-check":
+        run_schedule_self_check()
     elif mode == "color-self-check":
         problems = self_check_color_engine()
         if problems:
@@ -982,7 +1003,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, push, serve, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, push, serve, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)

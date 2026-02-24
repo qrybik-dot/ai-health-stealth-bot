@@ -73,9 +73,9 @@
 
 ### Планировщик push
 
-- GitHub Actions запускает workflow по cron.
-- Отправка дополнительно проверяется в коде по окнам `Europe/Moscow` (08:30, 13:00, 19:30).
-- Есть anti-duplicate защита: слот дня отправляется только один раз.
+- GitHub Actions запускает workflow каждые 5 минут (`*/5 * * * *`).
+- Команда `python main.py push scheduled` отправляет только в окнах `Europe/Moscow` (08:30, 13:00, 19:30, допуск ±5 минут).
+- Есть anti-duplicate защита: слот дня отправляется только один раз даже при частых запусках workflow.
 
 ## BotFather / меню команд
 
@@ -104,6 +104,7 @@ help - подсказка
 python -m py_compile main.py cache.py color_engine.py scripts/gist_upload.py
 python main.py color-self-check
 python main.py color-card-self-check
+python main.py schedule-self-check
 ```
 
 `color-card-self-check` и генерация изображений требуют Pillow в runtime.  
