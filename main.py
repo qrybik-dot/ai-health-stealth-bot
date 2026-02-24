@@ -213,22 +213,76 @@ def _resolve_push_slot(now_msk: dt.datetime) -> Optional[str]:
     return None
 
 
-def run_push(push_kind: str) -> None:
+def _build_schedule_decision(now_msk: dt.datetime, chat_id: str) -> Dict[str, Any]:
+    slot = _resolve_push_slot(now_msk)
+    today_str = now_msk.date().isoformat()
+    already_sent = False
+    if slot is not None:
+        already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=slot)
+    return {
+        "now_msk": now_msk.isoformat(),
+        "window_matched": slot if slot is not None else "none",
+        "slot_id": slot,
+        "already_sent": already_sent,
+        "target_chat_id": chat_id,
+        "date": today_str,
+    }
+
+
+def _log_schedule_decision(decision: Dict[str, Any]) -> None:
+    log.info(
+        "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
+        decision["now_msk"],
+        decision["window_matched"],
+        decision["slot_id"] if decision["slot_id"] else "none",
+        decision["already_sent"],
+        decision["target_chat_id"],
+    )
+
+
+def _build_fallback_message(slot: str) -> str:
+    return (
+        f"Слот {slot}: данных Garmin за сегодня пока нет. "
+        "Держим ритм дня, загляну позже с обновлением."
+    )
+
+
+def run_push(push_kind: str, dry_run: bool = False) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
     now_msk = _now_msk()
-    today_str = now_msk.date().isoformat()
 
     if push_kind == "scheduled":
-        resolved_slot = _resolve_push_slot(now_msk)
+        decision = _build_schedule_decision(now_msk, chat_id)
+        _log_schedule_decision(decision)
+        resolved_slot = decision["slot_id"]
         if resolved_slot is None:
-            log.info("Push skipped: outside window at %s", now_msk.isoformat())
+            log.info("send_result=skip reason=outside_window")
+            return
+        if decision["already_sent"]:
+            log.info("send_result=skip reason=already_sent slot_id=%s", resolved_slot)
             return
     else:
         resolved_slot = push_kind
+        today_str = now_msk.date().isoformat()
+        already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot)
+        decision = {
+            "now_msk": now_msk.isoformat(),
+            "window_matched": resolved_slot,
+            "slot_id": resolved_slot,
+            "already_sent": already_sent,
+            "target_chat_id": chat_id,
+            "date": today_str,
+        }
+        _log_schedule_decision(decision)
+        if already_sent:
+            log.info("send_result=skip reason=already_sent slot_id=%s", resolved_slot)
+            return
 
-    if was_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot):
-        log.info("Push skipped: already sent (%s, %s)", today_str, resolved_slot)
+    today_str = decision["date"]
+
+    if dry_run:
+        log.info("send_result=dry_run would_send=true slot_id=%s", resolved_slot)
         return
 
     log.info("Push started: kind=%s slot=%s msk_now=%s", push_kind, resolved_slot, now_msk.isoformat())
@@ -238,7 +292,7 @@ def run_push(push_kind: str) -> None:
         msg = "⚠️ Кэш пока пуст (SYNC ещё не выполнялся). Я живой 🙂"
         telegram_send(tg_token, chat_id, msg)
         mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-        log.info("Push: sent heartbeat (no cache)")
+        log.info("send_result=ok fallback=true reason=no_cache slot_id=%s", resolved_slot)
         return
 
     yesterday_str = (now_msk.date() - dt.timedelta(days=1)).isoformat()
@@ -248,14 +302,17 @@ def run_push(push_kind: str) -> None:
     }
 
     if not prompt_cache.get("today"):
-        log.warning("Push skipped: no data for today in cache.")
+        fallback_msg = _build_fallback_message(resolved_slot)
+        telegram_send(tg_token, chat_id, fallback_msg)
+        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+        log.info("send_result=ok fallback=true reason=no_today_data slot_id=%s", resolved_slot)
         return
 
     try:
         msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, resolved_slot)
         telegram_send(tg_token, chat_id, msg)
         mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-        log.info("Push ok: insight sent")
+        log.info("send_result=ok fallback=false slot_id=%s", resolved_slot)
     except Exception as e:
         log.exception("Push: insight generation failed")
         err_msg = (
@@ -263,27 +320,40 @@ def run_push(push_kind: str) -> None:
             f"{type(e).__name__}: {e}"
         )
         telegram_send(tg_token, chat_id, err_msg)
+        log.info("send_result=error slot_id=%s", resolved_slot)
+
+
+def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
+    raw_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "debug-chat")
+    now_msk = dt.datetime.fromisoformat(at_iso)
+    if now_msk.tzinfo is None:
+        now_msk = now_msk.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+    else:
+        now_msk = now_msk.astimezone(ZoneInfo("Europe/Moscow"))
+    decision = _build_schedule_decision(now_msk, raw_chat_id)
+    _log_schedule_decision(decision)
+    would_send = decision["slot_id"] is not None and not decision["already_sent"]
+    print(f"would_send={str(would_send).lower()}")
 
 
 def run_schedule_self_check() -> None:
-    now_msk = _now_msk()
-    slot = _resolve_push_slot(now_msk)
-    today_str = now_msk.date().isoformat()
-    test_chat_id = "schedule-self-check"
-
-    print(f"msk_now={now_msk.isoformat()}")
-    print(f"active_slot={slot if slot else 'none'}")
-
-    if slot is None:
-        print("simulate: skipped (outside window)")
-        return
-
-    already_sent_before = was_slot_sent(chat_id=test_chat_id, send_date=today_str, slot=slot)
-    print(f"simulate_before_mark={already_sent_before}")
-    mark_slot_sent(chat_id=test_chat_id, send_date=today_str, slot=slot, sent_ts=utc_now_iso())
-    already_sent_after = was_slot_sent(chat_id=test_chat_id, send_date=today_str, slot=slot)
-    print(f"simulate_after_mark={already_sent_after}")
-    print(f"simulate_second_run_would_skip={already_sent_after}")
+    checks = [
+        "2026-02-24T08:30:00+03:00",
+        "2026-02-24T13:00:00+03:00",
+        "2026-02-24T19:30:00+03:00",
+    ]
+    for at_iso in checks:
+        now_msk = dt.datetime.fromisoformat(at_iso).astimezone(ZoneInfo("Europe/Moscow"))
+        test_chat_id = f"schedule-self-check-{at_iso}"
+        decision = _build_schedule_decision(now_msk, test_chat_id)
+        _log_schedule_decision(decision)
+        slot_id = decision["slot_id"]
+        if slot_id is None:
+            raise RuntimeError(f"self-check failed: expected window for {at_iso}")
+        if decision["already_sent"]:
+            raise RuntimeError(f"self-check failed: already_sent=true for {at_iso}")
+        print(f"self_check_at={at_iso} would_send=true slot_id={slot_id}")
+    print("schedule-self-check ok")
 
 
 def get_or_create_weekly_color_state() -> Dict[str, Any]:
@@ -949,7 +1019,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|serve|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|push|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -957,13 +1027,41 @@ def main() -> None:
     if mode == "sync":
         run_sync()
     elif mode == "push":
-        push_kind = (sys.argv[2] if len(sys.argv) > 2 else "scheduled").strip().lower()
-        if push_kind not in ["scheduled", "morning", "midday", "evening"]:
-            print("Error: push mode requires a valid kind [scheduled|morning|midday|evening]")
-            return
-        run_push(push_kind)
+        push_kind = "scheduled"
+        dry_run = False
+        for arg in sys.argv[2:]:
+            normalized = arg.strip().lower()
+            if normalized == "--dry-run":
+                dry_run = True
+            elif normalized in ["scheduled", "morning", "midday", "evening"]:
+                push_kind = normalized
+            elif normalized:
+                print("Error: push mode args must be [scheduled|morning|midday|evening|--dry-run]")
+                return
+        run_push(push_kind, dry_run=dry_run)
     elif mode == "serve":
         run_serve()
+    elif mode == "schedule-debug":
+        at_value = None
+        chat_id_value = None
+        args = sys.argv[2:]
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
+            if arg == "--at" and idx + 1 < len(args):
+                at_value = args[idx + 1]
+                idx += 2
+                continue
+            if arg == "--chat-id" and idx + 1 < len(args):
+                chat_id_value = args[idx + 1]
+                idx += 2
+                continue
+            print("Error: schedule-debug requires --at <ISO8601> [--chat-id <id>]")
+            return
+        if not at_value:
+            print("Error: schedule-debug requires --at <ISO8601>")
+            return
+        run_schedule_debug(at_value, chat_id=chat_id_value)
     elif mode == "schedule-self-check":
         run_schedule_self_check()
     elif mode == "color-self-check":
@@ -1003,7 +1101,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, push, serve, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, push, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)
