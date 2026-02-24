@@ -24,8 +24,8 @@ from cache import (
     get_week_vote_accuracy,
     get_weekly_vote_stats,
     load_cache,
+    load_cache_with_meta,
     load_weekly_state,
-    mark_slot_sent,
     save_daily_snapshot,
     save_weekly_state,
     upsert_today_state,
@@ -213,6 +213,24 @@ def _resolve_push_slot(now_msk: dt.datetime) -> Optional[str]:
     return None
 
 
+
+
+def _resolve_scheduled_push_kind(now_utc: dt.datetime) -> str:
+    total_minutes = now_utc.hour * 60 + now_utc.minute
+    if 5 * 60 <= total_minutes < 10 * 60:
+        return "morning"
+    if 10 * 60 <= total_minutes < 16 * 60:
+        return "midday"
+    return "evening"
+
+
+def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
+    try:
+        telegram_send(tg_token, chat_id, text)
+        log.info("telegram send ok fallback=true")
+    except Exception:
+        log.exception("telegram send error fallback=true")
+
 def _build_schedule_decision(now_msk: dt.datetime, chat_id: str) -> Dict[str, Any]:
     slot = _resolve_push_slot(now_msk)
     today_str = now_msk.date().isoformat()
@@ -251,48 +269,44 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
     now_msk = _now_msk()
+    now_utc = dt.datetime.now(dt.timezone.utc)
+
+    log.info("push_kind received=%s", push_kind)
 
     if push_kind == "scheduled":
-        decision = _build_schedule_decision(now_msk, chat_id)
-        _log_schedule_decision(decision)
-        resolved_slot = decision["slot_id"]
-        if resolved_slot is None:
-            log.info("send_result=skip reason=outside_window")
-            return
-        if decision["already_sent"]:
-            log.info("send_result=skip reason=already_sent slot_id=%s", resolved_slot)
-            return
+        resolved_slot = _resolve_scheduled_push_kind(now_utc)
     else:
         resolved_slot = push_kind
-        today_str = now_msk.date().isoformat()
-        already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot)
-        decision = {
-            "now_msk": now_msk.isoformat(),
-            "window_matched": resolved_slot,
-            "slot_id": resolved_slot,
-            "already_sent": already_sent,
-            "target_chat_id": chat_id,
-            "date": today_str,
-        }
-        _log_schedule_decision(decision)
-        if already_sent:
-            log.info("send_result=skip reason=already_sent slot_id=%s", resolved_slot)
-            return
 
-    today_str = decision["date"]
+    today_str = now_msk.date().isoformat()
+    decision = {
+        "now_msk": now_msk.isoformat(),
+        "window_matched": resolved_slot,
+        "slot_id": resolved_slot,
+        "already_sent": False,
+        "target_chat_id": chat_id,
+        "date": today_str,
+    }
+    _log_schedule_decision(decision)
 
     if dry_run:
         log.info("send_result=dry_run would_send=true slot_id=%s", resolved_slot)
         return
 
-    log.info("Push started: kind=%s slot=%s msk_now=%s", push_kind, resolved_slot, now_msk.isoformat())
-    full_history = load_cache()
+    log.info("Push started: kind=%s slot=%s msk_now=%s utc_now=%s", push_kind, resolved_slot, now_msk.isoformat(), now_utc.isoformat())
+    full_history, cache_meta = load_cache_with_meta()
+    log.info(
+        "cache_source=%s cache_keys_count=%s cache_available=%s cache_error=%s",
+        cache_meta.get("source", "unknown"),
+        len(full_history.keys()) if isinstance(full_history, dict) else 0,
+        cache_meta.get("available", False),
+        cache_meta.get("error", ""),
+    )
 
-    if not full_history:
-        msg = "⚠️ Кэш пока пуст (SYNC ещё не выполнялся). Я живой 🙂"
-        telegram_send(tg_token, chat_id, msg)
-        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-        log.info("send_result=ok fallback=true reason=no_cache slot_id=%s", resolved_slot)
+    if (not cache_meta.get("available", False)) or (not isinstance(full_history, dict)) or (not full_history):
+        _send_push_fallback(tg_token, chat_id, "⚠️ Кэш недоступен / обновится позже")
+        log.info("has_today=False")
+        log.info("send_result=ok fallback=true reason=cache_unavailable slot_id=%s", resolved_slot)
         return
 
     yesterday_str = (now_msk.date() - dt.timedelta(days=1)).isoformat()
@@ -300,27 +314,45 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         "today": full_history.get(today_str),
         "yesterday": full_history.get(yesterday_str),
     }
+    has_today = bool(prompt_cache.get("today"))
+    log.info("has_today=%s", has_today)
 
-    if not prompt_cache.get("today"):
-        fallback_msg = _build_fallback_message(resolved_slot)
-        telegram_send(tg_token, chat_id, fallback_msg)
-        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+    if not has_today:
+        _send_push_fallback(tg_token, chat_id, "⚠️ Сегодняшние данные ещё не подтянулись. Я проверю позже.")
         log.info("send_result=ok fallback=true reason=no_today_data slot_id=%s", resolved_slot)
         return
 
     try:
         msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, resolved_slot)
         telegram_send(tg_token, chat_id, msg)
-        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+        log.info("telegram send ok fallback=false")
         log.info("send_result=ok fallback=false slot_id=%s", resolved_slot)
-    except Exception as e:
+    except Exception:
         log.exception("Push: insight generation failed")
         err_msg = (
             f"⚠️ Я споткнулся при генерации сообщения ({resolved_slot}).\n"
-            f"{type(e).__name__}: {e}"
+            "Сделаю новую попытку чуть позже."
         )
-        telegram_send(tg_token, chat_id, err_msg)
+        _send_push_fallback(tg_token, chat_id, err_msg)
         log.info("send_result=error slot_id=%s", resolved_slot)
+
+
+def run_push_self_check() -> None:
+    requested_kind = "scheduled"
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    detected_kind = _resolve_scheduled_push_kind(now_utc) if requested_kind == "scheduled" else requested_kind
+    cache_data, cache_meta = load_cache_with_meta()
+    today_str = _now_msk().date().isoformat()
+    has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
+
+    print(f"requested_push_kind={requested_kind}")
+    print(f"detected_push_kind={detected_kind}")
+    print(f"has_today={str(has_today).lower()}")
+    print(f"cache_source={cache_meta.get('source', 'unknown')}")
+    print(f"cache_available={str(bool(cache_meta.get('available', False))).lower()}")
+
+    if os.getenv("DRY_RUN", "0") == "1":
+        print("dry_run=true telegram_send=skipped")
 
 
 def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
@@ -1019,7 +1051,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|push|push-self-check|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -1039,6 +1071,8 @@ def main() -> None:
                 print("Error: push mode args must be [scheduled|morning|midday|evening|--dry-run]")
                 return
         run_push(push_kind, dry_run=dry_run)
+    elif mode == "push-self-check":
+        run_push_self_check()
     elif mode == "serve":
         run_serve()
     elif mode == "schedule-debug":
@@ -1101,7 +1135,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, push, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, push, push-self-check, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)

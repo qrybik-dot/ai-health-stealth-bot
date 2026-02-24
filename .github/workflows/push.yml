@@ -2,7 +2,9 @@ name: Push Daily Insights
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "30 5 * * *"
+    - cron: "0 10 * * *"
+    - cron: "30 16 * * *"
   workflow_dispatch:
 
 jobs:
@@ -23,11 +25,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Push (gated by MSK windows)
+      - name: Push (decide kind in code)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python main.py push scheduled

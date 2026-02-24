@@ -2,7 +2,7 @@ import json
 import os
 import requests
 from datetime import date, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 CACHE_FILE = "cache.json"
 MEMORY_DAYS = 120
@@ -13,7 +13,7 @@ TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
 
 
-def load_cache() -> Dict[str, Any]:
+def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     If CACHE_GIST_ID env var is set, fetches the cache from the Gist.
     Otherwise, reads the local cache.json file.
@@ -24,20 +24,35 @@ def load_cache() -> Dict[str, Any]:
     if gist_id:
         try:
             api_url = f"https://api.github.com/gists/{gist_id}"
-            response = requests.get(api_url, timeout=10)
+            token = os.getenv("GITHUB_TOKEN")
+            headers = {"Accept": "application/vnd.github+json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            response = requests.get(api_url, headers=headers, timeout=10)
             response.raise_for_status()
             gist_data = response.json()
             content = gist_data["files"]["cache.json"]["content"]
-            return json.loads(content)
+            cache = json.loads(content)
+            if isinstance(cache, dict):
+                return cache, {"source": "gist", "available": True, "error": ""}
+            return {}, {"source": "gist", "available": False, "error": "gist_not_dict"}
         except (requests.RequestException, KeyError, json.JSONDecodeError) as e:
             print(f"Error fetching or parsing cache from Gist: {e}")
-            return {"error": "gist_fetch_failed", "detail": str(e)}
+            return {}, {"source": "gist", "available": False, "error": str(e)}
 
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cache = json.load(f)
+            if isinstance(cache, dict):
+                return cache, {"source": "local", "available": True, "error": ""}
+            return {}, {"source": "local", "available": False, "error": "local_not_dict"}
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        return {}, {"source": "local", "available": False, "error": "local_missing_or_invalid"}
+
+
+def load_cache() -> Dict[str, Any]:
+    cache, _meta = load_cache_with_meta()
+    return cache
 
 
 def _write_cache(cache: Dict[str, Any]) -> None:
