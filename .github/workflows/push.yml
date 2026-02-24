@@ -2,87 +2,32 @@ name: Push Daily Insights
 
 on:
   schedule:
-    - cron: "30 5 * * *"    # 08:30 MSK
-    - cron: "0 10 * * *"    # 13:00 MSK
-    - cron: "30 16 * * *"   # 19:30 MSK
+    - cron: "*/5 * * * *"
   workflow_dispatch:
-    inputs:
-      kind:
-        description: "Push type"
-        required: true
-        default: "morning"
-        type: choice
-        options:
-          - morning
-          - midday
-          - evening
 
 jobs:
-
-  morning:
-    if: github.event_name == 'schedule' && github.event.schedule == '30 5 * * *'
+  push:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python main.py push morning
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Push (gated by MSK windows)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-
-  midday:
-    if: github.event_name == 'schedule' && github.event.schedule == '0 10 * * *'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python main.py push midday
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-
-  evening:
-    if: github.event_name == 'schedule' && github.event.schedule == '30 16 * * *'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python main.py push evening
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-
-  manual:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python main.py push ${{ github.event.inputs.kind }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+        run: python main.py push scheduled
