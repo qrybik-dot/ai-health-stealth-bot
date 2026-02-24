@@ -27,10 +27,12 @@ jobs:
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python main.py sync
 
       - name: Upload cache.json to Gist
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
-          GIST_SYNC_TOKEN: ${{ secrets.GIST_SYNC_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/gist_upload.py

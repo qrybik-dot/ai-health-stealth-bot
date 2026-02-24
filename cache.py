@@ -22,23 +22,70 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     gist_id = os.getenv("CACHE_GIST_ID")
 
     if gist_id:
+        token = os.getenv("GITHUB_TOKEN")
+        token_present = bool(token)
+        api_url = f"https://api.github.com/gists/{gist_id}"
+        headers = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
-            api_url = f"https://api.github.com/gists/{gist_id}"
-            token = os.getenv("GITHUB_TOKEN")
-            headers = {"Accept": "application/vnd.github+json"}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
             response = requests.get(api_url, headers=headers, timeout=10)
-            response.raise_for_status()
+            print(
+                f"cache gist fetch: gist_id={gist_id} token_present={token_present} http_status={response.status_code}"
+            )
+
+            if response.status_code != 200:
+                reason_map = {
+                    404: ("gist_404", "gist not found (id mismatch)"),
+                    403: ("gist_403", "forbidden (token missing/insufficient)"),
+                    401: ("gist_401", "unauthorized"),
+                    429: ("rate_limit", "rate limited"),
+                }
+                error_code, short_reason = reason_map.get(
+                    response.status_code,
+                    (f"gist_http_{response.status_code}", "http error"),
+                )
+                print(
+                    f"cache gist fetch failed: code={error_code} reason={short_reason}"
+                )
+                return {
+                }, {
+                    "source": "gist",
+                    "available": False,
+                    "error": error_code,
+                    "http_status": response.status_code,
+                    "token_present": token_present,
+                }
+
             gist_data = response.json()
             content = gist_data["files"]["cache.json"]["content"]
             cache = json.loads(content)
             if isinstance(cache, dict):
-                return cache, {"source": "gist", "available": True, "error": ""}
-            return {}, {"source": "gist", "available": False, "error": "gist_not_dict"}
+                return cache, {
+                    "source": "gist",
+                    "available": True,
+                    "error": "",
+                    "http_status": response.status_code,
+                    "token_present": token_present,
+                }
+            return {}, {
+                "source": "gist",
+                "available": False,
+                "error": "gist_not_dict",
+                "http_status": response.status_code,
+                "token_present": token_present,
+            }
         except (requests.RequestException, KeyError, json.JSONDecodeError) as e:
-            print(f"Error fetching or parsing cache from Gist: {e}")
-            return {}, {"source": "gist", "available": False, "error": str(e)}
+            print(
+                f"cache gist fetch exception: gist_id={gist_id} token_present={token_present} error={e}"
+            )
+            return {}, {
+                "source": "gist",
+                "available": False,
+                "error": "gist_exception",
+                "detail": str(e),
+                "token_present": token_present,
+            }
 
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:

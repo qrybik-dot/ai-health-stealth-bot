@@ -12,7 +12,9 @@ def env(name: str) -> str:
 
 def main() -> None:
     gist_id = env("CACHE_GIST_ID")
-    token = env("GIST_SYNC_TOKEN")
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GIST_SYNC_TOKEN")
+    if not token:
+        raise RuntimeError("Missing env var: GITHUB_TOKEN")
 
     cache_path = "cache.json"
     if not os.path.exists(cache_path):
@@ -32,7 +34,7 @@ def main() -> None:
     resp = requests.patch(
         f"https://api.github.com/gists/{gist_id}",
         headers={
-            "Authorization": f"token {token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         },
         json=payload,

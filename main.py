@@ -265,6 +265,17 @@ def _build_fallback_message(slot: str) -> str:
     )
 
 
+def _cache_reason_code(cache_meta: Dict[str, Any]) -> str:
+    error_code = str(cache_meta.get("error", "")).strip().lower()
+    mapping = {
+        "gist_403": "gist_403",
+        "gist_404": "gist_404",
+        "rate_limit": "rate_limit",
+        "gist_401": "gist_401",
+    }
+    return mapping.get(error_code, "cache_unavailable")
+
+
 def run_push(push_kind: str, dry_run: bool = False) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
@@ -304,9 +315,11 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     )
 
     if (not cache_meta.get("available", False)) or (not isinstance(full_history, dict)) or (not full_history):
-        _send_push_fallback(tg_token, chat_id, "⚠️ Кэш недоступен / обновится позже")
+        reason_code = _cache_reason_code(cache_meta)
+        reason_text = "rate_limit" if reason_code == "rate_limit" else reason_code
+        _send_push_fallback(tg_token, chat_id, f"⚠️ Кэш недоступен ({reason_text})")
         log.info("has_today=False")
-        log.info("send_result=ok fallback=true reason=cache_unavailable slot_id=%s", resolved_slot)
+        log.info("send_result=ok fallback=true reason=%s slot_id=%s", reason_code, resolved_slot)
         return
 
     yesterday_str = (now_msk.date() - dt.timedelta(days=1)).isoformat()
@@ -353,6 +366,19 @@ def run_push_self_check() -> None:
 
     if os.getenv("DRY_RUN", "0") == "1":
         print("dry_run=true telegram_send=skipped")
+
+
+def run_cache_self_check() -> None:
+    cache_data, cache_meta = load_cache_with_meta()
+    today_str = _now_msk().date().isoformat()
+    has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
+    top_level_keys = sorted(list(cache_data.keys())) if isinstance(cache_data, dict) else []
+
+    print(f"cache_source={cache_meta.get('source', 'unknown')}")
+    print(f"cache_available={str(bool(cache_meta.get('available', False))).lower()}")
+    print(f"cache_error={cache_meta.get('error', '')}")
+    print(f"has_today={str(has_today).lower()}")
+    print(f"top_level_keys={top_level_keys}")
 
 
 def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
@@ -1051,7 +1077,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|push-self-check|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|push|push-self-check|cache-self-check|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -1073,6 +1099,8 @@ def main() -> None:
         run_push(push_kind, dry_run=dry_run)
     elif mode == "push-self-check":
         run_push_self_check()
+    elif mode == "cache-self-check":
+        run_cache_self_check()
     elif mode == "serve":
         run_serve()
     elif mode == "schedule-debug":
@@ -1135,7 +1163,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, push, push-self-check, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, push, push-self-check, cache-self-check, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)
