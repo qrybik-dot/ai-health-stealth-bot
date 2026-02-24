@@ -1,130 +1,136 @@
 # Garmin Visual Insight Bot (v1)
 
-Минималистичный Telegram-бот для Garmin Connect:
-- дневная карточка без медицинского и мотивационного тона;
-- процедурный визуал (Pillow);
-- цветовая идентичность недели + короткая история цвета;
-- сбор голосов пользователя (✅ / ➖ / ❌) с сохранением;
-- недельный отчёт по голосам;
-- недельный отчёт по метрикам Garmin — **planned**.
+Garmin Visual Insight Bot — это Telegram-бот, который превращает сигналы Garmin в короткую ежедневную интерпретацию **ритма/режима дня**: карточка дня, цвет недели, голосование по попаданию и недельная сводка, без медицинского тона и без «мотивационного шума».
 
-## Что это и зачем
+## Features (v1)
 
-Бот помогает смотреть на день как на **ритм/режим**, а не как на «диагноз».  
-Тексты короткие и прикладные: без пафоса, без «инста-мотивации», без лечебных формулировок.
+- Ежедневная карточка `/today`:
+  - PNG 1080x1080 (процедурная генерация через Pillow),
+  - краткий статус дня,
+  - блок `🟡 Факт дня`,
+  - голосование `✅ / ➖ / ❌`.
+- Недельный цвет `/color`:
+  - детерминированный цвет недели (ISO-week),
+  - краткая подпись,
+  - история цвета отдельным сообщением,
+  - голосование без revote в тот же день.
+- Недельная сводка `/week` (алиас на статистику):
+  - агрегированные голоса по карточкам за текущую неделю.
+- `/help` с коротким списком команд.
+- Scheduled push в заданные окна времени (утро/день/вечер) с fallback при неполных данных.
+- Синхронизация кэша в GitHub Gist для согласованного состояния между раннерами и runtime.
 
-## Команды пользователя
+## Команды
 
-- `/today` — карточка дня (изображение + текст + блок **🟡 Факт дня** + кнопки оценки).
-- `/color` — карточка цвета недели (изображение + подпись + кнопка истории + голосование).
-- `/week` — недельная сводка по твоим голосам за карточки.
+- `/today` — карточка дня: изображение + короткая подпись + `🟡 Факт дня` + кнопки оценки.
+- `/color` — карточка цвета недели: изображение + подпись + кнопка истории + голосование.
+- `/week` — недельная сводка голосов по карточкам.
 - `/help` — список команд.
 
-## Поведение UI (важное)
+> Дополнительно есть `/stats` как технический алиас `/week`.
 
-### `/color`
-- История цвета приходит **отдельным сообщением**.
-- После нажатия «🎨 История цвета» кнопка истории скрывается.
-- Кнопки голосования при этом остаются (если в этот день ещё не голосовали).
-- После голоса кнопки заменяются на: `🗳 Ваш выбор: ...`.
-- Повторное голосование в тот же день блокируется (revote нет).
+## Setup
 
-### `/today`
-- В подписи всегда есть блок `🟡 Факт дня`.
-
-## Setup / Deploy (кратко)
-
-### Переменные окружения
-
-Ниже перечислены переменные, которые реально используются в коде.
-
-**Обязательные для runtime (`main.py`)**
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL`
-- `GARMIN_EMAIL` (для `python main.py sync`)
-- `GARMIN_PASSWORD` (для `python main.py sync`)
-
-**Опциональные для runtime**
-- `CACHE_GIST_ID` (если нужен cache из GitHub Gist вместо локального `cache.json`)
-- `PORT` (для webhook-сервера, по умолчанию `8080`)
-
-**Для публикации кэша в Gist (`scripts/gist_upload.py`)**
-- `CACHE_GIST_ID`
-- `GIST_SYNC_TOKEN`
-
-### Локальный запуск (webhook mode)
+### 1) Локальный запуск
 
 1. Установить зависимости:
    ```bash
    pip install -r requirements.txt
    ```
-2. Задать переменные окружения.
-3. Синхронизировать Garmin-кэш:
+2. Заполнить переменные окружения (см. таблицу ниже).
+3. Выполнить первичную синхронизацию Garmin:
    ```bash
    python main.py sync
    ```
-4. Запустить сервер:
+4. Запустить webhook-сервер:
    ```bash
    python main.py serve
    ```
-5. Настроить webhook Telegram на `POST /webhook` вашего публичного URL.
+5. Настроить Telegram webhook на `POST /webhook` вашего публичного URL.
 
-### Планировщик push
+### 2) GitHub Actions
 
-- GitHub Actions запускает workflow каждые 5 минут (`*/5 * * * *`).
-- Команда `python main.py push scheduled` отправляет только в окнах `Europe/Moscow` (08:30, 13:00, 19:30, допуск ±5 минут).
-- Есть anti-duplicate защита: слот дня отправляется только один раз даже при частых запусках workflow.
+Используются workflows:
+- `.github/workflows/sync.yml` — периодический sync + upload cache в gist.
+- `.github/workflows/push.yml` — периодический push сообщений в Telegram.
 
-## BotFather / меню команд
+### 3) Required secrets и назначение
 
-По умолчанию бот вызывает `setMyCommands` при старте `serve`, поэтому ручная настройка в BotFather не обязательна.  
-Если нужно вручную (`/setcommands`), используй:
+| Secret / env | Где нужен | Для чего |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | runtime + `push.yml` | отправка сообщений/картинок в Telegram |
+| `TELEGRAM_CHAT_ID` | runtime + `push.yml` | целевой чат для scheduled push |
+| `GARMIN_EMAIL` | `sync.yml` / `main.py sync` | вход в Garmin Connect |
+| `GARMIN_PASSWORD` | `sync.yml` / `main.py sync` | вход в Garmin Connect |
+| `GEMINI_API_KEY` | runtime + `push.yml` | генерация текста через Gemini |
+| `GEMINI_MODEL` | runtime + `push.yml` | имя модели Gemini |
+| `CACHE_GIST_ID` | runtime + workflows | id gist-файла с `cache.json` |
+| `GIST_TOKEN` | `sync.yml` + runtime fallback | PAT для чтения/записи gist |
+| `GITHUB_TOKEN` | fallback | резервный токен-источник для gist auth |
+| `GIST_SYNC_TOKEN` | legacy fallback | устаревающий fallback (пока поддерживается кодом) |
 
-```text
-today - карточка дня
-color - цвет недели
-week - отчёт недели
-help - подсказка
-```
+Опционально:
+- `PORT` (по умолчанию `8080`) — порт FastAPI сервера.
+- `DRY_RUN=1` — dry-run для self-check/push диагностики.
+
+### 4) Как создать `GIST_TOKEN`
+
+1. GitHub -> **Settings** -> **Developer settings** -> **Personal access tokens**.
+2. Создать token (classic или fine-grained, если позволяет доступ к gist).
+3. Дать scope **`gist`**.
+4. Сохранить token как GitHub Secret `GIST_TOKEN`.
+
+### 5) Как задать `CACHE_GIST_ID`
+
+1. Создать gist с файлом `cache.json` (можно `{}` на старте).
+2. Скопировать ID gist из URL (часть после имени пользователя).
+3. Добавить ID в GitHub Secret `CACHE_GIST_ID`.
+
+### 6) Как работает расписание
+
+- `sync.yml`: каждые 3 часа (`0 */3 * * *`) + manual `workflow_dispatch`.
+- `push.yml`: 3 запуска в сутки по UTC:
+  - `30 5 * * *`
+  - `0 10 * * *`
+  - `30 16 * * *`
+
+В коде `push scheduled` переводится в окна morning/midday/evening. Важно: GitHub cron может иметь drift в несколько минут; это нормально для managed scheduler.
 
 ## Testing
 
-### Быстрые ручные проверки
+### Быстрый ручной чек-лист
 
-1. `/color` → приходит изображение + подпись.
-2. Нажать «🎨 История цвета» → история уходит отдельным сообщением.
-3. Нажать голос (`✅/➖/❌`) → кнопки меняются на `🗳 Ваш выбор: ...`.
-4. `/today` → в подписи есть `🟡 Факт дня`.
+1. `/color` -> приходит карточка цвета.
+2. Нажать `🎨 История цвета` -> история приходит отдельным сообщением.
+3. Проголосовать `✅/➖/❌` -> кнопки заменяются на `🗳 Ваш выбор: ...`.
+4. `/today` -> есть блок `🟡 Факт дня`.
+5. `/week` -> приходит недельная сводка по голосам.
+6. При отсутствии данных за день ожидается fallback-сообщение (без ошибок).
 
-### Self-checks
+### Self-check команды
 
 ```bash
-python -m py_compile main.py cache.py color_engine.py scripts/gist_upload.py
-python main.py color-self-check
-python main.py color-card-self-check
-python main.py schedule-self-check
+python -m py_compile main.py cache.py scripts/gist_upload.py color_engine.py
+python main.py cache-self-check
+python main.py push-self-check
 ```
 
-`color-card-self-check` и генерация изображений требуют Pillow в runtime.  
-В production Pillow обязателен. В некоторых sandbox/CI окружениях `pip install` может быть ограничен — тогда image-check может быть пропущен по ограничениям среды.
+Что ожидать:
+- `py_compile` завершается без ошибок.
+- `cache-self-check` печатает источник кэша, доступность и `has_today`.
+- `push-self-check` печатает `requested_push_kind`, `detected_push_kind`, состояние кэша и наличие данных за сегодня.
 
 ## Troubleshooting
 
-- **Сообщения приходят поздно**  
-  У GitHub cron бывает drift в несколько минут. Это компенсируется оконной проверкой в коде (MSK-слоты) и anti-duplicate логикой.
+- `gist_403`
+  - Обычно означает, что `GIST_TOKEN` отсутствует, неверный или без scope `gist`.
+  - Проверьте Secrets и лог шага `Upload cache.json to Gist`.
 
-- **Нет меню команд в Telegram**  
-  Проверь, что бот запускался в режиме `serve` (там вызывается `setMyCommands`). Если нужно — задай команды через BotFather вручную.
+- «Push не пришёл»
+  - Проверьте логи `.github/workflows/push.yml`.
+  - Локально/в runner запустите `python main.py cache-self-check`.
+  - Убедитесь, что заданы `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GEMINI_*`.
 
-- **Не генерируется изображение**  
-  Проверь установлен ли Pillow и логи процесса (`main.py`). Без Pillow карточки не соберутся.
-
-## Changelog (v1 milestones)
-
-- v1.1 — Добавлены `/today` и карточка дня с блоком `🟡 Факт дня`.
-- v1.2 — Введён недельный цвет: карточка, подпись и история цвета.
-- v1.3 — Добавлено голосование ✅/➖/❌ с сохранением и запретом revote за день.
-- v1.4 — Обновлён UI `/color`: история отдельным сообщением, затем скрытие кнопки истории.
-- v1.5 — Добавлен `/week` для недельной сводки по голосам.
+- «Сегодня нет данных»
+  - Это штатный fallback-сценарий: бот должен отправить короткое fallback-сообщение.
+  - Проверьте, что `sync.yml` отработал и `cache.json` обновился в gist.

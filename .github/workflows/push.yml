@@ -20,10 +20,26 @@ jobs:
         with:
           python-version: "3.11"
 
+
+      - name: Workflow context (safe)
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Preflight env check (safe)
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+        run: |
+          if [ -z "$CACHE_GIST_ID" ]; then
+            echo "CACHE_GIST_ID=missing"
+          else
+            echo "CACHE_GIST_ID=present"
+          fi
 
       - name: Push (decide kind in code)
         env:
