@@ -12,9 +12,18 @@ def env(name: str) -> str:
 
 def main() -> None:
     gist_id = env("CACHE_GIST_ID")
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GIST_SYNC_TOKEN")
+    token = None
+    token_source = ""
+    for source_name in ("GIST_TOKEN", "GIST_SYNC_TOKEN", "GITHUB_TOKEN"):
+        source_value = os.getenv(source_name)
+        if source_value:
+            token = source_value
+            token_source = source_name
+            break
     if not token:
-        raise RuntimeError("Missing env var: GITHUB_TOKEN")
+        raise RuntimeError("Missing env var: one of GIST_TOKEN, GIST_SYNC_TOKEN, GITHUB_TOKEN")
+
+    print(f"gist upload auth: selected_token_source={token_source}")
 
     cache_path = "cache.json"
     if not os.path.exists(cache_path):
