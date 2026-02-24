@@ -22,7 +22,14 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     gist_id = os.getenv("CACHE_GIST_ID")
 
     if gist_id:
-        token = os.getenv("GITHUB_TOKEN")
+        token = None
+        token_source = "none"
+        for source_name in ("GIST_TOKEN", "GIST_SYNC_TOKEN", "GITHUB_TOKEN"):
+            source_value = os.getenv(source_name)
+            if source_value:
+                token = source_value
+                token_source = source_name
+                break
         token_present = bool(token)
         api_url = f"https://api.github.com/gists/{gist_id}"
         headers = {"Accept": "application/vnd.github+json"}
@@ -31,7 +38,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         try:
             response = requests.get(api_url, headers=headers, timeout=10)
             print(
-                f"cache gist fetch: gist_id={gist_id} token_present={token_present} http_status={response.status_code}"
+                f"cache gist fetch: gist_id={gist_id} selected_token_source={token_source} token_present={token_present} http_status={response.status_code}"
             )
 
             if response.status_code != 200:
@@ -55,6 +62,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                     "error": error_code,
                     "http_status": response.status_code,
                     "token_present": token_present,
+                    "token_source": token_source,
                 }
 
             gist_data = response.json()
@@ -67,6 +75,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                     "error": "",
                     "http_status": response.status_code,
                     "token_present": token_present,
+                    "token_source": token_source,
                 }
             return {}, {
                 "source": "gist",
@@ -74,10 +83,11 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 "error": "gist_not_dict",
                 "http_status": response.status_code,
                 "token_present": token_present,
+                "token_source": token_source,
             }
         except (requests.RequestException, KeyError, json.JSONDecodeError) as e:
             print(
-                f"cache gist fetch exception: gist_id={gist_id} token_present={token_present} error={e}"
+                f"cache gist fetch exception: gist_id={gist_id} selected_token_source={token_source} token_present={token_present} error={e}"
             )
             return {}, {
                 "source": "gist",
@@ -85,6 +95,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 "error": "gist_exception",
                 "detail": str(e),
                 "token_present": token_present,
+                "token_source": token_source,
             }
 
     try:

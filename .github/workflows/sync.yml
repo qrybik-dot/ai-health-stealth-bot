@@ -34,5 +34,6 @@ jobs:
       - name: Upload cache.json to Gist
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/gist_upload.py
