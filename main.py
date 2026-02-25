@@ -12,7 +12,6 @@ from garminconnect import Garmin
 
 load_dotenv()
 
-import datetime as dt
 from zoneinfo import ZoneInfo
 import uvicorn
 from fastapi import FastAPI, Request, Response
@@ -26,12 +25,15 @@ from cache import (
     load_cache,
     load_cache_with_meta,
     load_weekly_state,
+    mark_slot_sent,
+    mark_weekly_report_sent,
     save_daily_snapshot,
     save_weekly_state,
     upsert_today_state,
     upsert_today_vote,
     upsert_color_vote,
     was_slot_sent,
+    was_weekly_report_sent,
 )
 from color_engine import (
     build_color_metaphor_line,
@@ -195,33 +197,44 @@ def _now_msk() -> dt.datetime:
     return dt.datetime.now(ZoneInfo("Europe/Moscow"))
 
 
-def _in_window(now_msk: dt.datetime, hh: int, mm: int, tolerance_min: int = 5) -> bool:
-    target = now_msk.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    delta = abs((now_msk - target).total_seconds())
-    return delta <= tolerance_min * 60
+SLOT_WINDOWS: Dict[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]] = {
+    "morning": ((8, 50), (9, 0), (10, 10)),
+    "midday": ((12, 50), (13, 0), (14, 10)),
+    "evening": ((18, 50), (19, 0), (20, 10)),
+}
+
+
+def _minutes(hh: int, mm: int) -> int:
+    return hh * 60 + mm
 
 
 def _resolve_push_slot(now_msk: dt.datetime) -> Optional[str]:
-    windows: Dict[str, Tuple[int, int]] = {
-        "morning": (8, 30),
-        "midday": (13, 0),
-        "evening": (19, 30),
-    }
-    for slot, (hour, minute) in windows.items():
-        if _in_window(now_msk, hour, minute, tolerance_min=5):
+    now_min = _minutes(now_msk.hour, now_msk.minute)
+    for slot, (start, _target, end) in SLOT_WINDOWS.items():
+        if _minutes(*start) <= now_min <= _minutes(*end):
             return slot
     return None
 
 
+def _nearest_slot(now_msk: dt.datetime) -> str:
+    now_min = _minutes(now_msk.hour, now_msk.minute)
+    best_slot = "morning"
+    best_delta = 10**9
+    for slot, (_start, target, _end) in SLOT_WINDOWS.items():
+        delta = abs(now_min - _minutes(*target))
+        if delta < best_delta:
+            best_delta = delta
+            best_slot = slot
+    return best_slot
 
 
-def _resolve_scheduled_push_kind(now_utc: dt.datetime) -> str:
-    total_minutes = now_utc.hour * 60 + now_utc.minute
-    if 5 * 60 <= total_minutes < 10 * 60:
-        return "morning"
-    if 10 * 60 <= total_minutes < 16 * 60:
-        return "midday"
-    return "evening"
+def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] = None) -> str:
+    if override in {"morning", "midday", "evening"}:
+        return override
+    in_window = _resolve_push_slot(now_msk)
+    if in_window:
+        return in_window
+    return _nearest_slot(now_msk)
 
 
 def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
@@ -231,15 +244,15 @@ def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
     except Exception:
         log.exception("telegram send error fallback=true")
 
-def _build_schedule_decision(now_msk: dt.datetime, chat_id: str) -> Dict[str, Any]:
-    slot = _resolve_push_slot(now_msk)
+
+def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optional[str] = None) -> Dict[str, Any]:
+    window_slot = _resolve_push_slot(now_msk)
+    slot = _resolve_scheduled_push_kind(now_msk, override=override)
     today_str = now_msk.date().isoformat()
-    already_sent = False
-    if slot is not None:
-        already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=slot)
+    already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=slot)
     return {
         "now_msk": now_msk.isoformat(),
-        "window_matched": slot if slot is not None else "none",
+        "window_matched": window_slot if window_slot is not None else "none",
         "slot_id": slot,
         "already_sent": already_sent,
         "target_chat_id": chat_id,
@@ -252,7 +265,7 @@ def _log_schedule_decision(decision: Dict[str, Any]) -> None:
         "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
         decision["now_msk"],
         decision["window_matched"],
-        decision["slot_id"] if decision["slot_id"] else "none",
+        decision["slot_id"],
         decision["already_sent"],
         decision["target_chat_id"],
     )
@@ -261,7 +274,7 @@ def _log_schedule_decision(decision: Dict[str, Any]) -> None:
 def _build_fallback_message(slot: str) -> str:
     return (
         f"Слот {slot}: данных Garmin за сегодня пока нет. "
-        "Держим ритм дня, загляну позже с обновлением."
+        "Держим ровный режим, сверимся позже."
     )
 
 
@@ -276,6 +289,167 @@ def _cache_reason_code(cache_meta: Dict[str, Any]) -> str:
     return mapping.get(error_code, "cache_unavailable")
 
 
+def _score_to_bar(score: float) -> str:
+    value = max(1, min(5, int(round(score))))
+    return "■" * value + "□" * (5 - value)
+
+
+def _extract_scores(today_payload: Optional[Dict[str, Any]]) -> Dict[str, float]:
+    if not isinstance(today_payload, dict):
+        return {"body": 3.0, "nerves": 3.0, "sleep": 3.0}
+    body = today_payload.get("body_battery") if isinstance(today_payload.get("body_battery"), dict) else {}
+    stress = today_payload.get("stress") if isinstance(today_payload.get("stress"), dict) else {}
+    sleep = today_payload.get("sleep") if isinstance(today_payload.get("sleep"), dict) else {}
+    body_value = body.get("mostRecentValue") or body.get("chargedValue") or 50
+    stress_value = stress.get("avgStressLevel") or stress.get("overallStressLevel") or 45
+    sleep_seconds = sleep.get("sleepTimeSeconds") or sleep.get("totalSleepSeconds") or 7 * 3600
+    sleep_hours = float(sleep_seconds) / 3600.0 if isinstance(sleep_seconds, (int, float)) else 7.0
+    body_score = 1 + (max(0.0, min(100.0, float(body_value))) / 25.0)
+    nerves_score = 5 - (max(0.0, min(100.0, float(stress_value))) / 25.0)
+    sleep_score = max(1.0, min(5.0, sleep_hours / 1.8))
+    return {"body": body_score, "nerves": nerves_score, "sleep": sleep_score}
+
+
+def _status_line(scores: Dict[str, float]) -> Tuple[str, str]:
+    avg = (scores["body"] + scores["nerves"] + scores["sleep"]) / 3
+    if avg >= 3.7:
+        return "🟢", "Собранный режим"
+    if avg >= 2.7:
+        return "🟡", "Ровный режим"
+    return "🔴", "Бережный режим"
+
+
+def _actions_for_slot(slot: str) -> list[str]:
+    if slot == "morning":
+        return [
+            "🟢 Дай первому блоку 60–90 минут без шума.",
+            "🟡 Кофеин лучше до середины дня, не растягивай до вечера.",
+            "🟡 Раздели нагрузку на 2–3 ровных отрезка.",
+            "🔴 Не начинай день с резкого спринта задач.",
+        ]
+    if slot == "midday":
+        return [
+            "🟢 Сделай 7 минут паузы и перезапусти фокус.",
+            "🟡 Вода + короткая еда без тяжести.",
+            "🟡 10–15 минут спокойной ходьбы.",
+            "🔴 Не копи стресс до вечера.",
+        ]
+    return [
+        "🟢 Приглуши свет за 1.5–2 часа до сна.",
+        "🟡 Экраны в тёплый режим и тише уведомления.",
+        "🟡 Спокойное завершение: душ/чтение/растяжка.",
+        "🔴 Без тяжёлых разговоров и рабочих добивок перед сном.",
+    ]
+
+
+def _sometimes_humor(day: str, slot: str) -> str:
+    seed = sum(ord(c) for c in f"{day}:{slot}")
+    if seed % 5 != 0:
+        return ""
+    return "Коротко: картошка тоже знает цену ровному режиму."
+
+
+def _build_scheduled_message(slot: str, today_payload: Optional[Dict[str, Any]], color_name: str, day: str, today_vote: Optional[Dict[str, Any]]) -> str:
+    scores = _extract_scores(today_payload)
+    icon, label = _status_line(scores)
+    actions = _actions_for_slot(slot)
+    vote_line = ""
+    if slot == "evening" and isinstance(today_vote, dict):
+        vote_map = {"yes": "✅", "partial": "➖", "no": "❌"}
+        vote_icon = vote_map.get(str(today_vote.get("vote", "")), "➖")
+        vote_line = f"\nТвой вердикт по дню: {vote_icon} — принято."
+
+    reasons = [
+        "• Ритм дня читается по сочетанию энергии и напряжения.",
+        "• Лучше ровная серия шагов, чем один рывок.",
+    ]
+    if slot == "midday":
+        reasons[1] = "• В середине дня важнее перезапуск, чем ускорение."
+    elif slot == "evening":
+        reasons[1] = "• Вечерний запас бережём для сна, не для финального штурма."
+
+    ignore_price = {
+        "morning": "Цена игнора: день разъедется по мелким отвлечениям.",
+        "midday": "Цена игнора: к вечеру накопится лишний шум в голове.",
+        "evening": "Цена игнора: сон будет рваным, а утро вязким.",
+    }[slot]
+    confidence = "🟢🟢🟡" if isinstance(today_payload, dict) else "🟡⚪⚪"
+    humor = _sometimes_humor(day, slot)
+    color_line = f"\nЦвет недели: {color_name}." if slot == "morning" else ""
+
+    return (
+        f"{icon} {label}\n"
+        f"Тело: {_score_to_bar(scores['body'])}\n"
+        f"Нервы: {_score_to_bar(scores['nerves'])}\n"
+        f"Сон: {_score_to_bar(scores['sleep'])}\n"
+        "Причины:\n"
+        f"{reasons[0]}\n"
+        f"{reasons[1]}\n"
+        "Что делать:\n"
+        + "\n".join(actions)
+        + "\n"
+        + ignore_price
+        + f"\nУверенность: {confidence}"
+        + color_line
+        + vote_line
+        + (f"\n{humor}" if humor else "")
+    )
+
+
+def _safe_today_payload(cache: Dict[str, Any], day: str) -> Optional[Dict[str, Any]]:
+    raw = cache.get(day)
+    return raw if isinstance(raw, dict) else None
+
+
+def _build_weekly_report_message(full_history: Dict[str, Any], now_msk: dt.datetime) -> str:
+    days = []
+    for i in range(7):
+        d = (now_msk.date() - dt.timedelta(days=i)).isoformat()
+        payload = full_history.get(d)
+        if isinstance(payload, dict):
+            days.append(payload)
+
+    def rng(values: list[float]) -> str:
+        if not values:
+            return "—"
+        return f"{round(min(values))}–{round(max(values))}"
+
+    body_vals=[]; stress_vals=[]; rhr_vals=[]; sleep_vals=[]
+    for payload in days:
+        bb = payload.get("body_battery") if isinstance(payload.get("body_battery"), dict) else {}
+        st = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
+        sl = payload.get("sleep") if isinstance(payload.get("sleep"), dict) else {}
+        rhr = payload.get("rhr") if isinstance(payload.get("rhr"), dict) else {}
+        b = bb.get("mostRecentValue") or bb.get("chargedValue")
+        s = st.get("avgStressLevel") or st.get("overallStressLevel")
+        rr = rhr.get("lastSevenDaysAvgRestingHeartRate") or rhr.get("restingHeartRate")
+        ss = sl.get("sleepTimeSeconds") or sl.get("totalSleepSeconds")
+        if isinstance(b,(int,float)): body_vals.append(float(b))
+        if isinstance(s,(int,float)): stress_vals.append(float(s))
+        if isinstance(rr,(int,float)): rhr_vals.append(float(rr))
+        if isinstance(ss,(int,float)): sleep_vals.append(float(ss)/3600.0)
+
+    if len(days) < 3:
+        return "Неделя вышла с туманом данных. Видно одно: лучше держался ровный темп, когда вечер был спокойнее."
+
+    observation = "Главный контраст: когда стресс ниже, сон стабильнее в ту же ночь."
+    if body_vals and sleep_vals and (max(sleep_vals) - min(sleep_vals) >= 1.0):
+        observation = "Главный контраст: длиннее сон — заметно ровнее утренний запас."
+
+    humor = "Кратко: неделя без драмы, и это хороший жанр." if now_msk.isoweekday() % 2 == 0 else ""
+    lines = [
+        f"Итог недели ({iso_week_id(now_msk.date())}):",
+        f"• Body Battery: {rng(body_vals)}",
+        f"• Стресс: {rng(stress_vals)}",
+        f"• Сон, ч: {rng(sleep_vals)}",
+        f"• RHR: {rng(rhr_vals)}",
+        observation,
+    ]
+    if humor:
+        lines.append(humor)
+    return "\n".join(lines)
+
+
 def run_push(push_kind: str, dry_run: bool = False) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
@@ -283,22 +457,19 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     log.info("push_kind received=%s", push_kind)
-
     if push_kind == "scheduled":
-        resolved_slot = _resolve_scheduled_push_kind(now_utc)
+        decision = _build_schedule_decision(now_msk, chat_id)
+        resolved_slot = decision["slot_id"]
     else:
         resolved_slot = push_kind
+        decision = _build_schedule_decision(now_msk, chat_id, override=resolved_slot)
 
-    today_str = now_msk.date().isoformat()
-    decision = {
-        "now_msk": now_msk.isoformat(),
-        "window_matched": resolved_slot,
-        "slot_id": resolved_slot,
-        "already_sent": False,
-        "target_chat_id": chat_id,
-        "date": today_str,
-    }
     _log_schedule_decision(decision)
+    today_str = decision["date"]
+
+    if decision["already_sent"]:
+        log.info("dedupe_skip slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+        return
 
     if dry_run:
         log.info("send_result=dry_run would_send=true slot_id=%s", resolved_slot)
@@ -316,44 +487,79 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
 
     if (not cache_meta.get("available", False)) or (not isinstance(full_history, dict)) or (not full_history):
         reason_code = _cache_reason_code(cache_meta)
-        reason_text = "rate_limit" if reason_code == "rate_limit" else reason_code
-        _send_push_fallback(tg_token, chat_id, f"⚠️ Кэш недоступен ({reason_text})")
-        log.info("has_today=False")
+        _send_push_fallback(tg_token, chat_id, _build_fallback_message(resolved_slot))
+        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+        log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
         log.info("send_result=ok fallback=true reason=%s slot_id=%s", reason_code, resolved_slot)
         return
 
-    yesterday_str = (now_msk.date() - dt.timedelta(days=1)).isoformat()
-    prompt_cache = {
-        "today": full_history.get(today_str),
-        "yesterday": full_history.get(yesterday_str),
-    }
-    has_today = bool(prompt_cache.get("today"))
-    log.info("has_today=%s", has_today)
-
-    if not has_today:
-        _send_push_fallback(tg_token, chat_id, "⚠️ Сегодняшние данные ещё не подтянулись. Я проверю позже.")
-        log.info("send_result=ok fallback=true reason=no_today_data slot_id=%s", resolved_slot)
-        return
+    today_payload = _safe_today_payload(full_history, today_str)
+    week_color = get_or_create_weekly_color_state()
+    today_vote = get_today_vote(chat_id=chat_id, vote_date=today_str)
+    msg = _build_scheduled_message(
+        slot=resolved_slot,
+        today_payload=today_payload,
+        color_name=str(week_color.get("name_ru", "без названия")),
+        day=today_str,
+        today_vote=today_vote,
+    )
 
     try:
-        msg = generate_message(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), prompt_cache, resolved_slot)
-        telegram_send(tg_token, chat_id, msg)
-        log.info("telegram send ok fallback=false")
-        log.info("send_result=ok fallback=false slot_id=%s", resolved_slot)
+        if resolved_slot == "morning":
+            mode_tag = classify_mode_tag(today_payload)
+            signal = compute_today_signal(today_payload)
+            accent_hex = generate_daily_accent_hex(chat_id, today_str, week_color["week_id"], week_color["hex"])
+            today_state = upsert_today_state(
+                chat_id=chat_id,
+                value_date=today_str,
+                state_payload={
+                    "status_tag": mode_tag,
+                    "confidence": signal["confidence"],
+                    "amplitude": signal["amplitude"],
+                    "accent_hex": accent_hex,
+                    "week_id": week_color["week_id"],
+                },
+            )
+            image_started = dt.datetime.now(dt.timezone.utc)
+            image_path = generate_today_card_image(
+                chat_id=chat_id,
+                day=today_str,
+                week_id=week_color["week_id"],
+                week_color_hex=week_color["hex"],
+                mode_tag=mode_tag,
+                accent_hex=today_state.get("accent_hex", accent_hex),
+            )
+            elapsed = (dt.datetime.now(dt.timezone.utc) - image_started).total_seconds()
+            log.info("morning_photo_generated path=%s elapsed_s=%.3f", image_path, elapsed)
+            telegram_send_photo_with_markup(tg_token, chat_id, image_path, msg, {"inline_keyboard": []})
+        else:
+            telegram_send(tg_token, chat_id, msg)
+
+        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+        log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+
+        is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
+        if is_sunday_evening:
+            week_id = iso_week_id(now_msk.date())
+            if was_weekly_report_sent(chat_id=chat_id, week_id=week_id):
+                log.info("weekly_report_skip week_id=%s chat_id=%s", week_id, chat_id)
+            else:
+                weekly_msg = _build_weekly_report_message(full_history, now_msk)
+                telegram_send(tg_token, chat_id, weekly_msg)
+                mark_weekly_report_sent(chat_id=chat_id, week_id=week_id, sent_ts=utc_now_iso())
+                log.info("weekly_report_sent week_id=%s chat_id=%s", week_id, chat_id)
+
+        log.info("send_result=ok fallback=%s slot_id=%s", str(today_payload is None).lower(), resolved_slot)
     except Exception:
-        log.exception("Push: insight generation failed")
-        err_msg = (
-            f"⚠️ Я споткнулся при генерации сообщения ({resolved_slot}).\n"
-            "Сделаю новую попытку чуть позже."
-        )
-        _send_push_fallback(tg_token, chat_id, err_msg)
+        log.exception("Push send failed")
+        _send_push_fallback(tg_token, chat_id, f"Слот {resolved_slot}: отправка не удалась, повторю позже.")
         log.info("send_result=error slot_id=%s", resolved_slot)
 
 
 def run_push_self_check() -> None:
     requested_kind = "scheduled"
-    now_utc = dt.datetime.now(dt.timezone.utc)
-    detected_kind = _resolve_scheduled_push_kind(now_utc) if requested_kind == "scheduled" else requested_kind
+    now_msk = _now_msk()
+    detected_kind = _resolve_scheduled_push_kind(now_msk) if requested_kind == "scheduled" else requested_kind
     cache_data, cache_meta = load_cache_with_meta()
     today_str = _now_msk().date().isoformat()
     has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
@@ -396,9 +602,9 @@ def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
 
 def run_schedule_self_check() -> None:
     checks = [
-        "2026-02-24T08:30:00+03:00",
-        "2026-02-24T13:00:00+03:00",
-        "2026-02-24T19:30:00+03:00",
+        "2026-02-24T08:55:00+03:00",
+        "2026-02-24T13:05:00+03:00",
+        "2026-02-24T19:05:00+03:00",
     ]
     for at_iso in checks:
         now_msk = dt.datetime.fromisoformat(at_iso).astimezone(ZoneInfo("Europe/Moscow"))

@@ -389,3 +389,23 @@ def was_slot_sent(chat_id: str, send_date: str, slot: str) -> bool:
         return False
     key = f"{send_date}|{chat_id}|{slot}"
     return key in state
+
+
+def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
+    cache = load_cache()
+    state = cache.get(PUSH_STATE_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[PUSH_STATE_KEY] = state
+    key = f"weekly|{week_id}|{chat_id}"
+    state[key] = {"ts": sent_ts}
+    _write_cache(cache)
+
+
+def was_weekly_report_sent(chat_id: str, week_id: str) -> bool:
+    cache = load_cache()
+    state = cache.get(PUSH_STATE_KEY, {})
+    if not isinstance(state, dict):
+        return False
+    key = f"weekly|{week_id}|{chat_id}"
+    return key in state
