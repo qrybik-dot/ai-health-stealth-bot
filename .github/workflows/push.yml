@@ -2,9 +2,9 @@ name: Push Daily Insights
 
 on:
   schedule:
-    - cron: "30 5 * * *"
+    - cron: "0 6 * * *"
     - cron: "0 10 * * *"
-    - cron: "30 16 * * *"
+    - cron: "0 16 * * *"
   workflow_dispatch:
 
 jobs:
