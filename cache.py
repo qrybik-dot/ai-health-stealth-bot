@@ -1,7 +1,7 @@
 import json
 import os
 import requests
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 CACHE_FILE = "cache.json"
@@ -11,6 +11,9 @@ DAILY_VOTES_KEY = "_daily_votes"
 TODAY_VOTES_KEY = "_today_votes"
 TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
+RETENTION_DAYS = MEMORY_DAYS
+WEEKLY_RETENTION_WEEKS = 26
+PUSH_STATE_RETENTION_DAYS = 14
 
 
 def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -118,29 +121,166 @@ def _write_cache(cache: Dict[str, Any]) -> None:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+def _safe_number(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, Any]:
+    body = snapshot_data.get("body_battery") if isinstance(snapshot_data.get("body_battery"), dict) else {}
+    stress = snapshot_data.get("stress") if isinstance(snapshot_data.get("stress"), dict) else {}
+    sleep = snapshot_data.get("sleep") if isinstance(snapshot_data.get("sleep"), dict) else {}
+    rhr = snapshot_data.get("rhr") if isinstance(snapshot_data.get("rhr"), dict) else {}
+    errors = snapshot_data.get("errors") if isinstance(snapshot_data.get("errors"), list) else []
+
+    sleep_seconds = sleep.get("sleepTimeSeconds")
+    if sleep_seconds is None:
+        sleep_seconds = sleep.get("totalSleepSeconds")
+
+    out: Dict[str, Any] = {
+        "source": str(snapshot_data.get("source", "garmin")),
+        "date": str(snapshot_data.get("date", day)),
+        "fetched_at_utc": str(snapshot_data.get("fetched_at_utc", "")),
+        "missing_flags": {
+            "body_battery": not bool(body),
+            "stress": not bool(stress),
+            "sleep": not bool(sleep),
+            "rhr": not bool(rhr),
+        },
+    }
+
+    body_recent = _safe_number(body.get("mostRecentValue"))
+    body_charged = _safe_number(body.get("chargedValue"))
+    if body_recent is not None or body_charged is not None:
+        out["body_battery"] = {
+            "mostRecentValue": body_recent,
+            "chargedValue": body_charged,
+        }
+
+    stress_avg = _safe_number(stress.get("avgStressLevel"))
+    stress_overall = _safe_number(stress.get("overallStressLevel"))
+    if stress_avg is not None or stress_overall is not None:
+        out["stress"] = {
+            "avgStressLevel": stress_avg,
+            "overallStressLevel": stress_overall,
+        }
+
+    sleep_score = _safe_number(sleep.get("overallSleepScore"))
+    if sleep_seconds is not None or sleep_score is not None:
+        out["sleep"] = {
+            "sleepTimeSeconds": _safe_number(sleep_seconds),
+            "overallSleepScore": sleep_score,
+        }
+
+    hr_avg = _safe_number(rhr.get("lastSevenDaysAvgRestingHeartRate"))
+    hr_rest = _safe_number(rhr.get("restingHeartRate"))
+    if hr_avg is not None or hr_rest is not None:
+        out["rhr"] = {
+            "lastSevenDaysAvgRestingHeartRate": hr_avg,
+            "restingHeartRate": hr_rest,
+        }
+
+    if errors:
+        out["errors"] = errors[:6]
+    if snapshot_data.get("error"):
+        out["error"] = str(snapshot_data.get("error"))
+    return out
+
+
+def _week_start(week_id: str) -> Optional[date]:
+    try:
+        return datetime.strptime(f"{week_id}-1", "%G-W%V-%u").date()
+    except ValueError:
+        return None
+
+
+def prune_cache(retention_days: int = RETENTION_DAYS, weekly_retention_weeks: int = WEEKLY_RETENTION_WEEKS) -> Dict[str, int]:
+    cache = load_cache()
+    today = date.today()
+    daily_cutoff = today - timedelta(days=retention_days)
+    push_cutoff = today - timedelta(days=PUSH_STATE_RETENTION_DAYS)
+    week_cutoff = today - timedelta(weeks=weekly_retention_weeks)
+
+    daily_keys = [k for k in cache.keys() if not k.startswith("_")]
+    removed_daily = 0
+    for key in daily_keys:
+        try:
+            if date.fromisoformat(key) < daily_cutoff:
+                cache.pop(key, None)
+                removed_daily += 1
+        except ValueError:
+            continue
+
+    for state_key in (TODAY_STATE_KEY, TODAY_VOTES_KEY, DAILY_VOTES_KEY):
+        state = cache.get(state_key)
+        if not isinstance(state, dict):
+            continue
+        remove_keys = []
+        for composite_key in state.keys():
+            day_part = composite_key.split("|", 1)[0]
+            try:
+                if date.fromisoformat(day_part) < daily_cutoff:
+                    remove_keys.append(composite_key)
+            except ValueError:
+                continue
+        for composite_key in remove_keys:
+            state.pop(composite_key, None)
+
+    weekly_state = cache.get(WEEKLY_STATE_KEY)
+    removed_weekly = 0
+    if isinstance(weekly_state, dict):
+        for week_id in list(weekly_state.keys()):
+            start = _week_start(week_id)
+            if start and start < week_cutoff:
+                weekly_state.pop(week_id, None)
+                removed_weekly += 1
+
+    push_state = cache.get(PUSH_STATE_KEY)
+    removed_push = 0
+    if isinstance(push_state, dict):
+        for key in list(push_state.keys()):
+            if key.startswith("weekly|"):
+                parts = key.split("|")
+                if len(parts) >= 3:
+                    start = _week_start(parts[1])
+                    if start and start < week_cutoff:
+                        push_state.pop(key, None)
+                        removed_push += 1
+                continue
+            send_date = key.split("|", 1)[0]
+            try:
+                if date.fromisoformat(send_date) < push_cutoff:
+                    push_state.pop(key, None)
+                    removed_push += 1
+            except ValueError:
+                continue
+
+    _write_cache(cache)
+    kept_daily = sum(1 for k in cache.keys() if not k.startswith("_"))
+    summary = {
+        "daily_removed": removed_daily,
+        "daily_kept": kept_daily,
+        "weekly_removed": removed_weekly,
+        "weekly_kept": len(cache.get(WEEKLY_STATE_KEY, {})) if isinstance(cache.get(WEEKLY_STATE_KEY), dict) else 0,
+        "push_removed": removed_push,
+        "push_kept": len(cache.get(PUSH_STATE_KEY, {})) if isinstance(cache.get(PUSH_STATE_KEY), dict) else 0,
+    }
+    print(
+        "cache prune summary: "
+        f"daily removed={summary['daily_removed']} kept={summary['daily_kept']} "
+        f"weekly removed={summary['weekly_removed']} kept={summary['weekly_kept']} "
+        f"push removed={summary['push_removed']} kept={summary['push_kept']}"
+    )
+    return summary
+
+
 def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
     cache = load_cache()
-
-    if today_str not in cache:
-        cache[today_str] = {}
-    cache[today_str].update(snapshot_data)
-
-    pruned_cache = {}
-    cutoff_date = date.today() - timedelta(days=MEMORY_DAYS)
-
-    for date_str, data in cache.items():
-        if date_str.startswith("_"):
-            pruned_cache[date_str] = data
-            continue
-        try:
-            entry_date = date.fromisoformat(date_str)
-            if entry_date >= cutoff_date:
-                pruned_cache[date_str] = data
-        except (ValueError, TypeError):
-            pass
-
-    _write_cache(pruned_cache)
+    cache[today_str] = _trim_daily_snapshot(snapshot_data, today_str)
+    _write_cache(cache)
+    prune_cache(retention_days=RETENTION_DAYS)
 
 
 def load_weekly_state() -> Dict[str, Any]:
@@ -197,7 +337,8 @@ def upsert_color_vote(chat_id: str, vote_date: str, vote_value: str, week_id: st
     composite_key = f"{vote_date}|{chat_id}"
     existing = votes.get(composite_key)
     if isinstance(existing, dict) and existing.get("vote_value") in {"yes", "partial", "no"}:
-        return False
+        if existing.get("vote_value") == vote_value:
+            return False
 
     ts_value = vote_ts or f"{vote_date}T00:00:00"
     votes[composite_key] = {"vote_value": vote_value, "ts": ts_value, "week_id": week_id}
@@ -282,7 +423,8 @@ def upsert_today_vote(chat_id: str, vote_date: str, vote_value: str, vote_ts: st
     key = _composite_key(chat_id, vote_date)
     existing = votes.get(key)
     if isinstance(existing, dict) and existing.get("vote") in {"yes", "partial", "no"}:
-        return False
+        if existing.get("vote") == vote_value:
+            return False
     votes[key] = {"vote": vote_value, "ts": vote_ts}
     _write_cache(cache)
     return True
