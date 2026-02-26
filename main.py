@@ -279,20 +279,19 @@ def _log_schedule_decision(decision: Dict[str, Any]) -> None:
 
 
 def _build_fallback_message(slot: str) -> str:
+    slot_title = {
+        "morning": "Утренний сигнал",
+        "midday": "Дневная сверка",
+        "evening": "Вечерний итог",
+    }.get(slot, "Сигнал дня")
     return (
-        f"🟡 Режим без полного сигнала ({slot})\n"
-        "Тело: ■■■□□\n"
-        "Нервы: ■■■□□\n"
-        "Сон: ■■■□□\n"
-        "Причины:\n"
-        "• За день пришла только часть данных.\n"
-        "• Сохраняем спокойный ритм без резких манёвров.\n"
-        "Что делать:\n"
-        "• Один короткий фокус-блок.\n"
-        "• Пауза 5–7 минут без экрана.\n"
-        "• Вода и ровный темп до следующей сверки.\n"
-        "Цена игнора: лишний шум вместо понятного ритма.\n"
-        "Уверенность: 🟡⚪⚪"
+        f"🟡 {slot_title}\n"
+        "Оценка предварительная: данных за день пока недостаточно.\n"
+        "Что это значит: вывод осторожный, без точного вердикта по состоянию.\n"
+        "Сейчас лучше: держать ровный темп и не добавлять резкую нагрузку.\n"
+        "Ограничение: не меняй режим резко до следующей синхронизации.\n"
+        "Надёжность оценки: низкая (неполный набор данных).\n"
+        "Система обновит вывод автоматически после новых данных Garmin."
     )
 
 
@@ -367,6 +366,106 @@ def _sometimes_humor(day: str, slot: str) -> str:
     return "Коротко: картошка тоже знает цену ровному режиму."
 
 
+def _slot_title(slot: str) -> str:
+    return {
+        "morning": "Старт дня",
+        "midday": "Сверка в середине дня",
+        "evening": "Мягкое завершение дня",
+    }.get(slot, "Сигнал дня")
+
+
+def _metric_present(value: Any) -> bool:
+    return isinstance(value, dict) and any(v is not None for v in value.values())
+
+
+def _evaluate_data_quality(today_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(today_payload, dict):
+        return {"is_partial": True, "present": 0, "quality_label": "низкая"}
+    keys = ["body_battery", "stress", "sleep", "rhr"]
+    present = sum(1 for key in keys if _metric_present(today_payload.get(key)))
+    if present <= 1:
+        return {"is_partial": True, "present": present, "quality_label": "низкая"}
+    if present <= 2:
+        return {"is_partial": True, "present": present, "quality_label": "средняя"}
+    return {"is_partial": False, "present": present, "quality_label": "высокая"}
+
+
+def _confidence_text(today_payload: Optional[Dict[str, Any]], quality: Dict[str, Any]) -> str:
+    if quality["is_partial"]:
+        return f"Надёжность оценки: {quality['quality_label']} (данные неполные)."
+    if isinstance(today_payload, dict):
+        return "Надёжность оценки: высокая (сигнал собран по ключевым метрикам)."
+    return "Надёжность оценки: низкая (данных недостаточно)."
+
+
+def _build_partial_data_variant(slot: str, quality: Dict[str, Any]) -> str:
+    slot_text = _slot_title(slot)
+    return (
+        f"🟡 {slot_text}\n"
+        "Статус: предварительная оценка.\n"
+        f"Почему так: доступно только {quality['present']} из 4 ключевых метрик Garmin.\n"
+        "Практический вывод: держи текущий ритм без резких решений.\n"
+        "Главное действие: сделай один короткий спокойный блок и паузу 5–7 минут.\n"
+        "Ограничение: не повышай нагрузку до следующей синхронизации.\n"
+        f"{_confidence_text(None, quality)}\n"
+        "Дальше: система автоматически уточнит вывод после поступления данных."
+    )
+
+
+def build_morning_push(scores: Dict[str, float], confidence_line: str, color_name: str, color_story_lines: list[str], day: str) -> str:
+    icon, label = _status_line(scores)
+    humor = _sometimes_humor(day, "morning")
+    color_block = "\n".join([f"Цвет недели: {color_name}."] + color_story_lines[:2])
+    message = (
+        f"{icon} {_slot_title('morning')}: {label.lower()}\n"
+        "Почему: утренние сигналы по сну, энергии и напряжению без явного перекоса.\n"
+        "Сейчас это значит: темп первой половины дня лучше держать ровным.\n"
+        "Главное действие: один фокус-блок 60–90 минут без отвлечений.\n"
+        "Ограничение: не начинай день с резкого спринта задач.\n"
+        f"{confidence_line}\n"
+        "Следующий шаг: дневная сверка уточнит состояние по новым данным.\n"
+        f"{color_block}"
+    )
+    if humor:
+        message += f"\n{humor}"
+    return message
+
+
+def build_day_push(scores: Dict[str, float], confidence_line: str) -> str:
+    icon, label = _status_line(scores)
+    return (
+        f"{icon} {_slot_title('midday')}: {label.lower()}\n"
+        "Статус: это коррекция курса, не повтор утренней оценки.\n"
+        "Что изменилось: середина дня показывает текущий запас на вторую половину.\n"
+        "Главное действие: пауза 7 минут без экрана и затем один приоритетный блок.\n"
+        "Ограничение: не пытайся добирать темп за счёт резкого ускорения.\n"
+        f"{confidence_line}\n"
+        "Следующий шаг: вечером пришлю мягкий итог и ориентир на восстановление."
+    )
+
+
+def build_evening_push(scores: Dict[str, float], confidence_line: str, today_vote: Optional[Dict[str, Any]], day: str) -> str:
+    icon, label = _status_line(scores)
+    vote_line = ""
+    if isinstance(today_vote, dict):
+        vote_map = {"yes": "✅", "partial": "🤷", "no": "❌"}
+        vote_icon = vote_map.get(str(today_vote.get("vote", "")), "🤷")
+        vote_line = f"\nТвой отклик по дню: {vote_icon}."
+    humor = _sometimes_humor(day, "evening")
+    message = (
+        f"{icon} {_slot_title('evening')}: {label.lower()}\n"
+        "Итог: остаток ресурса лучше направить в спокойное завершение дня.\n"
+        "Главное действие: приглуши свет и снизь информационный шум за 1.5–2 часа до сна.\n"
+        "Ограничение: без рабочих добивок и тяжёлых разговоров перед сном.\n"
+        f"{confidence_line}\n"
+        "Следующий шаг: утром будет новый стартовый сигнал по ночным данным."
+        f"{vote_line}"
+    )
+    if humor:
+        message += f"\n{humor}"
+    return message
+
+
 def _build_scheduled_message(
     slot: str,
     today_payload: Optional[Dict[str, Any]],
@@ -375,53 +474,17 @@ def _build_scheduled_message(
     day: str,
     today_vote: Optional[Dict[str, Any]],
 ) -> str:
+    quality = _evaluate_data_quality(today_payload)
+    if quality["is_partial"]:
+        return _build_partial_data_variant(slot, quality)
+
     scores = _extract_scores(today_payload)
-    icon, label = _status_line(scores)
-    actions = _actions_for_slot(slot)
-    vote_line = ""
-    if slot == "evening" and isinstance(today_vote, dict):
-        vote_map = {"yes": "✅", "partial": "➖", "no": "❌"}
-        vote_icon = vote_map.get(str(today_vote.get("vote", "")), "➖")
-        vote_line = f"\nТвой вердикт по дню: {vote_icon} — принято."
-
-    reasons = [
-        "• Ритм дня читается по сочетанию энергии и напряжения.",
-        "• Лучше ровная серия шагов, чем один рывок.",
-    ]
-    if slot == "midday":
-        reasons[1] = "• В середине дня важнее перезапуск, чем ускорение."
-    elif slot == "evening":
-        reasons[1] = "• Вечерний запас бережём для сна, не для финального штурма."
-
-    ignore_price = {
-        "morning": "Цена игнора: день разъедется по мелким отвлечениям.",
-        "midday": "Цена игнора: к вечеру накопится лишний шум в голове.",
-        "evening": "Цена игнора: сон будет рваным, а утро вязким.",
-    }[slot]
-    confidence = "🟢🟢🟡" if isinstance(today_payload, dict) else "🟡⚪⚪"
-    humor = _sometimes_humor(day, slot)
-    color_block = ""
+    confidence_line = _confidence_text(today_payload, quality)
     if slot == "morning":
-        color_bits = [f"Цвет недели: {color_name}."] + color_story_lines[:4]
-        color_block = "\n" + "\n".join(color_bits)
-
-    return (
-        f"{icon} {label}\n"
-        f"Тело: {_score_to_bar(scores['body'])}\n"
-        f"Нервы: {_score_to_bar(scores['nerves'])}\n"
-        f"Сон: {_score_to_bar(scores['sleep'])}\n"
-        "Причины:\n"
-        f"{reasons[0]}\n"
-        f"{reasons[1]}\n"
-        "Что делать:\n"
-        + "\n".join(actions)
-        + "\n"
-        + ignore_price
-        + f"\nУверенность: {confidence}"
-        + color_block
-        + vote_line
-        + (f"\n{humor}" if humor else "")
-    )
+        return build_morning_push(scores, confidence_line, color_name, color_story_lines, day)
+    if slot == "midday":
+        return build_day_push(scores, confidence_line)
+    return build_evening_push(scores, confidence_line, today_vote, day)
 
 
 def _safe_today_payload(cache: Dict[str, Any], day: str) -> Optional[Dict[str, Any]]:
