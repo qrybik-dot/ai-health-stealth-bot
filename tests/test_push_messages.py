@@ -23,9 +23,9 @@ class PushMessageTests(unittest.TestCase):
             day="2026-01-14",
             today_vote=None,
         )
-        self.assertIn("Старт дня", msg)
-        self.assertIn("Главное действие:", msg)
-        self.assertIn("Надёжность оценки: высокая", msg)
+        self.assertIn("<b>Старт дня</b>", msg)
+        self.assertIn("<b>Лучшее действие:</b>", msg)
+        self.assertIn("<b>Надёжность:</b>", msg)
         self.assertNotIn("(morning)", msg)
 
     def test_midday_message_is_course_correction(self):
@@ -38,7 +38,7 @@ class PushMessageTests(unittest.TestCase):
             today_vote=None,
         )
         self.assertIn("коррекция курса", msg.lower())
-        self.assertIn("не повтор утренней оценки", msg.lower())
+        self.assertNotIn("утренней оценки", msg.lower())
         self.assertNotIn("Цвет недели", msg)
 
     def test_evening_message_structure_and_vote(self):
@@ -50,7 +50,7 @@ class PushMessageTests(unittest.TestCase):
             day="2026-01-14",
             today_vote={"vote": "partial"},
         )
-        self.assertIn("Мягкое завершение дня", msg)
+        self.assertIn("<b>Мягкое завершение дня</b>", msg)
         self.assertIn("Твой отклик по дню: 🤷", msg)
 
     def test_partial_data_variant_for_each_slot(self):
@@ -70,7 +70,7 @@ class PushMessageTests(unittest.TestCase):
                 today_vote=None,
             )
             self.assertIn("предварительная оценка", msg)
-            self.assertIn("данные неполные", msg)
+            self.assertIn("<b>Ограничение:</b>", msg)
             self.assertIn("следующей синхронизации", msg)
 
     def test_missing_payload_fallback_message(self):
@@ -85,6 +85,22 @@ class PushMessageTests(unittest.TestCase):
         self.assertIn("предварительная оценка", msg)
         self.assertNotIn("None", msg)
         self.assertNotIn("null", msg)
+
+
+    def test_morning_color_caption_structure(self):
+        caption = main.build_morning_color_caption(
+            {
+                "week_id": "2026-W03",
+                "hex": "#DB66B4",
+                "hsl": {"h": 300, "s": 62, "l": 63},
+                "name_ru": "Пурпурно-красный",
+                "rarity_level": "rare",
+                "is_rare_name": False,
+            }
+        )
+        self.assertIn("<b>Цвет дня</b>", caption)
+        self.assertIn("<b>HEX:</b> #DB66B4", caption)
+        self.assertIn("<b>Тема недели:</b> 2026-W03", caption)
 
     def test_slot_routing_windows(self):
         tz = ZoneInfo("Europe/Moscow")
