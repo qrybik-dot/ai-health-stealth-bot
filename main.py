@@ -4,6 +4,7 @@ import json
 import logging
 import datetime as dt
 import requests
+import html
 from typing import Any, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -68,16 +69,27 @@ def env(name: str) -> str:
     return v
 
 
-def telegram_send(token: str, chat_id: str, text: str) -> None:
+def telegram_send(token: str, chat_id: str, text: str, parse_mode: Optional[str] = None) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": text})
+    payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    r = requests.post(url, json=payload)
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
 
 
-def telegram_send_with_markup(token: str, chat_id: str, text: str, reply_markup: Dict[str, Any]) -> None:
+def telegram_send_with_markup(
+    token: str,
+    chat_id: str,
+    text: str,
+    reply_markup: Dict[str, Any],
+    parse_mode: Optional[str] = None,
+) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     r = requests.post(url, json=payload)
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
@@ -279,18 +291,14 @@ def _log_schedule_decision(decision: Dict[str, Any]) -> None:
 
 
 def _build_fallback_message(slot: str) -> str:
-    slot_title = {
-        "morning": "Утренний сигнал",
-        "midday": "Дневная сверка",
-        "evening": "Вечерний итог",
-    }.get(slot, "Сигнал дня")
+    slot_title = _slot_title(slot)
     return (
-        f"🟡 {slot_title}\n"
-        "Оценка предварительная: данных за день пока недостаточно.\n"
-        "Что это значит: вывод осторожный, без точного вердикта по состоянию.\n"
-        "Сейчас лучше: держать ровный темп и не добавлять резкую нагрузку.\n"
-        "Ограничение: не меняй режим резко до следующей синхронизации.\n"
-        "Надёжность оценки: низкая (неполный набор данных).\n"
+        f"🟡 <b>{slot_title}</b>\n\n"
+        "<i>Оценка предварительная: данных пока недостаточно.</i>\n"
+        "Главный смысл: пока держим ровный режим без резких решений.\n"
+        "<b>Лучшее действие:</b> один спокойный блок и короткая пауза.\n"
+        "<b>Ограничение:</b> не добавляй резкую нагрузку до следующей синхронизации.\n"
+        "<b>Надёжность:</b> низкая (неполный набор метрик).\n"
         "Система обновит вывод автоматически после новых данных Garmin."
     )
 
@@ -401,46 +409,38 @@ def _confidence_text(today_payload: Optional[Dict[str, Any]], quality: Dict[str,
 def _build_partial_data_variant(slot: str, quality: Dict[str, Any]) -> str:
     slot_text = _slot_title(slot)
     return (
-        f"🟡 {slot_text}\n"
-        "Статус: предварительная оценка.\n"
-        f"Почему так: доступно только {quality['present']} из 4 ключевых метрик Garmin.\n"
-        "Практический вывод: держи текущий ритм без резких решений.\n"
-        "Главное действие: сделай один короткий спокойный блок и паузу 5–7 минут.\n"
-        "Ограничение: не повышай нагрузку до следующей синхронизации.\n"
-        f"{_confidence_text(None, quality)}\n"
-        "Дальше: система автоматически уточнит вывод после поступления данных."
+        f"🟡 <b>{slot_text}</b>\n\n"
+        "<i>Статус: предварительная оценка.</i>\n"
+        f"Главный смысл: сейчас видно только {quality['present']} из 4 ключевых метрик Garmin.\n"
+        "<b>Лучшее действие:</b> один короткий спокойный блок и пауза 5–7 минут.\n"
+        "<b>Ограничение:</b> не повышай нагрузку до следующей синхронизации.\n"
+        f"<b>Надёжность:</b> {quality['quality_label']}.\n"
+        "Автообновление: вывод уточнится после поступления новых данных."
     )
 
 
 def build_morning_push(scores: Dict[str, float], confidence_line: str, color_name: str, color_story_lines: list[str], day: str) -> str:
     icon, label = _status_line(scores)
-    humor = _sometimes_humor(day, "morning")
-    color_block = "\n".join([f"Цвет недели: {color_name}."] + color_story_lines[:2])
     message = (
-        f"{icon} {_slot_title('morning')}: {label.lower()}\n"
-        "Почему: утренние сигналы по сну, энергии и напряжению без явного перекоса.\n"
-        "Сейчас это значит: темп первой половины дня лучше держать ровным.\n"
-        "Главное действие: один фокус-блок 60–90 минут без отвлечений.\n"
-        "Ограничение: не начинай день с резкого спринта задач.\n"
-        f"{confidence_line}\n"
-        "Следующий шаг: дневная сверка уточнит состояние по новым данным.\n"
-        f"{color_block}"
+        f"{icon} <b>{_slot_title('morning')}</b>\n\n"
+        f"<i>Старт читается как {label.lower()}.</i>\n"
+        "Главный смысл: первую половину дня лучше вести в ровном темпе.\n"
+        "<b>Лучшее действие:</b> один фокус-блок 60–90 минут без отвлечений.\n"
+        "<b>Ограничение:</b> не начинай день с резкого спринта задач.\n"
+        f"<b>Надёжность:</b> {confidence_line.replace('Надёжность оценки: ', '').replace('.', '')}."
     )
-    if humor:
-        message += f"\n{humor}"
     return message
 
 
 def build_day_push(scores: Dict[str, float], confidence_line: str) -> str:
     icon, label = _status_line(scores)
     return (
-        f"{icon} {_slot_title('midday')}: {label.lower()}\n"
-        "Статус: это коррекция курса, не повтор утренней оценки.\n"
-        "Что изменилось: середина дня показывает текущий запас на вторую половину.\n"
-        "Главное действие: пауза 7 минут без экрана и затем один приоритетный блок.\n"
-        "Ограничение: не пытайся добирать темп за счёт резкого ускорения.\n"
-        f"{confidence_line}\n"
-        "Следующий шаг: вечером пришлю мягкий итог и ориентир на восстановление."
+        f"{icon} <b>{_slot_title('midday')}</b>\n\n"
+        f"<i>Это коррекция курса: сейчас {label.lower()}.</i>\n"
+        "Главный смысл: середина дня показывает запас на вторую половину.\n"
+        "<b>Лучшее действие:</b> пауза 7 минут без экрана и затем один приоритетный блок.\n"
+        "<b>Ограничение:</b> не добирай темп резким ускорением.\n"
+        f"<b>Надёжность:</b> {confidence_line.replace('Надёжность оценки: ', '').replace('.', '')}."
     )
 
 
@@ -451,19 +451,29 @@ def build_evening_push(scores: Dict[str, float], confidence_line: str, today_vot
         vote_map = {"yes": "✅", "partial": "🤷", "no": "❌"}
         vote_icon = vote_map.get(str(today_vote.get("vote", "")), "🤷")
         vote_line = f"\nТвой отклик по дню: {vote_icon}."
-    humor = _sometimes_humor(day, "evening")
     message = (
-        f"{icon} {_slot_title('evening')}: {label.lower()}\n"
-        "Итог: остаток ресурса лучше направить в спокойное завершение дня.\n"
-        "Главное действие: приглуши свет и снизь информационный шум за 1.5–2 часа до сна.\n"
-        "Ограничение: без рабочих добивок и тяжёлых разговоров перед сном.\n"
-        f"{confidence_line}\n"
-        "Следующий шаг: утром будет новый стартовый сигнал по ночным данным."
+        f"{icon} <b>{_slot_title('evening')}</b>\n\n"
+        f"<i>Финал дня: {label.lower()}.</i>\n"
+        "Главный смысл: ресурс лучше направить в мягкое торможение.\n"
+        "<b>Лучшее действие:</b> приглуши свет и снизь шум за 1.5–2 часа до сна.\n"
+        "<b>Ограничение:</b> без рабочих добивок и тяжёлых разговоров перед сном.\n"
+        f"<b>Надёжность:</b> {confidence_line.replace('Надёжность оценки: ', '').replace('.', '')}."
         f"{vote_line}"
     )
-    if humor:
-        message += f"\n{humor}"
     return message
+
+
+def build_morning_color_caption(color: Dict[str, Any]) -> str:
+    color_obj = weekly_color_from_dict(color)
+    rarity_label = map_rarity_ru(color_obj.rarity_level)
+    focus_line = build_color_metaphor_line(color_obj)
+    return (
+        "🎨 <b>Цвет дня</b>\n\n"
+        f"{html.escape(color_obj.name_ru)} — {html.escape(focus_line)}.\n"
+        f"<b>HEX:</b> {html.escape(color_obj.hex)}\n"
+        f"<b>Тема недели:</b> {html.escape(color_obj.week_id)} · {html.escape(rarity_label)}\n"
+        "<b>Фокус:</b> держать ровный темп и не дробить внимание."
+    )
 
 
 def _build_scheduled_message(
@@ -530,10 +540,11 @@ def _build_weekly_report_message(full_history: Dict[str, Any], now_msk: dt.datet
 
     if len(days) < 3:
         return (
-            "Неделя вышла с туманом данных.\n"
-            "• Видно одно: спокойный вечер чаще держит ровный темп следующего дня.\n"
-            "• База недели — повторяемый режим и короткие паузы.\n"
-            f"{accuracy_line}"
+            "📘 <b>Отчёт недели</b>\n\n"
+            "<i>Данных пока мало, итог предварительный.</i>\n"
+            "<b>Паттерн:</b> главная опора — повторяемый режим и короткие паузы.\n"
+            f"<b>Цвет и попадание:</b> {accuracy_line}\n"
+            "<b>Практический вывод:</b> сохранить стабильный ритм и дождаться полной недели."
         )
 
     observation = "Главный контраст: когда стресс ниже, сон стабильнее в ту же ночь."
@@ -557,19 +568,14 @@ def _build_weekly_report_message(full_history: Dict[str, Any], now_msk: dt.datet
         calm_day = min(day_pairs, key=lambda x: x[1])[0]
         stress_day = max(day_pairs, key=lambda x: x[1])[0]
 
-    lines = [
-        f"Итог недели ({week_id}):",
-        f"• Body Battery: {rng(body_vals)}",
-        f"• Стресс: {rng(stress_vals)}",
-        f"• Сон, ч: {rng(sleep_vals)}",
-        f"• RHR: {rng(rhr_vals)}",
-        f"• Спокойный день: {calm_day}; напряжённый день: {stress_day}",
-        observation,
-        accuracy_line,
-    ]
-    if humor:
-        lines.append(humor)
-    return "\n".join(lines)
+    return (
+        f"📘 <b>Отчёт недели {week_id}</b>\n\n"
+        "<i>Неделя прошла в рабочем ритме, без лишней перегрузки.</i>\n"
+        f"<b>Паттерн состояния:</b> Body Battery {rng(body_vals)}, стресс {rng(stress_vals)}, сон {rng(sleep_vals)} ч, RHR {rng(rhr_vals)}.\n"
+        f"<b>Контраст:</b> спокойный день {calm_day}, напряжённый день {stress_day}. {observation}\n"
+        f"<b>Цвет и попадание:</b> {accuracy_line}\n"
+        "<b>Практический вывод:</b> закрепить один устойчивый утренний блок и мягкое завершение дня."
+    )
 
 
 def run_push(push_kind: str, dry_run: bool = False) -> None:
@@ -629,6 +635,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
                 image_path,
                 _build_fallback_message(resolved_slot),
                 {"inline_keyboard": []},
+                parse_mode="HTML",
             )
         else:
             _send_push_fallback(tg_token, chat_id, _build_fallback_message(resolved_slot))
@@ -678,9 +685,29 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             )
             elapsed = (dt.datetime.now(dt.timezone.utc) - image_started).total_seconds()
             log.info("morning_photo_generated path=%s elapsed_s=%.3f", image_path, elapsed)
-            telegram_send_photo_with_markup(tg_token, chat_id, image_path, msg, {"inline_keyboard": []})
+            telegram_send_photo_with_markup(
+                tg_token,
+                chat_id,
+                image_path,
+                msg,
+                {"inline_keyboard": []},
+                parse_mode="HTML",
+            )
+            color_image_path = generate_color_card_image(week_color["week_id"], week_color["hex"])
+            today_color_vote = get_color_vote(chat_id=chat_id, vote_date=today_str)
+            color_keyboard = build_color_keyboard(week_color["week_id"])
+            if today_color_vote:
+                color_keyboard = build_color_voted_keyboard(today_color_vote.get("vote_value", "partial"))
+            telegram_send_photo_with_markup(
+                tg_token,
+                chat_id,
+                color_image_path,
+                build_morning_color_caption(week_color),
+                color_keyboard,
+                parse_mode="HTML",
+            )
         else:
-            telegram_send(tg_token, chat_id, msg)
+            telegram_send(tg_token, chat_id, msg, parse_mode="HTML")
 
         mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
         log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
@@ -692,7 +719,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
                 log.info("weekly_report_skip week_id=%s chat_id=%s", week_id, chat_id)
             else:
                 weekly_msg = _build_weekly_report_message(full_history, now_msk, chat_id)
-                telegram_send(tg_token, chat_id, weekly_msg)
+                telegram_send(tg_token, chat_id, weekly_msg, parse_mode="HTML")
                 mark_weekly_report_sent(chat_id=chat_id, week_id=week_id, sent_ts=utc_now_iso())
                 log.info("weekly_report_sent week_id=%s chat_id=%s", week_id, chat_id)
 
@@ -787,16 +814,20 @@ def telegram_send_photo_with_markup(
     photo_path: str,
     caption: str,
     reply_markup: Dict[str, Any],
+    parse_mode: Optional[str] = None,
 ) -> Optional[int]:
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    data = {
+        "chat_id": chat_id,
+        "caption": caption,
+        "reply_markup": json.dumps(reply_markup, ensure_ascii=False),
+    }
+    if parse_mode:
+        data["parse_mode"] = parse_mode
     with open(photo_path, "rb") as photo_file:
         response = requests.post(
             url,
-            data={
-                "chat_id": chat_id,
-                "caption": caption,
-                "reply_markup": json.dumps(reply_markup, ensure_ascii=False),
-            },
+            data=data,
             files={"photo": photo_file},
             timeout=30,
         )
@@ -853,9 +884,10 @@ def build_color_caption(color: Dict[str, Any]) -> str:
     color_obj = weekly_color_from_dict(color)
     rarity_label = map_rarity_ru(color_obj.rarity_level)
     return (
-        f"Цвет недели: {color_obj.name_ru} · {color_obj.hex}\n"
-        f"Фокус: {build_color_metaphor_line(color_obj)}\n"
-        f"Известность названия: {rarity_label}"
+        "🎨 <b>Тема недели</b>\n\n"
+        f"{color_obj.name_ru} · {color_obj.hex}\n"
+        f"<b>Фокус:</b> {build_color_metaphor_line(color_obj)}\n"
+        f"<b>Редкость:</b> {rarity_label}"
     )
 
 
@@ -1180,6 +1212,7 @@ def handle_today_command(tg_token: str, chat_id: str) -> None:
         image_path,
         caption,
         build_today_keyboard(day, vote_value, history_visible=True),
+        parse_mode="HTML",
     )
 
 def handle_color_command(tg_token: str, chat_id: str) -> None:
@@ -1196,6 +1229,7 @@ def handle_color_command(tg_token: str, chat_id: str) -> None:
         image_path,
         build_color_caption(color),
         keyboard,
+        parse_mode="HTML",
     )
 
 
@@ -1303,7 +1337,7 @@ def handle_stats_command(tg_token: str, chat_id: str) -> None:
         f"редкий: {int(yes_by_rarity.get('rare', 0))}\n"
         f"экзотический: {int(yes_by_rarity.get('exotic', 0))}"
     )
-    telegram_send(tg_token, chat_id, message)
+    telegram_send(tg_token, chat_id, message, parse_mode="HTML")
 
 
 def handle_week_command(tg_token: str, chat_id: str) -> None:
@@ -1391,7 +1425,7 @@ async def webhook(request: Request):
             handle_today_command(tg_token, message_chat_id)
             return Response(status_code=200)
         if text.lower() == "/help":
-            telegram_send(tg_token, message_chat_id, build_help_message())
+            telegram_send(tg_token, message_chat_id, build_help_message(), parse_mode="HTML")
             return Response(status_code=200)
         if text.lower() == "/week":
             handle_week_command(tg_token, message_chat_id)
