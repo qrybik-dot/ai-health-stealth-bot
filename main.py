@@ -24,6 +24,7 @@ from cache import (
     get_week_vote_accuracy,
     get_weekly_vote_stats,
     build_snapshot_merge_diff,
+    build_day_context,
     current_day_key,
     get_day_snapshot,
     get_latest_sync_trace,
@@ -43,6 +44,8 @@ from cache import (
     upsert_color_vote,
     was_slot_sent,
     was_weekly_report_sent,
+    KEY_METRICS,
+    METRIC_LABELS,
 )
 from color_engine import (
     build_color_metaphor_line,
@@ -462,22 +465,29 @@ def _metric_present(value: Any) -> bool:
 
 
 def _evaluate_data_quality(today_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    human_map = {
-        "sleep": "сон",
-        "body_battery": "Body Battery",
-        "stress": "стресс",
-        "rhr": "RHR",
-    }
-    if not isinstance(today_payload, dict):
-        return {"is_partial": True, "present": 0, "quality_label": "низкая", "missing_labels": list(human_map.values())}
-    keys = ["body_battery", "stress", "sleep", "rhr"]
-    present = sum(1 for key in keys if _metric_present(today_payload.get(key)))
-    missing_labels = [human_map[k] for k in keys if not _metric_present(today_payload.get(k))]
+    available = []
+    if isinstance(today_payload, dict):
+        available = [metric for metric in KEY_METRICS if _metric_present(today_payload.get(metric))]
+    missing = [metric for metric in KEY_METRICS if metric not in available]
+    present = len(available)
     if present <= 1:
-        return {"is_partial": True, "present": present, "quality_label": "низкая", "missing_labels": missing_labels}
-    if present <= 2:
-        return {"is_partial": True, "present": present, "quality_label": "средняя", "missing_labels": missing_labels}
-    return {"is_partial": False, "present": present, "quality_label": "высокая", "missing_labels": missing_labels}
+        quality_label = "низкая"
+        is_partial = True
+    elif present <= 2:
+        quality_label = "средняя"
+        is_partial = True
+    else:
+        quality_label = "высокая"
+        is_partial = False
+    return {
+        "is_partial": is_partial,
+        "present": present,
+        "quality_label": quality_label,
+        "missing_metrics": missing,
+        "available_metrics": available,
+        "missing_labels": [METRIC_LABELS[m] for m in missing],
+        "available_labels": [METRIC_LABELS[m] for m in available],
+    }
 
 
 def _confidence_text(today_payload: Optional[Dict[str, Any]], quality: Dict[str, Any]) -> str:
@@ -491,17 +501,19 @@ def _confidence_text(today_payload: Optional[Dict[str, Any]], quality: Dict[str,
 def _build_partial_data_variant(slot: str, quality: Dict[str, Any]) -> str:
     slot_text = _slot_title(slot)
     missing_labels = quality.get("missing_labels", []) if isinstance(quality, dict) else []
-    missing_line = ""
-    if missing_labels:
-        missing_line = "\nЕщё не дошли: " + ", ".join(missing_labels[:4]) + "."
+    available_labels = quality.get("available_labels", []) if isinstance(quality, dict) else []
+    have_line = ", ".join(available_labels) if available_labels else "пока нет"
+    missing_line = ", ".join(missing_labels[:4]) if missing_labels else "—"
     return (
         f"🟡 <b>{slot_text}</b>\n\n"
-        "<i>Статус: предварительная оценка.</i>\n"
-        f"Главный смысл: сейчас видно {quality['present']} из 4 ключевых метрик Garmin.{missing_line}\n"
+        "<b>Статус:</b> предварительная оценка\n\n"
+        f"<b>Уже есть:</b> {have_line}\n"
+        f"<b>Не хватает:</b> {missing_line}\n"
+        f"<b>Ключевые метрики:</b> {quality['present']} из {len(KEY_METRICS)}\n\n"
         "<b>Лучшее действие:</b> один короткий спокойный блок и пауза 5–7 минут.\n"
         "<b>Ограничение:</b> не повышай нагрузку до следующей синхронизации.\n"
         f"<b>Надёжность:</b> {quality['quality_label']}.\n"
-        "Автообновление: вывод уточнится после поступления новых данных."
+        "Автообновление: вывод уточнится после новых данных Garmin."
     )
 
 
@@ -935,8 +947,15 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         log.info("send_result=ok fallback=true reason=%s slot_id=%s cache_source=%s cache_available=%s", reason_code, resolved_slot, cache_meta.get("source", "unknown"), cache_meta.get("available", False))
         return
 
-    today_payload = _safe_today_payload(full_history, today_str)
-    quality = _evaluate_data_quality(today_payload)
+    day_context = build_day_context(day_key=today_str, cache_data=full_history)
+    today_payload = day_context.get("snapshot") if isinstance(day_context.get("snapshot"), dict) else _safe_today_payload(full_history, today_str)
+    quality = {
+        "is_partial": day_context.get("day_status") != "ready",
+        "present": day_context.get("key_metrics_present_count", 0),
+        "quality_label": "высокая" if day_context.get("day_status") == "ready" else ("средняя" if day_context.get("key_metrics_present_count", 0) >= 2 else "низкая"),
+        "missing_labels": [METRIC_LABELS.get(m, m) for m in day_context.get("missing_metrics", []) if m in KEY_METRICS],
+        "available_labels": [METRIC_LABELS.get(m, m) for m in day_context.get("available_metrics", []) if m in KEY_METRICS],
+    }
     if isinstance(today_payload, dict):
         log.info("cache_freshness date=%s last_sync_time=%s fetched_at_utc=%s", today_str, today_payload.get("last_sync_time", ""), today_payload.get("fetched_at_utc", ""))
     if push_kind == "scheduled" and resolved_slot == "morning" and quality.get("is_partial", True):
@@ -1894,6 +1913,96 @@ def handle_refresh_command(tg_token: str, chat_id: str) -> None:
         )
 
 
+def _metric_name_list(metric_keys: List[str]) -> str:
+    return ", ".join(METRIC_LABELS.get(key, key) for key in metric_keys)
+
+
+def _format_metrics_availability(context: Dict[str, Any]) -> str:
+    available = context.get("available_metrics", [])
+    missing = context.get("missing_metrics", [])
+    available_line = _metric_name_list(available) if available else "пока нет"
+    missing_line = _metric_name_list(missing[:8]) if missing else "—"
+    return (
+        "📊 <b>Метрики за текущий день</b>\n\n"
+        f"<b>Доступно сейчас:</b> {available_line}\n"
+        f"<b>Пока не хватает:</b> {missing_line}\n\n"
+        f"<b>Что это значит:</b> сигнал собран по {context['key_metrics_present_count']} из {context['key_metrics_total_count']} ключевых метрик."
+    )
+
+
+def _safe_value(snapshot: Dict[str, Any], path: List[str]) -> Optional[Any]:
+    node: Any = snapshot
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _format_detailed_analysis(context: Dict[str, Any]) -> str:
+    snapshot = context.get("snapshot", {}) if isinstance(context.get("snapshot"), dict) else {}
+    available = set(context.get("available_metrics", []))
+    blocks: List[str] = ["🔎 <b>Детальнее по текущему дню</b>"]
+
+    summary = f"<b>Общий фон:</b> ключевых метрик {context['key_metrics_present_count']} из {context['key_metrics_total_count']}."
+    blocks.append(summary)
+
+    if "sleep" in available:
+        sleep_s = _safe_value(snapshot, ["sleep", "sleepTimeSeconds"])
+        if isinstance(sleep_s, (int, float)):
+            blocks.append(f"• <b>Сон:</b> {round(float(sleep_s)/3600, 1)} ч")
+    if "body_battery" in available:
+        val = _safe_value(snapshot, ["body_battery", "mostRecentValue"])
+        if isinstance(val, (int, float)):
+            blocks.append(f"• <b>Body Battery:</b> {int(val)}")
+    if "stress" in available:
+        val = _safe_value(snapshot, ["stress", "avgStressLevel"])
+        if isinstance(val, (int, float)):
+            blocks.append(f"• <b>Стресс:</b> {int(val)}")
+    if "rhr" in available:
+        val = _safe_value(snapshot, ["rhr", "restingHeartRate"])
+        if isinstance(val, (int, float)):
+            blocks.append(f"• <b>RHR:</b> {int(val)}")
+    if "steps" in available:
+        val = _safe_value(snapshot, ["steps", "totalSteps"])
+        if isinstance(val, (int, float)):
+            blocks.append(f"• <b>Шаги:</b> {int(val)}")
+
+    if context["key_metrics_present_count"] < 3:
+        missing_key_labels = [METRIC_LABELS[m] for m in KEY_METRICS if m in context.get("missing_metrics", [])]
+        blocks.append("")
+        blocks.append("<b>Ограничения:</b>")
+        blocks.append("• Подробный разбор частичный: не хватает " + (", ".join(missing_key_labels) if missing_key_labels else "ключевых блоков") + ".")
+
+    blocks.append("")
+    blocks.append("<b>Практический вывод:</b> держать ровный ритм и дождаться следующей синхронизации для полного среза.")
+    return "\n".join(blocks)
+
+
+def _format_history_answer(context: Dict[str, Any]) -> str:
+    days = context.get("available_days", [])
+    if not days:
+        return "🗂 <b>История данных</b>\n\nПока нет сохранённых дней."
+    date_range = f"{days[0]} — {days[-1]}" if len(days) > 1 else days[0]
+    return (
+        "🗂 <b>История данных</b>\n\n"
+        f"<b>Факт:</b> доступно дней: {context['available_days_count']}\n"
+        f"<b>Диапазон:</b> {date_range}\n\n"
+        "<b>Что можно анализировать сейчас:</b> текущий день и недельные контрасты в пределах доступной истории."
+    )
+
+
+def _route_structured_reply(query: str, context: Dict[str, Any]) -> Optional[str]:
+    q = query.strip().lower()
+    if "какие метрики" in q:
+        return _format_metrics_availability(context)
+    if "деталь" in q:
+        return _format_detailed_analysis(context)
+    if "за сколько" in q and "дн" in q:
+        return _format_history_answer(context)
+    return None
+
+
 def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
     """Builds the user prompt for conversational chat."""
     return (
@@ -1994,15 +2103,16 @@ async def webhook(request: Request):
             telegram_send(tg_token, message_chat_id, build_debug_sync_message())
             return Response(status_code=200)
 
-        # Load the latest cache from Gist
+        # Load unified day context from cache and use deterministic handlers first
         history_cache = load_cache()
+        context = build_day_context(cache_data=history_cache)
+        response_msg = _route_structured_reply(text, context)
+        if response_msg is None:
+            response_msg = generate_chat_message(
+                env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
+            )
 
-        # Generate a conversational response
-        response_msg = generate_chat_message(
-            env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
-        )
-
-        telegram_send(tg_token, message_chat_id, response_msg)
+        telegram_send(tg_token, message_chat_id, response_msg, parse_mode="HTML")
 
     except Exception:
         log.exception("Webhook processing failed")
