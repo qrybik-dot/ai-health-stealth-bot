@@ -20,7 +20,7 @@ Telegram-бот про ритм дня/недели на базе Garmin Connect
    - пустые/`None` значения **не стирают** старые полезные поля;
    - пересчитываются `missing_flags`, `data_completeness`, `confidence`.
 3. **Gist sync** (`scripts/gist_upload.py` + `.github/workflows/sync.yml`): в gist уходит актуальный `cache.json` из текущего run.
-4. **Runtime read** (`load_cache_with_meta`): при `CACHE_GIST_ID` источник = gist, при ошибке это явно логируется в `cache_error`.
+4. **Runtime read** (`load_cache_with_meta`): при `CACHE_GIST_ID` источник = gist; при ошибке gist или более свежем локальном snapshot используется `local_fallback`/`local_fresher_than_gist` (это явно видно в meta/debug).
 5. **Refresh compare** (`refresh_available_data`): diff считается по merged-снимку, обновлённые блоки фиксируются явно.
 6. **Push gating** (`run_push`): дедуп по слотам, manual-run не блокирует scheduled слот, добавлен deferred/catch-up сценарий утра.
 
@@ -68,7 +68,7 @@ Telegram-бот про ритм дня/недели на базе Garmin Connect
 
 - Garmin может отдавать часть блоков с задержкой.
 - Не все метрики доступны на всех моделях часов.
-- Weekly может пересчитываться по тем же source-данным; отсутствие новых source-блоков видно через `/debug_sync` и refresh-ответ.
+- Weekly включает `source_fingerprint` (снимок source-данных за 7 дней), чтобы исключать «косметические» скачки без новых Garmin-данных.
 - Это не медицинский сервис.
 
 ## Проверка и debug

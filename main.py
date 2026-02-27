@@ -462,15 +462,22 @@ def _metric_present(value: Any) -> bool:
 
 
 def _evaluate_data_quality(today_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    human_map = {
+        "sleep": "сон",
+        "body_battery": "Body Battery",
+        "stress": "стресс",
+        "rhr": "RHR",
+    }
     if not isinstance(today_payload, dict):
-        return {"is_partial": True, "present": 0, "quality_label": "низкая"}
+        return {"is_partial": True, "present": 0, "quality_label": "низкая", "missing_labels": list(human_map.values())}
     keys = ["body_battery", "stress", "sleep", "rhr"]
     present = sum(1 for key in keys if _metric_present(today_payload.get(key)))
+    missing_labels = [human_map[k] for k in keys if not _metric_present(today_payload.get(k))]
     if present <= 1:
-        return {"is_partial": True, "present": present, "quality_label": "низкая"}
+        return {"is_partial": True, "present": present, "quality_label": "низкая", "missing_labels": missing_labels}
     if present <= 2:
-        return {"is_partial": True, "present": present, "quality_label": "средняя"}
-    return {"is_partial": False, "present": present, "quality_label": "высокая"}
+        return {"is_partial": True, "present": present, "quality_label": "средняя", "missing_labels": missing_labels}
+    return {"is_partial": False, "present": present, "quality_label": "высокая", "missing_labels": missing_labels}
 
 
 def _confidence_text(today_payload: Optional[Dict[str, Any]], quality: Dict[str, Any]) -> str:
@@ -483,10 +490,14 @@ def _confidence_text(today_payload: Optional[Dict[str, Any]], quality: Dict[str,
 
 def _build_partial_data_variant(slot: str, quality: Dict[str, Any]) -> str:
     slot_text = _slot_title(slot)
+    missing_labels = quality.get("missing_labels", []) if isinstance(quality, dict) else []
+    missing_line = ""
+    if missing_labels:
+        missing_line = "\nЕщё не дошли: " + ", ".join(missing_labels[:4]) + "."
     return (
         f"🟡 <b>{slot_text}</b>\n\n"
         "<i>Статус: предварительная оценка.</i>\n"
-        f"Главный смысл: сейчас видно только {quality['present']} из 4 ключевых метрик Garmin.\n"
+        f"Главный смысл: сейчас видно {quality['present']} из 4 ключевых метрик Garmin.{missing_line}\n"
         "<b>Лучшее действие:</b> один короткий спокойный блок и пауза 5–7 минут.\n"
         "<b>Ограничение:</b> не повышай нагрузку до следующей синхронизации.\n"
         f"<b>Надёжность:</b> {quality['quality_label']}.\n"
@@ -586,6 +597,27 @@ def collect_weekly_data(full_history: Dict[str, Any], now_msk: dt.datetime) -> L
             payload = {}
         days.append({"date": day, "payload": payload})
     return days
+
+
+def _weekly_source_fingerprint(weekly_days: List[Dict[str, Any]]) -> str:
+    rows: List[str] = []
+    for row in weekly_days:
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        rows.append(
+            "|".join(
+                [
+                    str(row.get("date", "")),
+                    str(payload.get("last_sync_time", "")),
+                    str(payload.get("fetched_at_utc", "")),
+                    str(payload.get("data_completeness", "")),
+                    str(payload.get("sleep", "")),
+                    str(payload.get("stress", "")),
+                    str(payload.get("body_battery", "")),
+                    str(payload.get("rhr", "")),
+                ]
+            )
+        )
+    return "\n".join(rows)
 
 
 def _day_signal(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -795,6 +827,7 @@ def build_weekly_payload(full_history: Dict[str, Any], now_msk: dt.datetime, cha
         "chips": chips,
         "quest": quest,
         "caption": caption,
+        "source_fingerprint": _weekly_source_fingerprint(weekly_days),
     }
 
 
@@ -819,6 +852,7 @@ def send_weekly_report(tg_token: str, chat_id: str, full_history: Dict[str, Any]
             "partial_days": payload["derived"]["partial_days"],
             "stability": payload["derived"]["stability"],
             "chips": payload["chips"],
+            "source_fingerprint": payload.get("source_fingerprint", ""),
         },
     )
     telegram_send_photo_with_markup(
@@ -1718,6 +1752,7 @@ def refresh_available_data() -> Dict[str, Any]:
         "runtime_cache_source": "local",
         "runtime_cache_available": True,
         "missing_now": missing_now,
+        "gist_upload_ts": "",
     }
     log_sync_trace(run_id, trace)
 
@@ -1732,6 +1767,7 @@ def refresh_available_data() -> Dict[str, Any]:
         "old_confidence": diff["old_confidence"],
         "new_confidence": diff["new_confidence"],
         "last_sync_time": _garmin_last_sync(data),
+        "had_real_updates": diff["had_real_updates"],
     }
 
 
@@ -1767,15 +1803,15 @@ def build_refresh_result_message(result: Dict[str, Any]) -> str:
                 + ", ".join(missing_now[:4])
                 + "."
             )
-        return "Данные уже актуальны: с последней синхронизации новых изменений не появилось."
+        return "Данные уже актуальны: после последней синхронизации новых изменений не появилось."
 
     labels = [human_map.get(key, key) for key in updated[:6]]
     missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
     if missing_now:
         return (
-            "Обновил данные: "
+            "Данные обновились частично: пришли "
             + ", ".join(labels)
-            + ". Картина частичная, ещё ожидаю: "
+            + ", но ещё ждём "
             + ", ".join(missing_now[:4])
             + "."
         )
@@ -1811,7 +1847,13 @@ def build_debug_sync_message() -> str:
         lines.extend([
             f"• latest run id: {trace.get('run_id', '-')}",
             f"• latest stage: {trace.get('stage', '-')}",
+            f"• source fetch ts: {trace.get('source_fetch_ts', '-')}",
+            f"• cache write ts: {trace.get('cache_write_ts', '-')}",
+            f"• gist upload ts: {trace.get('gist_upload_ts', '-')}",
+            f"• runtime cache source: {trace.get('runtime_cache_source', '-')}",
             f"• updated blocks: {', '.join(trace.get('updated_blocks', [])[:6]) or '-'}",
+            f"• completeness: {trace.get('old_completeness', '-')} -> {trace.get('new_completeness', '-')}",
+            f"• confidence: {trace.get('old_confidence', '-')} -> {trace.get('new_confidence', '-')}",
             f"• had real updates: {str(bool(trace.get('had_real_updates', False))).lower()}",
         ])
     if missing_blocks:

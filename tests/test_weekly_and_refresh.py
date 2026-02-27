@@ -38,8 +38,8 @@ class WeeklyAndRefreshTests(unittest.TestCase):
                 "after": {"data_completeness": 0.5, "missing_flags": {"rhr": True, "steps": True}},
             }
         )
-        self.assertIn("Обновил данные", msg)
-        self.assertIn("ещё ожидаю", msg)
+        self.assertIn("частично", msg)
+        self.assertIn("ещё ждём", msg)
 
     def test_refresh_result_no_updates_with_missing_explained(self):
         msg = main.build_refresh_result_message(
@@ -63,8 +63,8 @@ class WeeklyAndRefreshTests(unittest.TestCase):
                 "after": {"missing_flags": {"hrv": True}},
             }
         )
-        self.assertIn("Обновил данные: сон", msg)
-        self.assertIn("ещё ожидаю", msg)
+        self.assertIn("частично", msg)
+        self.assertIn("ещё ждём", msg)
 
     def test_debug_sync_message_includes_cache_source(self):
         with unittest.mock.patch.object(main, "load_cache_with_meta", return_value=({}, {"source": "local", "available": False, "error": "local_missing_or_invalid"})):
