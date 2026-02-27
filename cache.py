@@ -197,6 +197,179 @@ def _safe_number(value: Any) -> Optional[float]:
     return None
 
 
+def _safe_date(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    candidate = raw.split("T", 1)[0]
+    try:
+        date.fromisoformat(candidate)
+        return candidate
+    except ValueError:
+        return None
+
+
+def _collect_dates(node: Any) -> List[str]:
+    found: List[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if "date" in str(key).lower():
+                parsed = _safe_date(value)
+                if parsed:
+                    found.append(parsed)
+            found.extend(_collect_dates(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_collect_dates(item))
+    elif isinstance(node, str):
+        parsed = _safe_date(node)
+        if parsed:
+            found.append(parsed)
+    return sorted(set(found))
+
+
+def _diagnose_missing_metric(
+    metric: str,
+    raw_value: Any,
+    normalized_value: Any,
+    expected_day: str,
+    reason: str,
+) -> Dict[str, Any]:
+    dates = _collect_dates(raw_value)
+    date_mismatch = bool(dates) and expected_day not in dates
+    if reason:
+        normalized_reason = reason
+    elif not _is_meaningful(raw_value):
+        normalized_reason = "raw_absent"
+    elif date_mismatch:
+        normalized_reason = "date_mismatch"
+    elif not _is_meaningful(normalized_value):
+        normalized_reason = "mapping_or_shape_mismatch"
+    else:
+        normalized_reason = "ok"
+    return {
+        "metric": metric,
+        "raw_present": _is_meaningful(raw_value),
+        "normalized_present": _is_meaningful(normalized_value),
+        "expected_date_key": expected_day,
+        "raw_dates": dates,
+        "date_mismatch": date_mismatch,
+        "reason": normalized_reason,
+    }
+
+
+def _first_number_from_any(node: Any) -> Optional[float]:
+    direct = _safe_number(node)
+    if direct is not None:
+        return direct
+    if isinstance(node, dict):
+        for value in node.values():
+            nested = _first_number_from_any(value)
+            if nested is not None:
+                return nested
+    if isinstance(node, list):
+        for item in node:
+            nested = _first_number_from_any(item)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _normalize_steps(raw_steps: Any) -> Optional[Dict[str, float]]:
+    if isinstance(raw_steps, dict):
+        for key in ("totalSteps", "steps", "stepCount", "value"):
+            value = _safe_number(raw_steps.get(key))
+            if value is not None:
+                return {"totalSteps": value}
+        nested = _first_number_from_any(raw_steps)
+        if nested is not None:
+            return {"totalSteps": nested}
+    if isinstance(raw_steps, list):
+        for item in raw_steps:
+            normalized = _normalize_steps(item)
+            if normalized:
+                return normalized
+    value = _safe_number(raw_steps)
+    if value is not None:
+        return {"totalSteps": value}
+    return None
+
+
+def _normalize_rhr(raw_rhr: Any) -> Optional[Dict[str, float]]:
+    if isinstance(raw_rhr, dict):
+        hr_avg = _safe_number(raw_rhr.get("lastSevenDaysAvgRestingHeartRate"))
+        hr_rest = _safe_number(raw_rhr.get("restingHeartRate"))
+        if hr_avg is None:
+            hr_avg = _safe_number(raw_rhr.get("averageRestingHeartRate"))
+        if hr_rest is None:
+            hr_rest = _safe_number(raw_rhr.get("value"))
+        if hr_rest is None:
+            hr_rest = _first_number_from_any(raw_rhr)
+        if hr_avg is not None or hr_rest is not None:
+            return {
+                "lastSevenDaysAvgRestingHeartRate": hr_avg,
+                "restingHeartRate": hr_rest,
+            }
+    value = _safe_number(raw_rhr)
+    if value is not None:
+        return {
+            "lastSevenDaysAvgRestingHeartRate": None,
+            "restingHeartRate": value,
+        }
+    return None
+
+
+def _normalize_sleep(raw_sleep: Any) -> Optional[Dict[str, float]]:
+    if isinstance(raw_sleep, dict):
+        sleep_seconds = raw_sleep.get("sleepTimeSeconds")
+        if sleep_seconds is None:
+            sleep_seconds = raw_sleep.get("totalSleepSeconds")
+        score = _safe_number(raw_sleep.get("overallSleepScore"))
+        normalized_seconds = _safe_number(sleep_seconds)
+        if normalized_seconds is not None or score is not None:
+            return {"sleepTimeSeconds": normalized_seconds, "overallSleepScore": score}
+        for nested_key in ("dailySleepDTO", "sleepSummary", "summary"):
+            nested = raw_sleep.get(nested_key)
+            normalized = _normalize_sleep(nested)
+            if normalized:
+                return normalized
+    if isinstance(raw_sleep, list):
+        for item in raw_sleep:
+            normalized = _normalize_sleep(item)
+            if normalized:
+                return normalized
+    return None
+
+
+def _normalize_body_battery(raw_body: Any) -> Optional[Dict[str, float]]:
+    if isinstance(raw_body, dict):
+        recent = _safe_number(raw_body.get("mostRecentValue"))
+        charged = _safe_number(raw_body.get("chargedValue"))
+        if recent is None:
+            recent = _safe_number(raw_body.get("bodyBattery"))
+        if recent is None:
+            recent = _safe_number(raw_body.get("value"))
+        if recent is None:
+            series = raw_body.get("bodyBatteryValuesArray")
+            if isinstance(series, list):
+                for point in reversed(series):
+                    if isinstance(point, list) and len(point) >= 2:
+                        candidate = _safe_number(point[1])
+                        if candidate is not None:
+                            recent = candidate
+                            break
+        if recent is not None or charged is not None:
+            return {"mostRecentValue": recent, "chargedValue": charged}
+    if isinstance(raw_body, list):
+        for item in raw_body:
+            normalized = _normalize_body_battery(item)
+            if normalized:
+                return normalized
+    return None
+
+
 def _is_meaningful(value: Any) -> bool:
     if value is None:
         return False
@@ -334,18 +507,14 @@ def _merge_trimmed_snapshot(existing: Dict[str, Any], incoming: Dict[str, Any]) 
 
 
 def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, Any]:
-    body = snapshot_data.get("body_battery") if isinstance(snapshot_data.get("body_battery"), dict) else {}
+    raw_body = snapshot_data.get("body_battery")
     stress = snapshot_data.get("stress") if isinstance(snapshot_data.get("stress"), dict) else {}
-    sleep = snapshot_data.get("sleep") if isinstance(snapshot_data.get("sleep"), dict) else {}
-    rhr = snapshot_data.get("rhr") if isinstance(snapshot_data.get("rhr"), dict) else {}
+    raw_sleep = snapshot_data.get("sleep")
+    raw_rhr = snapshot_data.get("rhr")
+    raw_steps = snapshot_data.get("steps")
     errors = snapshot_data.get("errors") if isinstance(snapshot_data.get("errors"), list) else []
 
-    sleep_seconds = sleep.get("sleepTimeSeconds")
-    if sleep_seconds is None:
-        sleep_seconds = sleep.get("totalSleepSeconds")
-
     extra_metrics = {
-        "steps": snapshot_data.get("steps"),
         "heart_rate": snapshot_data.get("heart_rate"),
         "daily_activity": snapshot_data.get("daily_activity"),
         "intensity_minutes": snapshot_data.get("intensity_minutes"),
@@ -365,13 +534,9 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
         "last_sync_time": str(snapshot_data.get("last_sync_time", snapshot_data.get("fetched_at_utc", ""))),
     }
 
-    body_recent = _safe_number(body.get("mostRecentValue"))
-    body_charged = _safe_number(body.get("chargedValue"))
-    if body_recent is not None or body_charged is not None:
-        out["body_battery"] = {
-            "mostRecentValue": body_recent,
-            "chargedValue": body_charged,
-        }
+    normalized_body = _normalize_body_battery(raw_body)
+    if normalized_body:
+        out["body_battery"] = normalized_body
 
     stress_avg = _safe_number(stress.get("avgStressLevel"))
     stress_overall = _safe_number(stress.get("overallStressLevel"))
@@ -381,24 +546,40 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
             "overallStressLevel": stress_overall,
         }
 
-    sleep_score = _safe_number(sleep.get("overallSleepScore"))
-    if sleep_seconds is not None or sleep_score is not None:
-        out["sleep"] = {
-            "sleepTimeSeconds": _safe_number(sleep_seconds),
-            "overallSleepScore": sleep_score,
-        }
+    normalized_sleep = _normalize_sleep(raw_sleep)
+    if normalized_sleep:
+        out["sleep"] = normalized_sleep
 
-    hr_avg = _safe_number(rhr.get("lastSevenDaysAvgRestingHeartRate"))
-    hr_rest = _safe_number(rhr.get("restingHeartRate"))
-    if hr_avg is not None or hr_rest is not None:
-        out["rhr"] = {
-            "lastSevenDaysAvgRestingHeartRate": hr_avg,
-            "restingHeartRate": hr_rest,
-        }
+    normalized_rhr = _normalize_rhr(raw_rhr)
+    if normalized_rhr:
+        out["rhr"] = normalized_rhr
+
+    normalized_steps = _normalize_steps(raw_steps)
+    if normalized_steps:
+        out["steps"] = normalized_steps
 
     for metric_name, metric_value in extra_metrics.items():
         if isinstance(metric_value, dict) and metric_value:
             out[metric_name] = metric_value
+
+    diagnostics: Dict[str, Any] = {
+        "expected_date_key": day,
+        "metrics": {},
+    }
+    for metric, raw_value, normalized_value in (
+        ("sleep", raw_sleep, out.get("sleep")),
+        ("body_battery", raw_body, out.get("body_battery")),
+        ("rhr", raw_rhr, out.get("rhr")),
+        ("steps", raw_steps, out.get("steps")),
+    ):
+        diagnostics["metrics"][metric] = _diagnose_missing_metric(
+            metric=metric,
+            raw_value=raw_value,
+            normalized_value=normalized_value,
+            expected_day=day,
+            reason="",
+        )
+    out["sync_diagnostics"] = diagnostics
 
     _recalculate_quality(out)
 

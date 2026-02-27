@@ -19,7 +19,7 @@ Telegram-бот про ритм дня/недели на базе Garmin Connect
    - выполняется merge c текущим днём;
    - пустые/`None` значения **не стирают** старые полезные поля;
    - пересчитываются `missing_flags`, `data_completeness`, `confidence`.
-3. **Gist sync** (`scripts/gist_upload.py` + `.github/workflows/sync.yml`): в gist уходит актуальный `cache.json` из текущего run.
+3. **Gist sync** (`scripts/gist_upload.py` + `.github/workflows/sync.yml`): после `python main.py sync` workflow отдельным шагом делает upload `cache.json` в gist. Внутри `sync/refresh` команд `gist_upload_ts` не заполняется, потому что upload выполняется вне процесса бота.
 4. **Runtime read** (`load_cache_with_meta`): при `CACHE_GIST_ID` источник = gist; при ошибке gist или более свежем локальном snapshot используется `local_fallback`/`local_fresher_than_gist` (это явно видно в meta/debug).
 5. **Refresh compare** (`refresh_available_data`): diff считается по merged-снимку, обновлённые блоки фиксируются явно.
 6. **Push gating** (`run_push`): дедуп по слотам, manual-run не блокирует scheduled слот, добавлен deferred/catch-up сценарий утра.
@@ -79,11 +79,13 @@ Telegram-бот про ритм дня/недели на базе Garmin Connect
 - `python main.py debug-sync`
 
 Что смотреть:
-- источник кэша (`gist/local`),
-- ошибка источника (`cache_error`),
+- источник кэша (`gist/local/local_fallback/local_fresher_than_gist`),
+- причина fallback (`cache_error`, `fallback_reason`),
+- note про устойчивость после рестарта (`source of truth note`),
 - последний sync/refresh run-id,
-- `updated_blocks`,
-- какие блоки всё ещё missing.
+- `had real updates` (реально ли появились новые блоки),
+- `updated_blocks` (какие блоки изменились),
+- `still missing` + по каждому ключевому полю: `raw`, `normalized`, `expected_day`, `raw_dates`, `reason`.
 
 ## Workflow
 
@@ -138,3 +140,25 @@ Telegram-бот про ритм дня/недели на базе Garmin Connect
 - История хранится по дням в `cache.json` и накапливается инкрементально.
 - Глубина истории ограничена `RETENTION_DAYS`.
 - Если fetch в текущем run вернул только текущий день, прошлые дни всё равно доступны из ранее сохранённого кэша.
+
+
+## Что значит `local_fresher_than_gist`
+
+Это состояние, когда:
+- gist доступен,
+- но у локального `cache.json` свежий `last_sync_time/fetched_at_utc` для текущего дня.
+
+Тогда runtime выбирает локальный snapshot как более актуальный. Это безопасно для текущего процесса, но в другом runtime после рестарта без этого файла может произойти откат к состоянию gist. Поэтому в `/debug_sync` добавлен явный note про риск после рестарта.
+
+## Почему могут отсутствовать `sleep/body_battery/rhr/steps`
+
+Диагностика теперь разделяет причины по каждому полю:
+- `raw_absent`: Garmin не прислал блок в raw payload.
+- `date_mismatch`: в raw есть дата, но не совпадает с `expected_date_key` (часто ночной сон уходит в соседний день).
+- `mapping_or_shape_mismatch`: raw есть, но нормализация не смогла извлечь поле.
+
+Нормализация поддерживает дополнительные формы payload:
+- `sleep`: `dailySleepDTO/sleepSummary` + стандартные поля;
+- `body_battery`: `bodyBatteryValuesArray` и fallback-поля;
+- `rhr`: `value/averageRestingHeartRate` + стандартные поля;
+- `steps`: `steps/totalSteps/stepCount/value` и вложенные структуры.

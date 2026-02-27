@@ -248,6 +248,7 @@ def run_sync() -> None:
             "had_real_updates": diff["had_real_updates"],
             "runtime_cache_source": "local",
             "runtime_cache_available": True,
+            "gist_upload_status": "pending_external_workflow_step",
         }
         log_sync_trace(run_id, trace)
         log.info("Sync ok run_id=%s updated_blocks=%s", run_id, diff["updated_blocks"])
@@ -1772,6 +1773,7 @@ def refresh_available_data() -> Dict[str, Any]:
         "runtime_cache_available": True,
         "missing_now": missing_now,
         "gist_upload_ts": "",
+        "gist_upload_status": "not_attempted_in_refresh_command",
     }
     log_sync_trace(run_id, trace)
 
@@ -1847,13 +1849,25 @@ def build_debug_sync_message() -> str:
     day_payload = cache_data.get(day_key) if isinstance(cache_data, dict) else {}
     missing_flags = day_payload.get("missing_flags") if isinstance(day_payload, dict) and isinstance(day_payload.get("missing_flags"), dict) else {}
     missing_blocks = [k for k, v in missing_flags.items() if v]
+    diagnostics = day_payload.get("sync_diagnostics") if isinstance(day_payload, dict) and isinstance(day_payload.get("sync_diagnostics"), dict) else {}
+    metric_diagnostics = diagnostics.get("metrics") if isinstance(diagnostics.get("metrics"), dict) else {}
     trace = get_latest_sync_trace()
+
+    gist_status = "-"
+    if cache_meta.get("source") == "local_fresher_than_gist":
+        gist_status = "local snapshot новее gist; после рестарта в другом runtime возможен откат к gist"
+    elif cache_meta.get("source") == "local_fallback":
+        gist_status = f"gist недоступен ({cache_meta.get('error', 'unknown')}); runtime держится на local"
+    elif cache_meta.get("source") == "gist":
+        gist_status = "gist используется как primary source"
 
     lines = [
         "Debug sync:",
         f"• cache source: {cache_meta.get('source', 'unknown')}",
         f"• cache available: {str(bool(cache_meta.get('available', False))).lower()}",
         f"• cache error: {cache_meta.get('error', '') or '-'}",
+        f"• cache fallback reason: {cache_meta.get('fallback_reason', '-')}",
+        f"• source of truth note: {gist_status}",
         f"• date key: {day_key}",
     ]
     if isinstance(day_payload, dict) and day_payload:
@@ -1869,6 +1883,7 @@ def build_debug_sync_message() -> str:
             f"• source fetch ts: {trace.get('source_fetch_ts', '-')}",
             f"• cache write ts: {trace.get('cache_write_ts', '-')}",
             f"• gist upload ts: {trace.get('gist_upload_ts', '-')}",
+            f"• gist upload status: {trace.get('gist_upload_status', '-')}",
             f"• runtime cache source: {trace.get('runtime_cache_source', '-')}",
             f"• updated blocks: {', '.join(trace.get('updated_blocks', [])[:6]) or '-'}",
             f"• completeness: {trace.get('old_completeness', '-')} -> {trace.get('new_completeness', '-')}",
@@ -1877,6 +1892,19 @@ def build_debug_sync_message() -> str:
         ])
     if missing_blocks:
         lines.append("• still missing: " + ", ".join(missing_blocks[:6]))
+        for metric in missing_blocks:
+            diag = metric_diagnostics.get(metric) if isinstance(metric_diagnostics, dict) else None
+            if not isinstance(diag, dict):
+                continue
+            lines.append(
+                "  - "
+                + metric
+                + ": raw="
+                + ("yes" if diag.get("raw_present") else "no")
+                + ", normalized="
+                + ("yes" if diag.get("normalized_present") else "no")
+                + f", expected_day={diag.get('expected_date_key', '-')}, raw_dates={','.join(diag.get('raw_dates', [])[:3]) or '-'}, reason={diag.get('reason', '-')}" 
+            )
     return "\n".join(lines)
 
 
