@@ -1,8 +1,9 @@
 import json
 import os
 import requests
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 CACHE_FILE = "cache.json"
 MEMORY_DAYS = 120
@@ -12,9 +13,11 @@ TODAY_VOTES_KEY = "_today_votes"
 TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
 REFRESH_STATE_KEY = "_refresh_state"
+SYNC_DEBUG_KEY = "_sync_debug"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
+DEFAULT_BOT_TZ = "Europe/Moscow"
 
 
 def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -157,6 +160,36 @@ def _recalculate_quality(snapshot: Dict[str, Any]) -> None:
     snapshot["confidence"] = round(0.35 + completeness * 0.6, 2)
 
 
+def _tz_name() -> str:
+    return os.getenv("BOT_TIMEZONE", DEFAULT_BOT_TZ).strip() or DEFAULT_BOT_TZ
+
+
+def current_day_key() -> str:
+    try:
+        tz = ZoneInfo(_tz_name())
+    except Exception:
+        tz = timezone.utc
+    return datetime.now(tz).date().isoformat()
+
+
+def _is_emptyish(value: Any) -> bool:
+    return value in (None, "", {}, [])
+
+
+def _deep_merge(existing: Any, incoming: Any) -> Any:
+    if isinstance(existing, dict) and isinstance(incoming, dict):
+        merged: Dict[str, Any] = dict(existing)
+        for key, incoming_value in incoming.items():
+            existing_value = existing.get(key)
+            if _is_emptyish(incoming_value):
+                continue
+            merged[key] = _deep_merge(existing_value, incoming_value)
+        return merged
+    if _is_emptyish(incoming):
+        return existing
+    return incoming
+
+
 def _merge_trimmed_snapshot(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(existing)
     always_replace = {"source", "date", "fetched_at_utc", "last_sync_time", "error"}
@@ -176,7 +209,7 @@ def _merge_trimmed_snapshot(existing: Dict[str, Any], incoming: Dict[str, Any]) 
                 merged["errors"] = merged_errors
             continue
         if _is_meaningful(value):
-            merged[key] = value
+            merged[key] = _deep_merge(existing.get(key), value)
 
     _recalculate_quality(merged)
     return merged
@@ -346,13 +379,69 @@ def prune_cache(retention_days: int = RETENTION_DAYS, weekly_retention_weeks: in
 
 
 def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
-    today_str = date.today().strftime("%Y-%m-%d")
+    today_str = str(snapshot_data.get("date") or current_day_key())
     cache = load_cache()
     existing = cache.get(today_str) if isinstance(cache.get(today_str), dict) else {}
     incoming = _trim_daily_snapshot(snapshot_data, today_str)
-    cache[today_str] = _merge_trimmed_snapshot(existing, incoming)
+    before = dict(existing)
+    merged = _merge_trimmed_snapshot(existing, incoming)
+    cache[today_str] = merged
     _write_cache(cache)
     prune_cache(retention_days=RETENTION_DAYS)
+
+
+def build_snapshot_merge_diff(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+    tracked_keys = [
+        "sleep",
+        "body_battery",
+        "stress",
+        "steps",
+        "heart_rate",
+        "rhr",
+        "daily_activity",
+        "respiration",
+        "pulse_ox",
+        "hrv",
+        "intensity_minutes",
+        "calories",
+        "floors",
+        "activity_summary",
+    ]
+    updated_blocks: list[str] = []
+    for key in tracked_keys:
+        if before.get(key) != after.get(key):
+            updated_blocks.append(key)
+
+    old_completeness = float(before.get("data_completeness", 0.0) or 0.0)
+    new_completeness = float(after.get("data_completeness", 0.0) or 0.0)
+    old_confidence = float(before.get("confidence", 0.0) or 0.0)
+    new_confidence = float(after.get("confidence", 0.0) or 0.0)
+
+    return {
+        "updated_blocks": updated_blocks,
+        "old_completeness": old_completeness,
+        "new_completeness": new_completeness,
+        "old_confidence": old_confidence,
+        "new_confidence": new_confidence,
+        "had_real_updates": bool(updated_blocks),
+    }
+
+
+def get_day_snapshot(day_key: str) -> Dict[str, Any]:
+    cache = load_cache()
+    snapshot = cache.get(day_key)
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any]) -> Dict[str, Any]:
+    cache = load_cache()
+    existing = cache.get(day_key) if isinstance(cache.get(day_key), dict) else {}
+    incoming = _trim_daily_snapshot(snapshot_data, day_key)
+    merged = _merge_trimmed_snapshot(existing, incoming)
+    cache[day_key] = merged
+    _write_cache(cache)
+    prune_cache(retention_days=RETENTION_DAYS)
+    return merged
 
 
 def load_weekly_state() -> Dict[str, Any]:
@@ -656,3 +745,27 @@ def get_refresh_state(chat_id: str, refresh_date: str) -> Optional[Dict[str, Any
     state = cache.get(REFRESH_STATE_KEY, {})
     raw = state.get(_composite_key(chat_id, refresh_date)) if isinstance(state, dict) else None
     return raw if isinstance(raw, dict) else None
+
+
+def log_sync_trace(run_id: str, trace: Dict[str, Any]) -> None:
+    cache = load_cache()
+    state = cache.get(SYNC_DEBUG_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[SYNC_DEBUG_KEY] = state
+    state[run_id] = trace
+    recent = sorted(state.keys())[-20:]
+    cache[SYNC_DEBUG_KEY] = {k: state[k] for k in recent}
+    _write_cache(cache)
+
+
+def get_latest_sync_trace() -> Optional[Dict[str, Any]]:
+    cache = load_cache()
+    state = cache.get(SYNC_DEBUG_KEY)
+    if not isinstance(state, dict) or not state:
+        return None
+    latest_key = sorted(state.keys())[-1]
+    payload = state.get(latest_key)
+    if isinstance(payload, dict):
+        return payload
+    return None

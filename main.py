@@ -23,20 +23,26 @@ from cache import (
     get_today_vote_accuracy,
     get_week_vote_accuracy,
     get_weekly_vote_stats,
+    build_snapshot_merge_diff,
+    current_day_key,
+    get_day_snapshot,
+    get_latest_sync_trace,
     load_cache,
     load_cache_with_meta,
     load_weekly_state,
-    prune_cache,
+    log_refresh_attempt,
+    log_sync_trace,
     mark_slot_sent,
     mark_weekly_report_sent,
+    prune_cache,
     save_daily_snapshot,
     save_weekly_state,
+    upsert_day_snapshot,
     upsert_today_state,
     upsert_today_vote,
     upsert_color_vote,
     was_slot_sent,
     was_weekly_report_sent,
-    log_refresh_attempt,
 )
 from color_engine import (
     build_color_metaphor_line,
@@ -108,6 +114,7 @@ def ensure_bot_commands(token: str) -> None:
         {"command": "stats", "description": "статистика недели"},
         {"command": "help", "description": "подсказка"},
         {"command": "refresh", "description": "обновить данные"},
+        {"command": "debug_sync", "description": "диагностика синхронизации"},
     ]
     response = requests.post(url, json={"commands": commands}, timeout=15)
     if response.status_code != 200:
@@ -121,11 +128,23 @@ def utc_now_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
+def _new_run_id(prefix: str) -> str:
+    return f"{prefix}-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def _garmin_last_sync(raw: Dict[str, Any]) -> str:
+    for key in ("last_sync_time", "lastSyncTimestampGMT", "lastSyncTimestampLocal"):
+        value = raw.get(key)
+        if value:
+            return str(value)
+    return str(raw.get("fetched_at_utc", ""))
+
+
 def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
     api = Garmin(email, password)
     api.login()
 
-    today = dt.date.today().strftime("%Y-%m-%d")
+    today = current_day_key()
     out: Dict[str, Any] = {
         "source": "garmin",
         "date": today,
@@ -200,12 +219,35 @@ def generate_message(
 
 def run_sync() -> None:
     log.info("Sync started")
+    run_id = _new_run_id("sync")
     garmin_email = env("GARMIN_EMAIL")
     garmin_password = env("GARMIN_PASSWORD")
+    day_key = current_day_key()
+    source_fetch_ts = utc_now_iso()
     try:
         data = fetch_garmin_minimal(garmin_email, garmin_password)
-        save_daily_snapshot(data)
-        log.info("Sync ok, cache updated for today")
+        data["date"] = day_key
+        before = get_day_snapshot(day_key)
+        after = upsert_day_snapshot(day_key, data)
+        diff = build_snapshot_merge_diff(before, after)
+        trace = {
+            "run_id": run_id,
+            "stage": "sync",
+            "source_fetch_ts": source_fetch_ts,
+            "cache_write_ts": utc_now_iso(),
+            "snapshot_date_key": day_key,
+            "last_sync_time": _garmin_last_sync(data),
+            "updated_blocks": diff["updated_blocks"],
+            "old_completeness": diff["old_completeness"],
+            "new_completeness": diff["new_completeness"],
+            "old_confidence": diff["old_confidence"],
+            "new_confidence": diff["new_confidence"],
+            "had_real_updates": diff["had_real_updates"],
+            "runtime_cache_source": "local",
+            "runtime_cache_available": True,
+        }
+        log_sync_trace(run_id, trace)
+        log.info("Sync ok run_id=%s updated_blocks=%s", run_id, diff["updated_blocks"])
     except Exception as e:
         msg = str(e).lower()
         is_auth_problem = "login" in msg or "auth" in msg or "credential" in msg or "password" in msg
@@ -215,11 +257,24 @@ def run_sync() -> None:
         log.exception("Sync failed")
         error_data = {
             "source": "garmin",
+            "date": day_key,
             "error": "sync_failed",
             "errors": [{"metric": "sync", "error": str(e)}],
             "fetched_at_utc": utc_now_iso(),
         }
-        save_daily_snapshot(error_data)
+        upsert_day_snapshot(day_key, error_data)
+        log_sync_trace(run_id, {
+            "run_id": run_id,
+            "stage": "sync",
+            "source_fetch_ts": source_fetch_ts,
+            "cache_write_ts": utc_now_iso(),
+            "snapshot_date_key": day_key,
+            "updated_blocks": [],
+            "had_real_updates": False,
+            "error": str(e),
+            "runtime_cache_source": "local",
+            "runtime_cache_available": True,
+        })
         raise
 
 
@@ -795,7 +850,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     log.info("push_clock now_utc=%s now_msk=%s", now_utc.isoformat(), now_msk.isoformat())
     today_str = decision["date"]
 
-    if decision["already_sent"]:
+    if push_kind == "scheduled" and decision["already_sent"]:
         log.info("dedupe_skip slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
         return
 
@@ -804,6 +859,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         return
 
     log.info("Push started: kind=%s slot=%s msk_now=%s utc_now=%s", push_kind, resolved_slot, now_msk.isoformat(), now_utc.isoformat())
+    deferred_slot = None
     full_history, cache_meta = load_cache_with_meta()
     log.info(
         "cache_source=%s cache_keys_count=%s cache_available=%s cache_error=%s",
@@ -836,12 +892,34 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             )
         else:
             _send_push_fallback(tg_token, chat_id, _build_fallback_message(resolved_slot))
-        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-        log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
-        log.info("send_result=ok fallback=true reason=%s slot_id=%s", reason_code, resolved_slot)
+        if push_kind != "scheduled" or deferred_slot is None:
+            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+        else:
+            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=deferred_slot, sent_ts=utc_now_iso())
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s", deferred_slot, today_str, chat_id)
+        log.info("send_result=ok fallback=true reason=%s slot_id=%s cache_source=%s cache_available=%s", reason_code, resolved_slot, cache_meta.get("source", "unknown"), cache_meta.get("available", False))
         return
 
     today_payload = _safe_today_payload(full_history, today_str)
+    quality = _evaluate_data_quality(today_payload)
+    if isinstance(today_payload, dict):
+        log.info("cache_freshness date=%s last_sync_time=%s fetched_at_utc=%s", today_str, today_payload.get("last_sync_time", ""), today_payload.get("fetched_at_utc", ""))
+    if push_kind == "scheduled" and resolved_slot == "morning" and quality.get("is_partial", True):
+        if not was_slot_sent(chat_id=chat_id, send_date=today_str, slot="morning_deferred"):
+            deferred_slot = "morning_deferred"
+            log.info("deferred_window_open slot=morning present=%s", quality.get("present", 0))
+    should_catch_up_morning = (
+        push_kind == "scheduled"
+        and resolved_slot != "morning"
+        and was_slot_sent(chat_id=chat_id, send_date=today_str, slot="morning_deferred")
+        and not was_slot_sent(chat_id=chat_id, send_date=today_str, slot="morning")
+        and not quality.get("is_partial", True)
+        and now_msk.hour <= 15
+    )
+    if should_catch_up_morning:
+        log.info("deferred_catchup_triggered from_slot=%s", resolved_slot)
+        resolved_slot = "morning"
     week_color = get_or_create_weekly_color_state()
     color_story_text = build_color_story(weekly_color_from_dict(week_color))
     color_story_lines = [line.strip() for line in color_story_text.splitlines()[1:] if line.strip()][:4]
@@ -906,8 +984,12 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         else:
             telegram_send(tg_token, chat_id, msg, parse_mode="HTML")
 
-        mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-        log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+        if push_kind != "scheduled" or deferred_slot is None:
+            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+        else:
+            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=deferred_slot, sent_ts=utc_now_iso())
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s", deferred_slot, today_str, chat_id)
 
         is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
         if is_sunday_evening:
@@ -1540,7 +1622,7 @@ def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/help"
+    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/help"
 
 
 def handle_stats_command(tg_token: str, chat_id: str) -> None:
@@ -1606,31 +1688,57 @@ def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> Li
 
 
 def refresh_available_data() -> Dict[str, Any]:
-    today = dt.date.today().isoformat()
-    history_before = load_cache()
-    before = history_before.get(today) if isinstance(history_before.get(today), dict) else {}
+    run_id = _new_run_id("refresh")
+    day_key = current_day_key()
+    source_fetch_ts = utc_now_iso()
+    before = get_day_snapshot(day_key)
+
     data = fetch_garmin_minimal(env("GARMIN_EMAIL"), env("GARMIN_PASSWORD"))
-    save_daily_snapshot(data)
-    history_after = load_cache()
-    after = history_after.get(today) if isinstance(history_after.get(today), dict) else {}
-    updated_blocks = _collect_updated_blocks(before, after)
-    before_flags = before.get("missing_flags") if isinstance(before.get("missing_flags"), dict) else {}
-    after_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
-    recovered_flags = [k for k, v in after_flags.items() if before_flags.get(k) is True and v is False]
+    data["date"] = day_key
+    after = upsert_day_snapshot(day_key, data)
+    diff = build_snapshot_merge_diff(before, after)
+
+    updated_blocks = diff["updated_blocks"]
+    missing_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
+    missing_now = [k for k, v in missing_flags.items() if v]
+
+    trace = {
+        "run_id": run_id,
+        "stage": "refresh",
+        "source_fetch_ts": source_fetch_ts,
+        "cache_write_ts": utc_now_iso(),
+        "snapshot_date_key": day_key,
+        "last_sync_time": _garmin_last_sync(data),
+        "updated_blocks": updated_blocks,
+        "old_completeness": diff["old_completeness"],
+        "new_completeness": diff["new_completeness"],
+        "old_confidence": diff["old_confidence"],
+        "new_confidence": diff["new_confidence"],
+        "had_real_updates": diff["had_real_updates"],
+        "runtime_cache_source": "local",
+        "runtime_cache_available": True,
+        "missing_now": missing_now,
+    }
+    log_sync_trace(run_id, trace)
+
     return {
+        "run_id": run_id,
         "before": before,
         "after": after,
         "updated_blocks": updated_blocks,
-        "recovered_flags": recovered_flags,
         "has_updates": bool(updated_blocks),
+        "old_completeness": diff["old_completeness"],
+        "new_completeness": diff["new_completeness"],
+        "old_confidence": diff["old_confidence"],
+        "new_confidence": diff["new_confidence"],
+        "last_sync_time": _garmin_last_sync(data),
     }
 
 
 def build_refresh_result_message(result: Dict[str, Any]) -> str:
     updated = result.get("updated_blocks", [])
-    recovered_flags = result.get("recovered_flags", [])
     after = result.get("after", {})
-    completeness = after.get("data_completeness")
+    completeness = result.get("new_completeness", after.get("data_completeness"))
     missing_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
 
     human_map = {
@@ -1654,28 +1762,61 @@ def build_refresh_result_message(result: Dict[str, Any]) -> str:
         missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
         if missing_now:
             return (
-                "Новых данных пока нет: Garmin Connect ещё не прислал дополнительные сигналы. "
-                "Сейчас всё ещё отсутствуют: "
+                "Новых блоков пока нет: Garmin Connect ещё не отдал свежие данные. "
+                "Сейчас всё ещё не хватает: "
                 + ", ".join(missing_now[:4])
                 + "."
             )
-        return "Новых данных пока нет. Похоже, часы ещё не синхронизировались с Garmin Connect."
+        return "Данные уже актуальны: с последней синхронизации новых изменений не появилось."
 
-    labels = [human_map.get(key, key) for key in updated[:5]]
+    labels = [human_map.get(key, key) for key in updated[:6]]
     missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
     if missing_now:
         return (
-            "Обновились "
+            "Обновил данные: "
             + ", ".join(labels)
-            + ". Остальные данные ещё не дошли из Garmin: "
+            + ". Картина частичная, ещё ожидаю: "
             + ", ".join(missing_now[:4])
             + "."
         )
 
-    if isinstance(completeness, (int, float)) and completeness < 0.95:
-        return "Обновились " + ", ".join(labels) + ". Картина почти полная, жду остатки синхронизации."
+    if isinstance(completeness, (int, float)) and float(completeness) < 0.95:
+        return "Обновил данные: " + ", ".join(labels) + ". Картина почти полная, жду финальные сигналы Garmin."
 
-    return "Обновились " + ", ".join(labels) + ". Картина дня полная, пересчитал итоговый статус."
+    return "Обновил данные: " + ", ".join(labels) + ". Картина дня полная, итог пересчитан."
+
+
+def build_debug_sync_message() -> str:
+    cache_data, cache_meta = load_cache_with_meta()
+    day_key = current_day_key()
+    day_payload = cache_data.get(day_key) if isinstance(cache_data, dict) else {}
+    missing_flags = day_payload.get("missing_flags") if isinstance(day_payload, dict) and isinstance(day_payload.get("missing_flags"), dict) else {}
+    missing_blocks = [k for k, v in missing_flags.items() if v]
+    trace = get_latest_sync_trace()
+
+    lines = [
+        "Debug sync:",
+        f"• cache source: {cache_meta.get('source', 'unknown')}",
+        f"• cache available: {str(bool(cache_meta.get('available', False))).lower()}",
+        f"• cache error: {cache_meta.get('error', '') or '-'}",
+        f"• date key: {day_key}",
+    ]
+    if isinstance(day_payload, dict) and day_payload:
+        lines.extend([
+            f"• last sync time: {day_payload.get('last_sync_time', '-')}",
+            f"• completeness: {day_payload.get('data_completeness', '-')}",
+            f"• confidence: {day_payload.get('confidence', '-')}",
+        ])
+    if trace:
+        lines.extend([
+            f"• latest run id: {trace.get('run_id', '-')}",
+            f"• latest stage: {trace.get('stage', '-')}",
+            f"• updated blocks: {', '.join(trace.get('updated_blocks', [])[:6]) or '-'}",
+            f"• had real updates: {str(bool(trace.get('had_real_updates', False))).lower()}",
+        ])
+    if missing_blocks:
+        lines.append("• still missing: " + ", ".join(missing_blocks[:6]))
+    return "\n".join(lines)
 
 
 def handle_refresh_command(tg_token: str, chat_id: str) -> None:
@@ -1683,8 +1824,8 @@ def handle_refresh_command(tg_token: str, chat_id: str) -> None:
         log.info("manual_refresh_started chat_id=%s now_msk=%s", chat_id, _now_msk().isoformat())
         result = refresh_available_data()
         message = build_refresh_result_message(result)
-        today = dt.date.today().isoformat()
-        log.info("manual_refresh_result chat_id=%s had_updates=%s updated_blocks=%s", chat_id, bool(result.get("has_updates", False)), result.get("updated_blocks", []))
+        today = current_day_key()
+        log.info("manual_refresh_result chat_id=%s run_id=%s had_updates=%s updated_blocks=%s", chat_id, result.get("run_id", ""), bool(result.get("has_updates", False)), result.get("updated_blocks", []))
         log_refresh_attempt(
             chat_id=chat_id,
             refresh_date=today,
@@ -1807,6 +1948,9 @@ async def webhook(request: Request):
         if text.lower() == "/refresh":
             handle_refresh_command(tg_token, message_chat_id)
             return Response(status_code=200)
+        if text.lower() == "/debug_sync":
+            telegram_send(tg_token, message_chat_id, build_debug_sync_message())
+            return Response(status_code=200)
 
         # Load the latest cache from Gist
         history_cache = load_cache()
@@ -1840,7 +1984,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|push-self-check|cache-self-check|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|push|push-self-check|cache-self-check|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -1883,6 +2027,8 @@ def main() -> None:
         run_push_self_check()
     elif mode == "cache-self-check":
         run_cache_self_check()
+    elif mode == "debug-sync":
+        print(build_debug_sync_message())
     elif mode == "serve":
         run_serve()
     elif mode == "schedule-debug":
@@ -1945,7 +2091,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, push, push-self-check, cache-self-check, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, push, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)

@@ -1,6 +1,7 @@
 import os
 import sys
 import requests
+from datetime import datetime, timezone
 
 
 def env(name: str) -> str:
@@ -31,6 +32,8 @@ def main() -> None:
 
     with open(cache_path, "r", encoding="utf-8") as f:
         content = f.read()
+
+    print(f"gist upload file=cache.json bytes={len(content.encode('utf-8'))} ts_utc={datetime.now(timezone.utc).isoformat()}")
 
     payload = {
         "files": {

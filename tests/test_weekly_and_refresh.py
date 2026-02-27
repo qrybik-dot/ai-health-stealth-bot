@@ -29,7 +29,7 @@ class WeeklyAndRefreshTests(unittest.TestCase):
 
     def test_refresh_result_no_updates(self):
         msg = main.build_refresh_result_message({"updated_blocks": [], "after": {"data_completeness": 0.4}})
-        self.assertIn("Новых данных пока нет", msg)
+        self.assertIn("Данные уже актуальны", msg)
 
     def test_refresh_result_partial(self):
         msg = main.build_refresh_result_message(
@@ -38,21 +38,41 @@ class WeeklyAndRefreshTests(unittest.TestCase):
                 "after": {"data_completeness": 0.5, "missing_flags": {"rhr": True, "steps": True}},
             }
         )
-        self.assertIn("Обновились", msg)
-        self.assertIn("ещё не дошли", msg)
+        self.assertIn("Обновил данные", msg)
+        self.assertIn("ещё ожидаю", msg)
 
     def test_refresh_result_no_updates_with_missing_explained(self):
         msg = main.build_refresh_result_message(
             {"updated_blocks": [], "after": {"missing_flags": {"sleep": True, "steps": True}}}
         )
         self.assertIn("Garmin Connect", msg)
-        self.assertIn("отсутствуют", msg)
+        self.assertIn("не хватает", msg)
 
     def test_collect_updated_blocks_detects_missing_to_present(self):
         before = {"missing_flags": {"sleep": True}, "sleep": None}
         after = {"missing_flags": {"sleep": False}, "sleep": {"sleepTimeSeconds": 25000}}
         updated = main._collect_updated_blocks(before, after)
         self.assertIn("sleep", updated)
+
+
+    def test_refresh_result_reports_actual_updates(self):
+        msg = main.build_refresh_result_message(
+            {
+                "updated_blocks": ["sleep"],
+                "new_completeness": 0.71,
+                "after": {"missing_flags": {"hrv": True}},
+            }
+        )
+        self.assertIn("Обновил данные: сон", msg)
+        self.assertIn("ещё ожидаю", msg)
+
+    def test_debug_sync_message_includes_cache_source(self):
+        with unittest.mock.patch.object(main, "load_cache_with_meta", return_value=({}, {"source": "local", "available": False, "error": "local_missing_or_invalid"})):
+            with unittest.mock.patch.object(main, "get_latest_sync_trace", return_value={"run_id": "r1", "stage": "refresh", "had_real_updates": False, "updated_blocks": []}):
+                with unittest.mock.patch.object(main, "current_day_key", return_value="2026-01-14"):
+                    msg = main.build_debug_sync_message()
+        self.assertIn("cache source: local", msg)
+        self.assertIn("latest run id: r1", msg)
 
 
 if __name__ == "__main__":
