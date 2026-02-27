@@ -15,7 +15,7 @@ Telegram-бот, который переводит данные Garmin в спо
 - **Daily flow**
   - `/today`: карточка дня (PNG 1080×1080) + краткий статус + факт дня + голосование `✅ / ➖ / ❌`.
   - Scheduled push по слотам `morning / midday / evening` с fallback при неполных данных.
-  - Все slot-решения считаются в часовом поясе `Europe/Helsinki`.
+  - Все slot-решения считаются в фиксированном часовом поясе `GMT+3 (Europe/Moscow)` и не подлежат изменению.
 - **Color flow**
   - `/color`: цвет недели (детерминирован по ISO-неделе), подпись и история цвета.
   - Голосование по цвету и недельная статистика попаданий.
@@ -144,7 +144,7 @@ python main.py serve
 python -m unittest
 python main.py push-self-check
 python main.py cache-self-check
-PUSH_NOW_HELSINKI=2026-03-01T09:30:00+02:00 python main.py push scheduled
+PUSH_NOW_MSK=2026-03-01T09:30:00+03:00 python main.py push scheduled
 ```
 
 ## Preview weekly card

@@ -2,12 +2,10 @@ name: Push Daily Insights
 
 on:
   schedule:
-    # UTC cron; dual slots keep target windows stable for Europe/Helsinki across DST.
+    # Fixed timezone policy: GMT+3 (Europe/Moscow).
+    # 09:30 / 14:00 / 20:00 MSK -> 06:30 / 11:00 / 17:00 UTC.
     - cron: "30 6 * * *"
-    - cron: "30 7 * * *"
-    - cron: "0 10 * * *"
     - cron: "0 11 * * *"
-    - cron: "0 16 * * *"
     - cron: "0 17 * * *"
   workflow_dispatch:
 

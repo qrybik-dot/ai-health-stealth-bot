@@ -223,17 +223,17 @@ def run_sync() -> None:
         raise
 
 
-TZ_HELSINKI = ZoneInfo("Europe/Helsinki")
+TZ_MSK_FIXED = ZoneInfo("Europe/Moscow")
 
 
-def _now_helsinki() -> dt.datetime:
-    forced = os.getenv("PUSH_NOW_HELSINKI", os.getenv("PUSH_NOW_MSK", "")).strip()
+def _now_msk() -> dt.datetime:
+    forced = os.getenv("PUSH_NOW_MSK", "").strip()
     if forced:
         parsed = dt.datetime.fromisoformat(forced)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=TZ_HELSINKI)
-        return parsed.astimezone(TZ_HELSINKI)
-    return dt.datetime.now(TZ_HELSINKI)
+            parsed = parsed.replace(tzinfo=TZ_MSK_FIXED)
+        return parsed.astimezone(TZ_MSK_FIXED)
+    return dt.datetime.now(TZ_MSK_FIXED)
 
 
 SLOT_WINDOWS: Dict[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]] = {
@@ -247,16 +247,16 @@ def _minutes(hh: int, mm: int) -> int:
     return hh * 60 + mm
 
 
-def _resolve_push_slot(now_helsinki: dt.datetime) -> Optional[str]:
-    now_min = _minutes(now_helsinki.hour, now_helsinki.minute)
+def _resolve_push_slot(now_msk: dt.datetime) -> Optional[str]:
+    now_min = _minutes(now_msk.hour, now_msk.minute)
     for slot, (start, _target, end) in SLOT_WINDOWS.items():
         if _minutes(*start) <= now_min <= _minutes(*end):
             return slot
     return None
 
 
-def _nearest_slot(now_helsinki: dt.datetime) -> str:
-    now_min = _minutes(now_helsinki.hour, now_helsinki.minute)
+def _nearest_slot(now_msk: dt.datetime) -> str:
+    now_min = _minutes(now_msk.hour, now_msk.minute)
     best_slot = "morning"
     best_delta = 10**9
     for slot, (_start, target, _end) in SLOT_WINDOWS.items():
@@ -267,13 +267,13 @@ def _nearest_slot(now_helsinki: dt.datetime) -> str:
     return best_slot
 
 
-def _resolve_scheduled_push_kind(now_helsinki: dt.datetime, override: Optional[str] = None) -> str:
+def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] = None) -> str:
     if override in {"morning", "midday", "evening"}:
         return override
-    in_window = _resolve_push_slot(now_helsinki)
+    in_window = _resolve_push_slot(now_msk)
     if in_window:
         return in_window
-    return _nearest_slot(now_helsinki)
+    return _nearest_slot(now_msk)
 
 
 def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
@@ -284,13 +284,13 @@ def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
         log.exception("telegram send error fallback=true")
 
 
-def _build_schedule_decision(now_helsinki: dt.datetime, chat_id: str, override: Optional[str] = None) -> Dict[str, Any]:
-    window_slot = _resolve_push_slot(now_helsinki)
-    slot = _resolve_scheduled_push_kind(now_helsinki, override=override)
-    today_str = now_helsinki.date().isoformat()
+def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optional[str] = None) -> Dict[str, Any]:
+    window_slot = _resolve_push_slot(now_msk)
+    slot = _resolve_scheduled_push_kind(now_msk, override=override)
+    today_str = now_msk.date().isoformat()
     already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=slot)
     return {
-        "now_helsinki": now_helsinki.isoformat(),
+        "now_msk": now_msk.isoformat(),
         "window_matched": window_slot if window_slot is not None else "none",
         "slot_id": slot,
         "already_sent": already_sent,
@@ -301,8 +301,8 @@ def _build_schedule_decision(now_helsinki: dt.datetime, chat_id: str, override: 
 
 def _log_schedule_decision(decision: Dict[str, Any]) -> None:
     log.info(
-        "schedule_decision now_helsinki=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
-        decision["now_helsinki"],
+        "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
+        decision["now_msk"],
         decision["window_matched"],
         decision["slot_id"],
         decision["already_sent"],
@@ -778,21 +778,21 @@ def send_weekly_report(tg_token: str, chat_id: str, full_history: Dict[str, Any]
 def run_push(push_kind: str, dry_run: bool = False) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
-    now_helsinki = _now_helsinki()
+    now_msk = _now_msk()
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     prune_summary = prune_cache()
     log.info("cache_prune summary=%s", prune_summary)
     log.info("push_kind received=%s", push_kind)
     if push_kind == "scheduled":
-        decision = _build_schedule_decision(now_helsinki, chat_id)
+        decision = _build_schedule_decision(now_msk, chat_id)
         resolved_slot = decision["slot_id"]
     else:
         resolved_slot = push_kind
-        decision = _build_schedule_decision(now_helsinki, chat_id, override=resolved_slot)
+        decision = _build_schedule_decision(now_msk, chat_id, override=resolved_slot)
 
     _log_schedule_decision(decision)
-    log.info("push_clock now_utc=%s now_helsinki=%s", now_utc.isoformat(), now_helsinki.isoformat())
+    log.info("push_clock now_utc=%s now_msk=%s", now_utc.isoformat(), now_msk.isoformat())
     today_str = decision["date"]
 
     if decision["already_sent"]:
@@ -803,7 +803,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         log.info("send_result=dry_run would_send=true slot_id=%s", resolved_slot)
         return
 
-    log.info("Push started: kind=%s slot=%s helsinki_now=%s utc_now=%s", push_kind, resolved_slot, now_helsinki.isoformat(), now_utc.isoformat())
+    log.info("Push started: kind=%s slot=%s msk_now=%s utc_now=%s", push_kind, resolved_slot, now_msk.isoformat(), now_utc.isoformat())
     full_history, cache_meta = load_cache_with_meta()
     log.info(
         "cache_source=%s cache_keys_count=%s cache_available=%s cache_error=%s",
@@ -909,13 +909,13 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
         log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
 
-        is_sunday_evening = resolved_slot == "evening" and now_helsinki.isoweekday() == 7
+        is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
         if is_sunday_evening:
-            week_id = iso_week_id(now_helsinki.date())
+            week_id = iso_week_id(now_msk.date())
             if was_weekly_report_sent(chat_id=chat_id, week_id=week_id):
                 log.info("weekly_report_skip week_id=%s chat_id=%s", week_id, chat_id)
             else:
-                send_weekly_report(tg_token, chat_id, full_history, now_helsinki)
+                send_weekly_report(tg_token, chat_id, full_history, now_msk)
                 mark_weekly_report_sent(chat_id=chat_id, week_id=week_id, sent_ts=utc_now_iso())
                 log.info("weekly_report_sent week_id=%s chat_id=%s", week_id, chat_id)
 
@@ -928,10 +928,10 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
 
 def run_push_self_check() -> None:
     requested_kind = "scheduled"
-    now_helsinki = _now_helsinki()
-    detected_kind = _resolve_scheduled_push_kind(now_helsinki) if requested_kind == "scheduled" else requested_kind
+    now_msk = _now_msk()
+    detected_kind = _resolve_scheduled_push_kind(now_msk) if requested_kind == "scheduled" else requested_kind
     cache_data, cache_meta = load_cache_with_meta()
-    today_str = _now_helsinki().date().isoformat()
+    today_str = _now_msk().date().isoformat()
     has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
 
     print(f"requested_push_kind={requested_kind}")
@@ -946,7 +946,7 @@ def run_push_self_check() -> None:
 
 def run_cache_self_check() -> None:
     cache_data, cache_meta = load_cache_with_meta()
-    today_str = _now_helsinki().date().isoformat()
+    today_str = _now_msk().date().isoformat()
     has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
     top_level_keys = sorted(list(cache_data.keys())) if isinstance(cache_data, dict) else []
 
@@ -959,12 +959,12 @@ def run_cache_self_check() -> None:
 
 def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
     raw_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "debug-chat")
-    now_helsinki = dt.datetime.fromisoformat(at_iso)
-    if now_helsinki.tzinfo is None:
-        now_helsinki = now_helsinki.replace(tzinfo=TZ_HELSINKI)
+    now_msk = dt.datetime.fromisoformat(at_iso)
+    if now_msk.tzinfo is None:
+        now_msk = now_msk.replace(tzinfo=TZ_MSK_FIXED)
     else:
-        now_helsinki = now_helsinki.astimezone(TZ_HELSINKI)
-    decision = _build_schedule_decision(now_helsinki, raw_chat_id)
+        now_msk = now_msk.astimezone(TZ_MSK_FIXED)
+    decision = _build_schedule_decision(now_msk, raw_chat_id)
     _log_schedule_decision(decision)
     would_send = decision["slot_id"] is not None and not decision["already_sent"]
     print(f"would_send={str(would_send).lower()}")
@@ -977,9 +977,9 @@ def run_schedule_self_check() -> None:
         "2026-02-24T19:12:00+03:00",
     ]
     for at_iso in checks:
-        now_helsinki = dt.datetime.fromisoformat(at_iso).astimezone(TZ_HELSINKI)
+        now_msk = dt.datetime.fromisoformat(at_iso).astimezone(TZ_MSK_FIXED)
         test_chat_id = f"schedule-self-check-{at_iso}"
-        decision = _build_schedule_decision(now_helsinki, test_chat_id)
+        decision = _build_schedule_decision(now_msk, test_chat_id)
         _log_schedule_decision(decision)
         slot_id = decision["slot_id"]
         if slot_id is None:
@@ -1568,8 +1568,8 @@ def handle_stats_command(tg_token: str, chat_id: str) -> None:
 
 def handle_week_command(tg_token: str, chat_id: str) -> None:
     history = load_cache()
-    now_helsinki = _now_helsinki()
-    send_weekly_report(tg_token, chat_id, history, now_helsinki)
+    now_msk = _now_msk()
+    send_weekly_report(tg_token, chat_id, history, now_msk)
 
 
 def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> List[str]:
@@ -1680,7 +1680,7 @@ def build_refresh_result_message(result: Dict[str, Any]) -> str:
 
 def handle_refresh_command(tg_token: str, chat_id: str) -> None:
     try:
-        log.info("manual_refresh_started chat_id=%s now_helsinki=%s", chat_id, _now_helsinki().isoformat())
+        log.info("manual_refresh_started chat_id=%s now_msk=%s", chat_id, _now_msk().isoformat())
         result = refresh_available_data()
         message = build_refresh_result_message(result)
         today = dt.date.today().isoformat()

@@ -103,7 +103,7 @@ class PushMessageTests(unittest.TestCase):
         self.assertIn("<b>Тема недели:</b> 2026-W03", caption)
 
     def test_slot_routing_windows(self):
-        tz = ZoneInfo("Europe/Helsinki")
+        tz = ZoneInfo("Europe/Moscow")
         morning = dt.datetime(2026, 1, 14, 9, 20, tzinfo=tz)
         midday = dt.datetime(2026, 1, 14, 14, 0, tzinfo=tz)
         evening = dt.datetime(2026, 1, 14, 20, 10, tzinfo=tz)
