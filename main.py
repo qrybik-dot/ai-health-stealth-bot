@@ -200,11 +200,18 @@ def generate_message(
 
 def run_sync() -> None:
     log.info("Sync started")
+    garmin_email = env("GARMIN_EMAIL")
+    garmin_password = env("GARMIN_PASSWORD")
     try:
-        data = fetch_garmin_minimal(env("GARMIN_EMAIL"), env("GARMIN_PASSWORD"))
+        data = fetch_garmin_minimal(garmin_email, garmin_password)
         save_daily_snapshot(data)
         log.info("Sync ok, cache updated for today")
     except Exception as e:
+        msg = str(e).lower()
+        is_auth_problem = "login" in msg or "auth" in msg or "credential" in msg or "password" in msg
+        if is_auth_problem:
+            log.error("Sync failed: Garmin credentials rejected, cache untouched")
+            raise RuntimeError("Garmin credentials are invalid or rejected") from e
         log.exception("Sync failed")
         error_data = {
             "source": "garmin",
@@ -216,20 +223,23 @@ def run_sync() -> None:
         raise
 
 
+TZ_MSK_FIXED = ZoneInfo("Europe/Moscow")
+
+
 def _now_msk() -> dt.datetime:
     forced = os.getenv("PUSH_NOW_MSK", "").strip()
     if forced:
         parsed = dt.datetime.fromisoformat(forced)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Moscow"))
-        return parsed.astimezone(ZoneInfo("Europe/Moscow"))
-    return dt.datetime.now(ZoneInfo("Europe/Moscow"))
+            parsed = parsed.replace(tzinfo=TZ_MSK_FIXED)
+        return parsed.astimezone(TZ_MSK_FIXED)
+    return dt.datetime.now(TZ_MSK_FIXED)
 
 
 SLOT_WINDOWS: Dict[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]] = {
-    "morning": ((8, 15), (8, 30), (9, 45)),
-    "midday": ((12, 40), (13, 0), (13, 20)),
-    "evening": ((18, 40), (19, 0), (19, 20)),
+    "morning": ((9, 15), (9, 30), (9, 45)),
+    "midday": ((13, 40), (14, 0), (14, 20)),
+    "evening": ((19, 40), (20, 0), (20, 20)),
 }
 
 
@@ -951,9 +961,9 @@ def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
     raw_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "debug-chat")
     now_msk = dt.datetime.fromisoformat(at_iso)
     if now_msk.tzinfo is None:
-        now_msk = now_msk.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+        now_msk = now_msk.replace(tzinfo=TZ_MSK_FIXED)
     else:
-        now_msk = now_msk.astimezone(ZoneInfo("Europe/Moscow"))
+        now_msk = now_msk.astimezone(TZ_MSK_FIXED)
     decision = _build_schedule_decision(now_msk, raw_chat_id)
     _log_schedule_decision(decision)
     would_send = decision["slot_id"] is not None and not decision["already_sent"]
@@ -967,7 +977,7 @@ def run_schedule_self_check() -> None:
         "2026-02-24T19:12:00+03:00",
     ]
     for at_iso in checks:
-        now_msk = dt.datetime.fromisoformat(at_iso).astimezone(ZoneInfo("Europe/Moscow"))
+        now_msk = dt.datetime.fromisoformat(at_iso).astimezone(TZ_MSK_FIXED)
         test_chat_id = f"schedule-self-check-{at_iso}"
         decision = _build_schedule_decision(now_msk, test_chat_id)
         _log_schedule_decision(decision)
@@ -1580,8 +1590,17 @@ def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> Li
         "floors",
         "activity_summary",
     ]
+
+    before_flags = before.get("missing_flags") if isinstance(before.get("missing_flags"), dict) else {}
+    after_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
+
     for key in keys:
-        if before.get(key) != after.get(key):
+        before_value = before.get(key)
+        after_value = after.get(key)
+        became_available = before_value in (None, {}, []) and after_value not in (None, {}, [])
+        improved_missing_flag = before_flags.get(key) is True and after_flags.get(key) is False
+        changed_value = before_value != after_value
+        if became_available or improved_missing_flag or changed_value:
             blocks.append(key)
     return blocks
 
@@ -1595,20 +1614,24 @@ def refresh_available_data() -> Dict[str, Any]:
     history_after = load_cache()
     after = history_after.get(today) if isinstance(history_after.get(today), dict) else {}
     updated_blocks = _collect_updated_blocks(before, after)
+    before_flags = before.get("missing_flags") if isinstance(before.get("missing_flags"), dict) else {}
+    after_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
+    recovered_flags = [k for k, v in after_flags.items() if before_flags.get(k) is True and v is False]
     return {
         "before": before,
         "after": after,
         "updated_blocks": updated_blocks,
+        "recovered_flags": recovered_flags,
         "has_updates": bool(updated_blocks),
     }
 
 
 def build_refresh_result_message(result: Dict[str, Any]) -> str:
     updated = result.get("updated_blocks", [])
+    recovered_flags = result.get("recovered_flags", [])
     after = result.get("after", {})
     completeness = after.get("data_completeness")
-    if not updated:
-        return "Новых данных пока нет. Похоже, часы ещё не синхронизировались с Garmin Connect."
+    missing_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
 
     human_map = {
         "sleep": "сон",
@@ -1626,21 +1649,42 @@ def build_refresh_result_message(result: Dict[str, Any]) -> str:
         "floors": "этажи",
         "activity_summary": "сводка активности",
     }
+
+    if not updated:
+        missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
+        if missing_now:
+            return (
+                "Новых данных пока нет: Garmin Connect ещё не прислал дополнительные сигналы. "
+                "Сейчас всё ещё отсутствуют: "
+                + ", ".join(missing_now[:4])
+                + "."
+            )
+        return "Новых данных пока нет. Похоже, часы ещё не синхронизировались с Garmin Connect."
+
     labels = [human_map.get(key, key) for key in updated[:5]]
-    if isinstance(completeness, (int, float)) and completeness < 0.7:
+    missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
+    if missing_now:
         return (
-            "Подтянул последние доступные данные: "
+            "Обновились "
             + ", ".join(labels)
-            + ". Вечерняя картина ещё не полная: часть сигналов пока не дошла из Garmin."
+            + ". Остальные данные ещё не дошли из Garmin: "
+            + ", ".join(missing_now[:4])
+            + "."
         )
-    return "Обновил данные: " + ", ".join(labels) + ". Могу пересчитать текущий вывод."
+
+    if isinstance(completeness, (int, float)) and completeness < 0.95:
+        return "Обновились " + ", ".join(labels) + ". Картина почти полная, жду остатки синхронизации."
+
+    return "Обновились " + ", ".join(labels) + ". Картина дня полная, пересчитал итоговый статус."
 
 
 def handle_refresh_command(tg_token: str, chat_id: str) -> None:
     try:
+        log.info("manual_refresh_started chat_id=%s now_msk=%s", chat_id, _now_msk().isoformat())
         result = refresh_available_data()
         message = build_refresh_result_message(result)
         today = dt.date.today().isoformat()
+        log.info("manual_refresh_result chat_id=%s had_updates=%s updated_blocks=%s", chat_id, bool(result.get("has_updates", False)), result.get("updated_blocks", []))
         log_refresh_attempt(
             chat_id=chat_id,
             refresh_date=today,
@@ -1652,6 +1696,14 @@ def handle_refresh_command(tg_token: str, chat_id: str) -> None:
         telegram_send(tg_token, chat_id, message)
     except Exception:
         log.exception("refresh command failed")
+        err_text = str(sys.exc_info()[1] or "")
+        if "Missing env var" in err_text or "credentials" in err_text.lower():
+            telegram_send(
+                tg_token,
+                chat_id,
+                "Не удалось обновить Garmin: проверь GARMIN_EMAIL / GARMIN_PASSWORD в окружении. Кэш не изменял.",
+            )
+            return
         telegram_send(
             tg_token,
             chat_id,

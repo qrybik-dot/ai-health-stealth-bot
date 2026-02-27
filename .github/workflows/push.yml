@@ -2,9 +2,11 @@ name: Push Daily Insights
 
 on:
   schedule:
-    - cron: "30 5 * * *"
-    - cron: "0 10 * * *"
-    - cron: "0 16 * * *"
+    # Fixed timezone policy: GMT+3 (Europe/Moscow).
+    # 09:30 / 14:00 / 20:00 MSK -> 06:30 / 11:00 / 17:00 UTC.
+    - cron: "30 6 * * *"
+    - cron: "0 11 * * *"
+    - cron: "0 17 * * *"
   workflow_dispatch:
 
 jobs:

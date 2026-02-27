@@ -128,6 +128,60 @@ def _safe_number(value: Any) -> Optional[float]:
     return None
 
 
+def _is_meaningful(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, dict):
+        if not value:
+            return False
+        return any(_is_meaningful(v) for v in value.values())
+    if isinstance(value, list):
+        return len(value) > 0
+    return True
+
+
+def _recalculate_quality(snapshot: Dict[str, Any]) -> None:
+    snapshot["missing_flags"] = {
+        "body_battery": not _is_meaningful(snapshot.get("body_battery")),
+        "stress": not _is_meaningful(snapshot.get("stress")),
+        "sleep": not _is_meaningful(snapshot.get("sleep")),
+        "rhr": not _is_meaningful(snapshot.get("rhr")),
+        "steps": not _is_meaningful(snapshot.get("steps")),
+        "heart_rate": not _is_meaningful(snapshot.get("heart_rate")),
+        "daily_activity": not _is_meaningful(snapshot.get("daily_activity")),
+    }
+    metrics_total = len(snapshot["missing_flags"])
+    missing_total = sum(1 for missing in snapshot["missing_flags"].values() if missing)
+    completeness = round(max(0.0, min(1.0, (metrics_total - missing_total) / max(1, metrics_total))), 2)
+    snapshot["data_completeness"] = completeness
+    snapshot["confidence"] = round(0.35 + completeness * 0.6, 2)
+
+
+def _merge_trimmed_snapshot(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(existing)
+    always_replace = {"source", "date", "fetched_at_utc", "last_sync_time", "error"}
+
+    for key, value in incoming.items():
+        if key in {"missing_flags", "data_completeness", "confidence"}:
+            continue
+        if key in always_replace:
+            if value not in (None, ""):
+                merged[key] = value
+            continue
+        if key == "errors":
+            existing_errors = existing.get("errors") if isinstance(existing.get("errors"), list) else []
+            incoming_errors = value if isinstance(value, list) else []
+            merged_errors = (existing_errors + incoming_errors)[:10]
+            if merged_errors:
+                merged["errors"] = merged_errors
+            continue
+        if _is_meaningful(value):
+            merged[key] = value
+
+    _recalculate_quality(merged)
+    return merged
+
+
 def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, Any]:
     body = snapshot_data.get("body_battery") if isinstance(snapshot_data.get("body_battery"), dict) else {}
     stress = snapshot_data.get("stress") if isinstance(snapshot_data.get("stress"), dict) else {}
@@ -158,15 +212,6 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
         "date": str(snapshot_data.get("date", day)),
         "fetched_at_utc": str(snapshot_data.get("fetched_at_utc", "")),
         "last_sync_time": str(snapshot_data.get("last_sync_time", snapshot_data.get("fetched_at_utc", ""))),
-        "missing_flags": {
-            "body_battery": not bool(body),
-            "stress": not bool(stress),
-            "sleep": not bool(sleep),
-            "rhr": not bool(rhr),
-            "steps": not bool(extra_metrics["steps"]),
-            "heart_rate": not bool(extra_metrics["heart_rate"]),
-            "daily_activity": not bool(extra_metrics["daily_activity"]),
-        },
     }
 
     body_recent = _safe_number(body.get("mostRecentValue"))
@@ -204,11 +249,7 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
         if isinstance(metric_value, dict) and metric_value:
             out[metric_name] = metric_value
 
-    metrics_total = len(out.get("missing_flags", {}))
-    missing_total = sum(1 for missing in out.get("missing_flags", {}).values() if missing)
-    completeness = round(max(0.0, min(1.0, (metrics_total - missing_total) / max(1, metrics_total))), 2)
-    out["data_completeness"] = completeness
-    out["confidence"] = round(0.35 + completeness * 0.6, 2)
+    _recalculate_quality(out)
 
     if errors:
         out["errors"] = errors[:10]
@@ -307,7 +348,9 @@ def prune_cache(retention_days: int = RETENTION_DAYS, weekly_retention_weeks: in
 def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
     cache = load_cache()
-    cache[today_str] = _trim_daily_snapshot(snapshot_data, today_str)
+    existing = cache.get(today_str) if isinstance(cache.get(today_str), dict) else {}
+    incoming = _trim_daily_snapshot(snapshot_data, today_str)
+    cache[today_str] = _merge_trimmed_snapshot(existing, incoming)
     _write_cache(cache)
     prune_cache(retention_days=RETENTION_DAYS)
 

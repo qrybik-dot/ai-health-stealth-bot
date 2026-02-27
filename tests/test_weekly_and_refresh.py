@@ -33,9 +33,26 @@ class WeeklyAndRefreshTests(unittest.TestCase):
 
     def test_refresh_result_partial(self):
         msg = main.build_refresh_result_message(
-            {"updated_blocks": ["sleep", "stress"], "after": {"data_completeness": 0.5}}
+            {
+                "updated_blocks": ["sleep", "stress"],
+                "after": {"data_completeness": 0.5, "missing_flags": {"rhr": True, "steps": True}},
+            }
         )
-        self.assertIn("картина ещё не полная", msg)
+        self.assertIn("Обновились", msg)
+        self.assertIn("ещё не дошли", msg)
+
+    def test_refresh_result_no_updates_with_missing_explained(self):
+        msg = main.build_refresh_result_message(
+            {"updated_blocks": [], "after": {"missing_flags": {"sleep": True, "steps": True}}}
+        )
+        self.assertIn("Garmin Connect", msg)
+        self.assertIn("отсутствуют", msg)
+
+    def test_collect_updated_blocks_detects_missing_to_present(self):
+        before = {"missing_flags": {"sleep": True}, "sleep": None}
+        after = {"missing_flags": {"sleep": False}, "sleep": {"sleepTimeSeconds": 25000}}
+        updated = main._collect_updated_blocks(before, after)
+        self.assertIn("sleep", updated)
 
 
 if __name__ == "__main__":
