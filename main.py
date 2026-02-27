@@ -5,7 +5,7 @@ import logging
 import datetime as dt
 import requests
 import html
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -36,6 +36,7 @@ from cache import (
     upsert_color_vote,
     was_slot_sent,
     was_weekly_report_sent,
+    log_refresh_attempt,
 )
 from color_engine import (
     build_color_metaphor_line,
@@ -45,6 +46,7 @@ from color_engine import (
     generate_weekly_color,
     iso_week_id,
     generate_color_card_image,
+    generate_weekly_card_image,
     self_check_color_card,
     self_check_color_engine,
     self_check_today_card,
@@ -105,6 +107,7 @@ def ensure_bot_commands(token: str) -> None:
         {"command": "week", "description": "отчёт недели"},
         {"command": "stats", "description": "статистика недели"},
         {"command": "help", "description": "подсказка"},
+        {"command": "refresh", "description": "обновить данные"},
     ]
     response = requests.post(url, json={"commands": commands}, timeout=15)
     if response.status_code != 200:
@@ -127,29 +130,36 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
         "source": "garmin",
         "date": today,
         "fetched_at_utc": utc_now_iso(),
+        "last_sync_time": utc_now_iso(),
         "errors": [],
     }
 
-    # Minimal calls; each is optional and can fail independently.
-    try:
-        out["body_battery"] = api.get_body_battery(today)
-    except Exception as e:
-        out["errors"].append({"metric": "body_battery", "error": str(e)})
+    calls = {
+        "body_battery": "get_body_battery",
+        "stress": "get_stress_data",
+        "sleep": "get_sleep_data",
+        "rhr": "get_rhr_day",
+        "steps": "get_steps_data",
+        "heart_rate": "get_heart_rates",
+        "daily_activity": "get_user_summary",
+        "intensity_minutes": "get_intensity_minutes_data",
+        "calories": "get_calories_data",
+        "floors": "get_floors",
+        "respiration": "get_respiration_data",
+        "pulse_ox": "get_pulse_ox_data",
+        "hrv": "get_hrv_data",
+        "hrv_status": "get_hrv_status_data",
+        "activity_summary": "get_activities_by_date",
+    }
 
-    try:
-        out["stress"] = api.get_stress_data(today)
-    except Exception as e:
-        out["errors"].append({"metric": "stress", "error": str(e)})
-
-    try:
-        out["sleep"] = api.get_sleep_data(today)
-    except Exception as e:
-        out["errors"].append({"metric": "sleep", "error": str(e)})
-
-    try:
-        out["rhr"] = api.get_rhr_day(today)
-    except Exception as e:
-        out["errors"].append({"metric": "rhr", "error": str(e)})
+    for key, method_name in calls.items():
+        method = getattr(api, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            out[key] = method(today)
+        except Exception as e:
+            out["errors"].append({"metric": key, "error": str(e)})
 
     return out
 
@@ -502,79 +512,256 @@ def _safe_today_payload(cache: Dict[str, Any], day: str) -> Optional[Dict[str, A
     return raw if isinstance(raw, dict) else None
 
 
-def _build_weekly_report_message(full_history: Dict[str, Any], now_msk: dt.datetime, chat_id: str) -> str:
-    days = []
-    for i in range(7):
-        d = (now_msk.date() - dt.timedelta(days=i)).isoformat()
-        payload = full_history.get(d)
-        if isinstance(payload, dict):
-            days.append(payload)
+def collect_weekly_data(full_history: Dict[str, Any], now_msk: dt.datetime) -> List[Dict[str, Any]]:
+    days: List[Dict[str, Any]] = []
+    for delta in range(6, -1, -1):
+        day = (now_msk.date() - dt.timedelta(days=delta)).isoformat()
+        payload = full_history.get(day)
+        if not isinstance(payload, dict):
+            payload = {}
+        days.append({"date": day, "payload": payload})
+    return days
 
-    def rng(values: list[float]) -> str:
-        if not values:
-            return "—"
-        return f"{round(min(values))}–{round(max(values))}"
 
-    body_vals=[]; stress_vals=[]; rhr_vals=[]; sleep_vals=[]
-    for payload in days:
-        bb = payload.get("body_battery") if isinstance(payload.get("body_battery"), dict) else {}
-        st = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
-        sl = payload.get("sleep") if isinstance(payload.get("sleep"), dict) else {}
-        rhr = payload.get("rhr") if isinstance(payload.get("rhr"), dict) else {}
-        b = bb.get("mostRecentValue") or bb.get("chargedValue")
-        s = st.get("avgStressLevel") or st.get("overallStressLevel")
-        rr = rhr.get("lastSevenDaysAvgRestingHeartRate") or rhr.get("restingHeartRate")
-        ss = sl.get("sleepTimeSeconds") or sl.get("totalSleepSeconds")
-        if isinstance(b,(int,float)): body_vals.append(float(b))
-        if isinstance(s,(int,float)): stress_vals.append(float(s))
-        if isinstance(rr,(int,float)): rhr_vals.append(float(rr))
-        if isinstance(ss,(int,float)): sleep_vals.append(float(ss)/3600.0)
+def _day_signal(payload: Dict[str, Any]) -> Dict[str, Any]:
+    body = payload.get("body_battery") if isinstance(payload.get("body_battery"), dict) else {}
+    stress = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
+    sleep = payload.get("sleep") if isinstance(payload.get("sleep"), dict) else {}
 
-    week_id = iso_week_id(now_msk.date())
-    status_acc = get_today_vote_accuracy(week_id, chat_id=chat_id)
-    color_acc = get_week_vote_accuracy(week_id, chat_id=chat_id)
-    accuracy_line = (
-        f"Попадания недели: статус {status_acc['yes_count']}/{status_acc['total']}, "
-        f"цвет {color_acc['yes_count']}/{color_acc['total']}."
-    )
+    body_level = body.get("mostRecentValue") or body.get("chargedValue")
+    stress_level = stress.get("avgStressLevel") or stress.get("overallStressLevel")
+    sleep_seconds = sleep.get("sleepTimeSeconds") or sleep.get("totalSleepSeconds")
+    completeness = payload.get("data_completeness")
+    if not isinstance(completeness, (int, float)):
+        present = sum(1 for value in [body_level, stress_level, sleep_seconds] if isinstance(value, (int, float)))
+        completeness = round(present / 3, 2)
 
-    if len(days) < 3:
-        return (
-            "📘 <b>Отчёт недели</b>\n\n"
-            "<i>Данных пока мало, итог предварительный.</i>\n"
-            "<b>Паттерн:</b> главная опора — повторяемый режим и короткие паузы.\n"
-            f"<b>Цвет и попадание:</b> {accuracy_line}\n"
-            "<b>Практический вывод:</b> сохранить стабильный ритм и дождаться полной недели."
-        )
+    if completeness < 0.5:
+        return {"status": "partial", "score": 0.0, "completeness": completeness}
 
-    observation = "Главный контраст: когда стресс ниже, сон стабильнее в ту же ночь."
-    if body_vals and sleep_vals and (max(sleep_vals) - min(sleep_vals) >= 1.0):
-        observation = "Главный контраст: длиннее сон — заметно ровнее утренний запас."
+    score = 0.0
+    if isinstance(body_level, (int, float)):
+        score += (float(body_level) - 50.0) / 40.0
+    if isinstance(stress_level, (int, float)):
+        score += (45.0 - float(stress_level)) / 35.0
+    if isinstance(sleep_seconds, (int, float)):
+        score += ((float(sleep_seconds) / 3600.0) - 7.0) / 2.0
 
-    humor = "Кратко: неделя без драмы, и это хороший жанр." if now_msk.isoweekday() % 2 == 0 else ""
-    calm_day = "—"
-    stress_day = "—"
-    day_pairs = []
-    for i in range(7):
-        d = (now_msk.date() - dt.timedelta(days=i)).isoformat()
-        payload = full_history.get(d)
+    if score >= 0.85:
+        status = "best"
+    elif score <= -0.5:
+        status = "tense"
+    else:
+        status = "moderate"
+    return {"status": status, "score": round(score, 2), "completeness": completeness}
+
+
+def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
+    points = []
+    scores: List[float] = []
+    partial_count = 0
+    best_count = 0
+    tense_count = 0
+    for row in weekly_days:
+        signal = _day_signal(row["payload"])
+        points.append({"date": row["date"], "status": signal["status"]})
+        if signal["status"] == "partial":
+            partial_count += 1
+            continue
+        scores.append(signal["score"])
+        if signal["status"] == "best":
+            best_count += 1
+        if signal["status"] == "tense":
+            tense_count += 1
+
+    hero = "Неделя предварительная"
+    if len(scores) >= 4:
+        spread = max(scores) - min(scores) if scores else 0.0
+        if spread >= 2.0:
+            hero = "Неделя с перегибами"
+        elif scores[-1] < scores[0] - 0.7:
+            hero = "Темп просел к концу"
+        elif best_count >= 3 and tense_count <= 1:
+            hero = "Неделя ровная"
+        else:
+            hero = "Ритм менялся по дням"
+
+    period_scores = {"утро": 0, "день": 0, "вечер": 0}
+    period_hits = {"утро": 0, "день": 0, "вечер": 0}
+    for row in weekly_days:
+        payload = row["payload"]
         if not isinstance(payload, dict):
             continue
-        st = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
-        s = st.get("avgStressLevel") or st.get("overallStressLevel")
-        if isinstance(s, (int, float)):
-            day_pairs.append((d, float(s)))
-    if day_pairs:
-        calm_day = min(day_pairs, key=lambda x: x[1])[0]
-        stress_day = max(day_pairs, key=lambda x: x[1])[0]
+        sleep = payload.get("sleep") if isinstance(payload.get("sleep"), dict) else {}
+        body = payload.get("body_battery") if isinstance(payload.get("body_battery"), dict) else {}
+        stress = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
+        sleep_seconds = sleep.get("sleepTimeSeconds") or sleep.get("totalSleepSeconds")
+        body_level = body.get("mostRecentValue") or body.get("chargedValue")
+        stress_level = stress.get("avgStressLevel") or stress.get("overallStressLevel")
+        if isinstance(sleep_seconds, (int, float)):
+            period_scores["утро"] += 1 if sleep_seconds >= 7 * 3600 else 0
+            period_hits["утро"] += 1
+        if isinstance(body_level, (int, float)):
+            period_scores["день"] += 1 if body_level >= 55 else 0
+            period_hits["день"] += 1
+        if isinstance(stress_level, (int, float)):
+            period_scores["вечер"] += 1 if stress_level <= 40 else 0
+            period_hits["вечер"] += 1
 
+    period_ratio = {
+        k: (period_scores[k] / period_hits[k]) if period_hits[k] else 0.0
+        for k in period_scores
+    }
+    strongest_period = max(period_ratio.keys(), key=lambda k: period_ratio[k])
+
+    return {
+        "hero_status": hero,
+        "day_points": points,
+        "partial_days": partial_count,
+        "scores": scores,
+        "best_days": best_count,
+        "tense_days": tense_count,
+        "strongest_period": strongest_period,
+        "period_ratio": period_ratio,
+        "stability": round(1.0 / (1.0 + (max(scores) - min(scores))) if scores else 0.0, 2),
+    }
+
+
+def build_human_weekly_chips(derived: Dict[str, Any], week_id: str, chat_id: str) -> List[str]:
+    color_acc = get_week_vote_accuracy(week_id, chat_id=chat_id)
+    total = int(color_acc.get("total", 0))
+    hit_score = int(color_acc.get("yes_count", 0)) + int(color_acc.get("partial_count", 0))
+    color_chip = f"🎨 Цветовой отклик: {hit_score} из {max(1, total)} дней"
+    period_chip = f"🌅 В ресурсе чаще был период: {derived['strongest_period']}"
+    partial_chip = f"☁️ Дней с неполной картиной: {derived['partial_days']}"
+    return [color_chip, period_chip, partial_chip]
+
+
+def generate_weekly_quest(derived: Dict[str, Any], weekly_days: List[Dict[str, Any]]) -> str:
+    period = derived["strongest_period"]
+    partial_days = derived["partial_days"]
+    stability = float(derived.get("stability", 0.0))
+    best = int(derived.get("best_days", 0))
+    tense = int(derived.get("tense_days", 0))
+
+    templates = {
+        "evening_weak": [
+            "Два вечера заверши на 30 минут раньше обычного.",
+            "В ближайшие 2 вечера не открывай новый тяжёлый блок после 20:00.",
+            "Сделай 2 мягких завершения дня: без поздних задач и резких переключений.",
+        ],
+        "low_data": [
+            "Собери 3 дня подряд полную синхронизацию до вечера и сравни итог дня.",
+            "Проверь 2 вечера подряд: полная синхронизация до 21:00 и без пропусков.",
+            "Сделай мини-эксперимент: 3 дня с полной синхронизацией и одним режимом сна.",
+        ],
+        "good_rhythm": [
+            "Повтори лучший сценарий недели ещё 2 раза в ближайшие дни.",
+            "Удержи сильный утренний паттерн минимум в 2 будних днях.",
+            "Закрепи рабочий ритм: два дня с тем же стартом и мягким завершением.",
+        ],
+        "rough_week": [
+            "Сократи лишние переключения: один день с фокусом на 2 главных блока.",
+            "Сделай 1 день со спокойным стартом без тяжёлого блока в первый час.",
+            "Убери один поздний тяжёлый блок и проверь, как меняется вечерний фон.",
+        ],
+    }
+
+    if partial_days >= 3:
+        return templates["low_data"][partial_days % len(templates["low_data"])]
+    if period == "утро" and tense >= 2:
+        return templates["evening_weak"][tense % len(templates["evening_weak"])]
+    if stability >= 0.42 and best >= 3:
+        return templates["good_rhythm"][best % len(templates["good_rhythm"])]
+    return templates["rough_week"][(best + tense) % len(templates["rough_week"])]
+
+
+
+
+def build_weekly_caption(derived: Dict[str, Any], chips: List[str], quest: str) -> str:
+    return "\n".join([
+        f"📊 {derived['hero_status']}",
+        chips[0],
+        chips[2],
+        f"🎯 {quest}",
+    ])
+
+
+def build_weekly_keyboard(week_id: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Мой паттерн", "callback_data": f"weekly_pattern:{week_id}"},
+                {"text": "Что улучшить", "callback_data": f"weekly_improve:{week_id}"},
+            ],
+            [{"text": "История цвета", "callback_data": f"color_story:{week_id}"}],
+        ]
+    }
+
+
+def build_pattern_response(derived: Dict[str, Any]) -> str:
     return (
-        f"📘 <b>Отчёт недели {week_id}</b>\n\n"
-        "<i>Неделя прошла в рабочем ритме, без лишней перегрузки.</i>\n"
-        f"<b>Паттерн состояния:</b> Body Battery {rng(body_vals)}, стресс {rng(stress_vals)}, сон {rng(sleep_vals)} ч, RHR {rng(rhr_vals)}.\n"
-        f"<b>Контраст:</b> спокойный день {calm_day}, напряжённый день {stress_day}. {observation}\n"
-        f"<b>Цвет и попадание:</b> {accuracy_line}\n"
-        "<b>Практический вывод:</b> закрепить один устойчивый утренний блок и мягкое завершение дня."
+        f"Мой паттерн недели: {derived['hero_status'].lower()}. "
+        f"Сильнее выглядел период «{derived['strongest_period']}», "
+        f"дней с напряжением: {derived['tense_days']}, неполных дней: {derived['partial_days']}."
+    )
+
+
+def build_improvement_response(derived: Dict[str, Any], quest: str) -> str:
+    steps = [
+        "1) Держи один стабильный старт дня без спешки.",
+        "2) Снизь вечерние переключения хотя бы в 2 днях.",
+        f"3) Фокус недели: {quest}",
+    ]
+    if derived["partial_days"] >= 2:
+        steps[1] = "2) Добавь 2–3 дня с полной синхронизацией до вечера."
+    return "Что улучшить:\n" + "\n".join(steps)
+
+def build_weekly_payload(full_history: Dict[str, Any], now_msk: dt.datetime, chat_id: str) -> Dict[str, Any]:
+    weekly_days = collect_weekly_data(full_history, now_msk)
+    derived = derive_weekly_status(weekly_days)
+    week_id = iso_week_id(now_msk.date())
+    chips = build_human_weekly_chips(derived, week_id, chat_id)
+    quest = generate_weekly_quest(derived, weekly_days)
+    caption = build_weekly_caption(derived, chips, quest)
+    return {
+        "week_id": week_id,
+        "derived": derived,
+        "chips": chips,
+        "quest": quest,
+        "caption": caption,
+    }
+
+
+def send_weekly_report(tg_token: str, chat_id: str, full_history: Dict[str, Any], now_msk: dt.datetime) -> None:
+    payload = build_weekly_payload(full_history, now_msk, chat_id)
+    week_id = payload["week_id"]
+    image_path = generate_weekly_card_image(
+        chat_id=chat_id,
+        week_id=week_id,
+        hero_status=payload["derived"]["hero_status"],
+        day_points=payload["derived"]["day_points"],
+        chips=payload["chips"],
+        weekly_quest=payload["quest"],
+    )
+    save_weekly_state(
+        week_id,
+        {
+            "week_id": week_id,
+            "hero_status": payload["derived"]["hero_status"],
+            "quest": payload["quest"],
+            "strongest_period": payload["derived"]["strongest_period"],
+            "partial_days": payload["derived"]["partial_days"],
+            "stability": payload["derived"]["stability"],
+            "chips": payload["chips"],
+        },
+    )
+    telegram_send_photo_with_markup(
+        tg_token,
+        chat_id,
+        image_path,
+        payload["caption"],
+        build_weekly_keyboard(week_id),
     )
 
 
@@ -718,8 +905,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             if was_weekly_report_sent(chat_id=chat_id, week_id=week_id):
                 log.info("weekly_report_skip week_id=%s chat_id=%s", week_id, chat_id)
             else:
-                weekly_msg = _build_weekly_report_message(full_history, now_msk, chat_id)
-                telegram_send(tg_token, chat_id, weekly_msg, parse_mode="HTML")
+                send_weekly_report(tg_token, chat_id, full_history, now_msk)
                 mark_weekly_report_sent(chat_id=chat_id, week_id=week_id, sent_ts=utc_now_iso())
                 log.info("weekly_report_sent week_id=%s chat_id=%s", week_id, chat_id)
 
@@ -1313,8 +1499,38 @@ def handle_color_vote_callback(tg_token: str, chat_id: str, callback_query: Dict
     log.info("Color vote stored: week=%s vote=%s stats=%s", week_id, vote_value, stats)
 
 
+
+
+def handle_weekly_pattern_callback(tg_token: str, chat_id: str, callback_query: Dict[str, Any]) -> None:
+    callback_id = callback_query.get("id")
+    callback_data = callback_query.get("data", "")
+    week_id = callback_data.split(":", 1)[1] if ":" in callback_data else iso_week_id()
+    state = load_weekly_state().get(week_id, {})
+    derived = {
+        "hero_status": str(state.get("hero_status", "Неделя предварительная")),
+        "strongest_period": str(state.get("strongest_period", "утро")),
+        "tense_days": int(state.get("tense_days", 0)),
+        "partial_days": int(state.get("partial_days", 0)),
+    }
+    telegram_send(tg_token, chat_id, build_pattern_response(derived))
+    if callback_id:
+        telegram_answer_callback(tg_token, callback_id)
+
+
+def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: Dict[str, Any]) -> None:
+    callback_id = callback_query.get("id")
+    callback_data = callback_query.get("data", "")
+    week_id = callback_data.split(":", 1)[1] if ":" in callback_data else iso_week_id()
+    state = load_weekly_state().get(week_id, {})
+    derived = {
+        "partial_days": int(state.get("partial_days", 0)),
+    }
+    quest = str(state.get("quest", "Сделай 1 спокойный день со стабильным ритмом."))
+    telegram_send(tg_token, chat_id, build_improvement_response(derived, quest))
+    if callback_id:
+        telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/help"
+    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/help"
 
 
 def handle_stats_command(tg_token: str, chat_id: str) -> None:
@@ -1341,7 +1557,106 @@ def handle_stats_command(tg_token: str, chat_id: str) -> None:
 
 
 def handle_week_command(tg_token: str, chat_id: str) -> None:
-    handle_stats_command(tg_token, chat_id)
+    history = load_cache()
+    now_msk = _now_msk()
+    send_weekly_report(tg_token, chat_id, history, now_msk)
+
+
+def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> List[str]:
+    blocks: List[str] = []
+    keys = [
+        "sleep",
+        "body_battery",
+        "stress",
+        "steps",
+        "heart_rate",
+        "rhr",
+        "daily_activity",
+        "respiration",
+        "pulse_ox",
+        "hrv",
+        "intensity_minutes",
+        "calories",
+        "floors",
+        "activity_summary",
+    ]
+    for key in keys:
+        if before.get(key) != after.get(key):
+            blocks.append(key)
+    return blocks
+
+
+def refresh_available_data() -> Dict[str, Any]:
+    today = dt.date.today().isoformat()
+    history_before = load_cache()
+    before = history_before.get(today) if isinstance(history_before.get(today), dict) else {}
+    data = fetch_garmin_minimal(env("GARMIN_EMAIL"), env("GARMIN_PASSWORD"))
+    save_daily_snapshot(data)
+    history_after = load_cache()
+    after = history_after.get(today) if isinstance(history_after.get(today), dict) else {}
+    updated_blocks = _collect_updated_blocks(before, after)
+    return {
+        "before": before,
+        "after": after,
+        "updated_blocks": updated_blocks,
+        "has_updates": bool(updated_blocks),
+    }
+
+
+def build_refresh_result_message(result: Dict[str, Any]) -> str:
+    updated = result.get("updated_blocks", [])
+    after = result.get("after", {})
+    completeness = after.get("data_completeness")
+    if not updated:
+        return "Новых данных пока нет. Похоже, часы ещё не синхронизировались с Garmin Connect."
+
+    human_map = {
+        "sleep": "сон",
+        "body_battery": "Body Battery",
+        "stress": "стресс",
+        "steps": "шаги",
+        "heart_rate": "пульс",
+        "rhr": "RHR",
+        "daily_activity": "дневная активность",
+        "respiration": "дыхание",
+        "pulse_ox": "Pulse Ox",
+        "hrv": "HRV",
+        "intensity_minutes": "интенсивные минуты",
+        "calories": "калории",
+        "floors": "этажи",
+        "activity_summary": "сводка активности",
+    }
+    labels = [human_map.get(key, key) for key in updated[:5]]
+    if isinstance(completeness, (int, float)) and completeness < 0.7:
+        return (
+            "Подтянул последние доступные данные: "
+            + ", ".join(labels)
+            + ". Вечерняя картина ещё не полная: часть сигналов пока не дошла из Garmin."
+        )
+    return "Обновил данные: " + ", ".join(labels) + ". Могу пересчитать текущий вывод."
+
+
+def handle_refresh_command(tg_token: str, chat_id: str) -> None:
+    try:
+        result = refresh_available_data()
+        message = build_refresh_result_message(result)
+        today = dt.date.today().isoformat()
+        log_refresh_attempt(
+            chat_id=chat_id,
+            refresh_date=today,
+            had_updates=bool(result.get("has_updates", False)),
+            updated_blocks=result.get("updated_blocks", []),
+            message=message,
+            refresh_ts=utc_now_iso(),
+        )
+        telegram_send(tg_token, chat_id, message)
+    except Exception:
+        log.exception("refresh command failed")
+        telegram_send(
+            tg_token,
+            chat_id,
+            "Не удалось обновить данные прямо сейчас. Можно повторить /refresh позже.",
+        )
 
 
 def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
@@ -1399,6 +1714,10 @@ async def webhook(request: Request):
                 handle_today_vote_callback(tg_token, callback_chat_id, callback_query)
             elif callback_data.startswith("today_story"):
                 handle_today_story_callback(tg_token, callback_chat_id, callback_query)
+            elif callback_data.startswith("weekly_pattern"):
+                handle_weekly_pattern_callback(tg_token, callback_chat_id, callback_query)
+            elif callback_data.startswith("weekly_improve"):
+                handle_weekly_improve_callback(tg_token, callback_chat_id, callback_query)
             elif callback_data == "noop":
                 callback_id = callback_query.get("id")
                 if callback_id:
@@ -1432,6 +1751,9 @@ async def webhook(request: Request):
             return Response(status_code=200)
         if text.lower() == "/stats":
             handle_stats_command(tg_token, message_chat_id)
+            return Response(status_code=200)
+        if text.lower() == "/refresh":
+            handle_refresh_command(tg_token, message_chat_id)
             return Response(status_code=200)
 
         # Load the latest cache from Gist
