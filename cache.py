@@ -20,6 +20,27 @@ PUSH_STATE_RETENTION_DAYS = 14
 DEFAULT_BOT_TZ = "Europe/Moscow"
 
 
+def _load_local_cache() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+            if isinstance(cache, dict):
+                return cache, {"source": "local", "available": True, "error": ""}
+            return {}, {"source": "local", "available": False, "error": "local_not_dict"}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}, {"source": "local", "available": False, "error": "local_missing_or_invalid"}
+
+
+def _snapshot_freshness_score(snapshot: Any) -> str:
+    if not isinstance(snapshot, dict):
+        return ""
+    for key in ("last_sync_time", "fetched_at_utc"):
+        value = snapshot.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     If CACHE_GIST_ID env var is set, fetches the cache from the Gist.
@@ -62,8 +83,18 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 print(
                     f"cache gist fetch failed: code={error_code} reason={short_reason}"
                 )
-                return {
-                }, {
+                local_cache, local_meta = _load_local_cache()
+                if local_meta.get("available"):
+                    return local_cache, {
+                        "source": "local_fallback",
+                        "available": True,
+                        "error": error_code,
+                        "http_status": response.status_code,
+                        "token_present": token_present,
+                        "token_source": token_source,
+                        "fallback_reason": short_reason,
+                    }
+                return {}, {
                     "source": "gist",
                     "available": False,
                     "error": error_code,
@@ -76,6 +107,21 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
             content = gist_data["files"]["cache.json"]["content"]
             cache = json.loads(content)
             if isinstance(cache, dict):
+                local_cache, local_meta = _load_local_cache()
+                if local_meta.get("available") and isinstance(local_cache, dict):
+                    day_key = current_day_key()
+                    gist_score = _snapshot_freshness_score(cache.get(day_key))
+                    local_score = _snapshot_freshness_score(local_cache.get(day_key))
+                    if local_score and local_score > gist_score:
+                        return local_cache, {
+                            "source": "local_fresher_than_gist",
+                            "available": True,
+                            "error": "",
+                            "http_status": response.status_code,
+                            "token_present": token_present,
+                            "token_source": token_source,
+                            "fallback_reason": "local_snapshot_is_newer",
+                        }
                 return cache, {
                     "source": "gist",
                     "available": True,
@@ -96,6 +142,16 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
             print(
                 f"cache gist fetch exception: gist_id={gist_id} selected_token_source={token_source} token_present={token_present} error={e}"
             )
+            local_cache, local_meta = _load_local_cache()
+            if local_meta.get("available"):
+                return local_cache, {
+                    "source": "local_fallback",
+                    "available": True,
+                    "error": "gist_exception",
+                    "detail": str(e),
+                    "token_present": token_present,
+                    "token_source": token_source,
+                }
             return {}, {
                 "source": "gist",
                 "available": False,
@@ -104,15 +160,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 "token_present": token_present,
                 "token_source": token_source,
             }
-
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-            if isinstance(cache, dict):
-                return cache, {"source": "local", "available": True, "error": ""}
-            return {}, {"source": "local", "available": False, "error": "local_not_dict"}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}, {"source": "local", "available": False, "error": "local_missing_or_invalid"}
+    return _load_local_cache()
 
 
 def load_cache() -> Dict[str, Any]:
@@ -380,7 +428,7 @@ def prune_cache(retention_days: int = RETENTION_DAYS, weekly_retention_weeks: in
 
 def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
     today_str = str(snapshot_data.get("date") or current_day_key())
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     existing = cache.get(today_str) if isinstance(cache.get(today_str), dict) else {}
     incoming = _trim_daily_snapshot(snapshot_data, today_str)
     before = dict(existing)
@@ -428,13 +476,13 @@ def build_snapshot_merge_diff(before: Dict[str, Any], after: Dict[str, Any]) -> 
 
 
 def get_day_snapshot(day_key: str) -> Dict[str, Any]:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     snapshot = cache.get(day_key)
     return snapshot if isinstance(snapshot, dict) else {}
 
 
 def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any]) -> Dict[str, Any]:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     existing = cache.get(day_key) if isinstance(cache.get(day_key), dict) else {}
     incoming = _trim_daily_snapshot(snapshot_data, day_key)
     merged = _merge_trimmed_snapshot(existing, incoming)
@@ -453,7 +501,7 @@ def load_weekly_state() -> Dict[str, Any]:
 
 
 def save_weekly_state(week_id: str, weekly_payload: Dict[str, Any]) -> None:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     if WEEKLY_STATE_KEY not in cache or not isinstance(cache[WEEKLY_STATE_KEY], dict):
         cache[WEEKLY_STATE_KEY] = {}
     cache[WEEKLY_STATE_KEY][week_id] = weekly_payload
@@ -493,7 +541,7 @@ def get_color_vote(chat_id: str, vote_date: str) -> Optional[Dict[str, Any]]:
 
 
 def upsert_color_vote(chat_id: str, vote_date: str, vote_value: str, week_id: str, vote_ts: Optional[str] = None) -> bool:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     votes = _load_daily_votes(cache)
     composite_key = f"{vote_date}|{chat_id}"
     existing = votes.get(composite_key)
@@ -576,7 +624,7 @@ def get_today_vote(chat_id: str, vote_date: str) -> Optional[Dict[str, Any]]:
 
 
 def upsert_today_vote(chat_id: str, vote_date: str, vote_value: str, vote_ts: str) -> bool:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     votes = cache.get(TODAY_VOTES_KEY)
     if not isinstance(votes, dict):
         votes = {}
@@ -592,7 +640,7 @@ def upsert_today_vote(chat_id: str, vote_date: str, vote_value: str, vote_ts: st
 
 
 def upsert_today_state(chat_id: str, value_date: str, state_payload: Dict[str, Any]) -> Dict[str, Any]:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     state = cache.get(TODAY_STATE_KEY)
     if not isinstance(state, dict):
         state = {}
@@ -675,7 +723,7 @@ def get_today_vote_accuracy(week_id: str, chat_id: Optional[str] = None) -> Dict
 
 
 def mark_slot_sent(chat_id: str, send_date: str, slot: str, sent_ts: str) -> None:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
         state = {}
@@ -695,7 +743,7 @@ def was_slot_sent(chat_id: str, send_date: str, slot: str) -> bool:
 
 
 def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
         state = {}
@@ -722,7 +770,7 @@ def log_refresh_attempt(
     message: str,
     refresh_ts: str,
 ) -> None:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     state = cache.get(REFRESH_STATE_KEY)
     if not isinstance(state, dict):
         state = {}
@@ -748,7 +796,7 @@ def get_refresh_state(chat_id: str, refresh_date: str) -> Optional[Dict[str, Any
 
 
 def log_sync_trace(run_id: str, trace: Dict[str, Any]) -> None:
-    cache = load_cache()
+    cache, _ = _load_local_cache()
     state = cache.get(SYNC_DEBUG_KEY)
     if not isinstance(state, dict):
         state = {}
