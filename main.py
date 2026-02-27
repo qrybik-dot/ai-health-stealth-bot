@@ -200,11 +200,18 @@ def generate_message(
 
 def run_sync() -> None:
     log.info("Sync started")
+    garmin_email = env("GARMIN_EMAIL")
+    garmin_password = env("GARMIN_PASSWORD")
     try:
-        data = fetch_garmin_minimal(env("GARMIN_EMAIL"), env("GARMIN_PASSWORD"))
+        data = fetch_garmin_minimal(garmin_email, garmin_password)
         save_daily_snapshot(data)
         log.info("Sync ok, cache updated for today")
     except Exception as e:
+        msg = str(e).lower()
+        is_auth_problem = "login" in msg or "auth" in msg or "credential" in msg or "password" in msg
+        if is_auth_problem:
+            log.error("Sync failed: Garmin credentials rejected, cache untouched")
+            raise RuntimeError("Garmin credentials are invalid or rejected") from e
         log.exception("Sync failed")
         error_data = {
             "source": "garmin",
@@ -216,20 +223,23 @@ def run_sync() -> None:
         raise
 
 
-def _now_msk() -> dt.datetime:
-    forced = os.getenv("PUSH_NOW_MSK", "").strip()
+TZ_HELSINKI = ZoneInfo("Europe/Helsinki")
+
+
+def _now_helsinki() -> dt.datetime:
+    forced = os.getenv("PUSH_NOW_HELSINKI", os.getenv("PUSH_NOW_MSK", "")).strip()
     if forced:
         parsed = dt.datetime.fromisoformat(forced)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Moscow"))
-        return parsed.astimezone(ZoneInfo("Europe/Moscow"))
-    return dt.datetime.now(ZoneInfo("Europe/Moscow"))
+            parsed = parsed.replace(tzinfo=TZ_HELSINKI)
+        return parsed.astimezone(TZ_HELSINKI)
+    return dt.datetime.now(TZ_HELSINKI)
 
 
 SLOT_WINDOWS: Dict[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]] = {
-    "morning": ((8, 15), (8, 30), (9, 45)),
-    "midday": ((12, 40), (13, 0), (13, 20)),
-    "evening": ((18, 40), (19, 0), (19, 20)),
+    "morning": ((9, 15), (9, 30), (9, 45)),
+    "midday": ((13, 40), (14, 0), (14, 20)),
+    "evening": ((19, 40), (20, 0), (20, 20)),
 }
 
 
@@ -237,16 +247,16 @@ def _minutes(hh: int, mm: int) -> int:
     return hh * 60 + mm
 
 
-def _resolve_push_slot(now_msk: dt.datetime) -> Optional[str]:
-    now_min = _minutes(now_msk.hour, now_msk.minute)
+def _resolve_push_slot(now_helsinki: dt.datetime) -> Optional[str]:
+    now_min = _minutes(now_helsinki.hour, now_helsinki.minute)
     for slot, (start, _target, end) in SLOT_WINDOWS.items():
         if _minutes(*start) <= now_min <= _minutes(*end):
             return slot
     return None
 
 
-def _nearest_slot(now_msk: dt.datetime) -> str:
-    now_min = _minutes(now_msk.hour, now_msk.minute)
+def _nearest_slot(now_helsinki: dt.datetime) -> str:
+    now_min = _minutes(now_helsinki.hour, now_helsinki.minute)
     best_slot = "morning"
     best_delta = 10**9
     for slot, (_start, target, _end) in SLOT_WINDOWS.items():
@@ -257,13 +267,13 @@ def _nearest_slot(now_msk: dt.datetime) -> str:
     return best_slot
 
 
-def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] = None) -> str:
+def _resolve_scheduled_push_kind(now_helsinki: dt.datetime, override: Optional[str] = None) -> str:
     if override in {"morning", "midday", "evening"}:
         return override
-    in_window = _resolve_push_slot(now_msk)
+    in_window = _resolve_push_slot(now_helsinki)
     if in_window:
         return in_window
-    return _nearest_slot(now_msk)
+    return _nearest_slot(now_helsinki)
 
 
 def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
@@ -274,13 +284,13 @@ def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
         log.exception("telegram send error fallback=true")
 
 
-def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optional[str] = None) -> Dict[str, Any]:
-    window_slot = _resolve_push_slot(now_msk)
-    slot = _resolve_scheduled_push_kind(now_msk, override=override)
-    today_str = now_msk.date().isoformat()
+def _build_schedule_decision(now_helsinki: dt.datetime, chat_id: str, override: Optional[str] = None) -> Dict[str, Any]:
+    window_slot = _resolve_push_slot(now_helsinki)
+    slot = _resolve_scheduled_push_kind(now_helsinki, override=override)
+    today_str = now_helsinki.date().isoformat()
     already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=slot)
     return {
-        "now_msk": now_msk.isoformat(),
+        "now_helsinki": now_helsinki.isoformat(),
         "window_matched": window_slot if window_slot is not None else "none",
         "slot_id": slot,
         "already_sent": already_sent,
@@ -291,8 +301,8 @@ def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optio
 
 def _log_schedule_decision(decision: Dict[str, Any]) -> None:
     log.info(
-        "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
-        decision["now_msk"],
+        "schedule_decision now_helsinki=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
+        decision["now_helsinki"],
         decision["window_matched"],
         decision["slot_id"],
         decision["already_sent"],
@@ -768,21 +778,21 @@ def send_weekly_report(tg_token: str, chat_id: str, full_history: Dict[str, Any]
 def run_push(push_kind: str, dry_run: bool = False) -> None:
     tg_token = env("TELEGRAM_BOT_TOKEN")
     chat_id = env("TELEGRAM_CHAT_ID")
-    now_msk = _now_msk()
+    now_helsinki = _now_helsinki()
     now_utc = dt.datetime.now(dt.timezone.utc)
 
     prune_summary = prune_cache()
     log.info("cache_prune summary=%s", prune_summary)
     log.info("push_kind received=%s", push_kind)
     if push_kind == "scheduled":
-        decision = _build_schedule_decision(now_msk, chat_id)
+        decision = _build_schedule_decision(now_helsinki, chat_id)
         resolved_slot = decision["slot_id"]
     else:
         resolved_slot = push_kind
-        decision = _build_schedule_decision(now_msk, chat_id, override=resolved_slot)
+        decision = _build_schedule_decision(now_helsinki, chat_id, override=resolved_slot)
 
     _log_schedule_decision(decision)
-    log.info("push_clock now_utc=%s now_msk=%s", now_utc.isoformat(), now_msk.isoformat())
+    log.info("push_clock now_utc=%s now_helsinki=%s", now_utc.isoformat(), now_helsinki.isoformat())
     today_str = decision["date"]
 
     if decision["already_sent"]:
@@ -793,7 +803,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         log.info("send_result=dry_run would_send=true slot_id=%s", resolved_slot)
         return
 
-    log.info("Push started: kind=%s slot=%s msk_now=%s utc_now=%s", push_kind, resolved_slot, now_msk.isoformat(), now_utc.isoformat())
+    log.info("Push started: kind=%s slot=%s helsinki_now=%s utc_now=%s", push_kind, resolved_slot, now_helsinki.isoformat(), now_utc.isoformat())
     full_history, cache_meta = load_cache_with_meta()
     log.info(
         "cache_source=%s cache_keys_count=%s cache_available=%s cache_error=%s",
@@ -899,13 +909,13 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
         log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
 
-        is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
+        is_sunday_evening = resolved_slot == "evening" and now_helsinki.isoweekday() == 7
         if is_sunday_evening:
-            week_id = iso_week_id(now_msk.date())
+            week_id = iso_week_id(now_helsinki.date())
             if was_weekly_report_sent(chat_id=chat_id, week_id=week_id):
                 log.info("weekly_report_skip week_id=%s chat_id=%s", week_id, chat_id)
             else:
-                send_weekly_report(tg_token, chat_id, full_history, now_msk)
+                send_weekly_report(tg_token, chat_id, full_history, now_helsinki)
                 mark_weekly_report_sent(chat_id=chat_id, week_id=week_id, sent_ts=utc_now_iso())
                 log.info("weekly_report_sent week_id=%s chat_id=%s", week_id, chat_id)
 
@@ -918,10 +928,10 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
 
 def run_push_self_check() -> None:
     requested_kind = "scheduled"
-    now_msk = _now_msk()
-    detected_kind = _resolve_scheduled_push_kind(now_msk) if requested_kind == "scheduled" else requested_kind
+    now_helsinki = _now_helsinki()
+    detected_kind = _resolve_scheduled_push_kind(now_helsinki) if requested_kind == "scheduled" else requested_kind
     cache_data, cache_meta = load_cache_with_meta()
-    today_str = _now_msk().date().isoformat()
+    today_str = _now_helsinki().date().isoformat()
     has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
 
     print(f"requested_push_kind={requested_kind}")
@@ -936,7 +946,7 @@ def run_push_self_check() -> None:
 
 def run_cache_self_check() -> None:
     cache_data, cache_meta = load_cache_with_meta()
-    today_str = _now_msk().date().isoformat()
+    today_str = _now_helsinki().date().isoformat()
     has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
     top_level_keys = sorted(list(cache_data.keys())) if isinstance(cache_data, dict) else []
 
@@ -949,12 +959,12 @@ def run_cache_self_check() -> None:
 
 def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
     raw_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "debug-chat")
-    now_msk = dt.datetime.fromisoformat(at_iso)
-    if now_msk.tzinfo is None:
-        now_msk = now_msk.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+    now_helsinki = dt.datetime.fromisoformat(at_iso)
+    if now_helsinki.tzinfo is None:
+        now_helsinki = now_helsinki.replace(tzinfo=TZ_HELSINKI)
     else:
-        now_msk = now_msk.astimezone(ZoneInfo("Europe/Moscow"))
-    decision = _build_schedule_decision(now_msk, raw_chat_id)
+        now_helsinki = now_helsinki.astimezone(TZ_HELSINKI)
+    decision = _build_schedule_decision(now_helsinki, raw_chat_id)
     _log_schedule_decision(decision)
     would_send = decision["slot_id"] is not None and not decision["already_sent"]
     print(f"would_send={str(would_send).lower()}")
@@ -967,9 +977,9 @@ def run_schedule_self_check() -> None:
         "2026-02-24T19:12:00+03:00",
     ]
     for at_iso in checks:
-        now_msk = dt.datetime.fromisoformat(at_iso).astimezone(ZoneInfo("Europe/Moscow"))
+        now_helsinki = dt.datetime.fromisoformat(at_iso).astimezone(TZ_HELSINKI)
         test_chat_id = f"schedule-self-check-{at_iso}"
-        decision = _build_schedule_decision(now_msk, test_chat_id)
+        decision = _build_schedule_decision(now_helsinki, test_chat_id)
         _log_schedule_decision(decision)
         slot_id = decision["slot_id"]
         if slot_id is None:
@@ -1558,8 +1568,8 @@ def handle_stats_command(tg_token: str, chat_id: str) -> None:
 
 def handle_week_command(tg_token: str, chat_id: str) -> None:
     history = load_cache()
-    now_msk = _now_msk()
-    send_weekly_report(tg_token, chat_id, history, now_msk)
+    now_helsinki = _now_helsinki()
+    send_weekly_report(tg_token, chat_id, history, now_helsinki)
 
 
 def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> List[str]:
@@ -1580,8 +1590,17 @@ def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> Li
         "floors",
         "activity_summary",
     ]
+
+    before_flags = before.get("missing_flags") if isinstance(before.get("missing_flags"), dict) else {}
+    after_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
+
     for key in keys:
-        if before.get(key) != after.get(key):
+        before_value = before.get(key)
+        after_value = after.get(key)
+        became_available = before_value in (None, {}, []) and after_value not in (None, {}, [])
+        improved_missing_flag = before_flags.get(key) is True and after_flags.get(key) is False
+        changed_value = before_value != after_value
+        if became_available or improved_missing_flag or changed_value:
             blocks.append(key)
     return blocks
 
@@ -1595,20 +1614,24 @@ def refresh_available_data() -> Dict[str, Any]:
     history_after = load_cache()
     after = history_after.get(today) if isinstance(history_after.get(today), dict) else {}
     updated_blocks = _collect_updated_blocks(before, after)
+    before_flags = before.get("missing_flags") if isinstance(before.get("missing_flags"), dict) else {}
+    after_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
+    recovered_flags = [k for k, v in after_flags.items() if before_flags.get(k) is True and v is False]
     return {
         "before": before,
         "after": after,
         "updated_blocks": updated_blocks,
+        "recovered_flags": recovered_flags,
         "has_updates": bool(updated_blocks),
     }
 
 
 def build_refresh_result_message(result: Dict[str, Any]) -> str:
     updated = result.get("updated_blocks", [])
+    recovered_flags = result.get("recovered_flags", [])
     after = result.get("after", {})
     completeness = after.get("data_completeness")
-    if not updated:
-        return "Новых данных пока нет. Похоже, часы ещё не синхронизировались с Garmin Connect."
+    missing_flags = after.get("missing_flags") if isinstance(after.get("missing_flags"), dict) else {}
 
     human_map = {
         "sleep": "сон",
@@ -1626,21 +1649,42 @@ def build_refresh_result_message(result: Dict[str, Any]) -> str:
         "floors": "этажи",
         "activity_summary": "сводка активности",
     }
+
+    if not updated:
+        missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
+        if missing_now:
+            return (
+                "Новых данных пока нет: Garmin Connect ещё не прислал дополнительные сигналы. "
+                "Сейчас всё ещё отсутствуют: "
+                + ", ".join(missing_now[:4])
+                + "."
+            )
+        return "Новых данных пока нет. Похоже, часы ещё не синхронизировались с Garmin Connect."
+
     labels = [human_map.get(key, key) for key in updated[:5]]
-    if isinstance(completeness, (int, float)) and completeness < 0.7:
+    missing_now = [human_map.get(k, k) for k, is_missing in missing_flags.items() if is_missing]
+    if missing_now:
         return (
-            "Подтянул последние доступные данные: "
+            "Обновились "
             + ", ".join(labels)
-            + ". Вечерняя картина ещё не полная: часть сигналов пока не дошла из Garmin."
+            + ". Остальные данные ещё не дошли из Garmin: "
+            + ", ".join(missing_now[:4])
+            + "."
         )
-    return "Обновил данные: " + ", ".join(labels) + ". Могу пересчитать текущий вывод."
+
+    if isinstance(completeness, (int, float)) and completeness < 0.95:
+        return "Обновились " + ", ".join(labels) + ". Картина почти полная, жду остатки синхронизации."
+
+    return "Обновились " + ", ".join(labels) + ". Картина дня полная, пересчитал итоговый статус."
 
 
 def handle_refresh_command(tg_token: str, chat_id: str) -> None:
     try:
+        log.info("manual_refresh_started chat_id=%s now_helsinki=%s", chat_id, _now_helsinki().isoformat())
         result = refresh_available_data()
         message = build_refresh_result_message(result)
         today = dt.date.today().isoformat()
+        log.info("manual_refresh_result chat_id=%s had_updates=%s updated_blocks=%s", chat_id, bool(result.get("has_updates", False)), result.get("updated_blocks", []))
         log_refresh_attempt(
             chat_id=chat_id,
             refresh_date=today,
@@ -1652,6 +1696,14 @@ def handle_refresh_command(tg_token: str, chat_id: str) -> None:
         telegram_send(tg_token, chat_id, message)
     except Exception:
         log.exception("refresh command failed")
+        err_text = str(sys.exc_info()[1] or "")
+        if "Missing env var" in err_text or "credentials" in err_text.lower():
+            telegram_send(
+                tg_token,
+                chat_id,
+                "Не удалось обновить Garmin: проверь GARMIN_EMAIL / GARMIN_PASSWORD в окружении. Кэш не изменял.",
+            )
+            return
         telegram_send(
             tg_token,
             chat_id,

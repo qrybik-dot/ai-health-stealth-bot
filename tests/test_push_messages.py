@@ -103,10 +103,10 @@ class PushMessageTests(unittest.TestCase):
         self.assertIn("<b>Тема недели:</b> 2026-W03", caption)
 
     def test_slot_routing_windows(self):
-        tz = ZoneInfo("Europe/Moscow")
-        morning = dt.datetime(2026, 1, 14, 8, 20, tzinfo=tz)
-        midday = dt.datetime(2026, 1, 14, 13, 0, tzinfo=tz)
-        evening = dt.datetime(2026, 1, 14, 19, 10, tzinfo=tz)
+        tz = ZoneInfo("Europe/Helsinki")
+        morning = dt.datetime(2026, 1, 14, 9, 20, tzinfo=tz)
+        midday = dt.datetime(2026, 1, 14, 14, 0, tzinfo=tz)
+        evening = dt.datetime(2026, 1, 14, 20, 10, tzinfo=tz)
         self.assertEqual(main._resolve_scheduled_push_kind(morning), "morning")
         self.assertEqual(main._resolve_scheduled_push_kind(midday), "midday")
         self.assertEqual(main._resolve_scheduled_push_kind(evening), "evening")

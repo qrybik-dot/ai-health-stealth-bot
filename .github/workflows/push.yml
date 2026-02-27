@@ -2,9 +2,13 @@ name: Push Daily Insights
 
 on:
   schedule:
-    - cron: "30 5 * * *"
+    # UTC cron; dual slots keep target windows stable for Europe/Helsinki across DST.
+    - cron: "30 6 * * *"
+    - cron: "30 7 * * *"
     - cron: "0 10 * * *"
+    - cron: "0 11 * * *"
     - cron: "0 16 * * *"
+    - cron: "0 17 * * *"
   workflow_dispatch:
 
 jobs:
