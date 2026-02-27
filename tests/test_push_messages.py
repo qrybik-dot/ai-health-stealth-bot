@@ -87,6 +87,16 @@ class PushMessageTests(unittest.TestCase):
         self.assertNotIn("null", msg)
 
 
+    def test_push_key_counters_consistent_with_context(self):
+        payload = {
+            "sleep": {"sleepTimeSeconds": 7 * 3600},
+            "stress": {"avgStressLevel": 28},
+        }
+        quality = main._evaluate_data_quality(payload)
+        context = main.build_day_context(day_key="2026-01-14", cache_data={"2026-01-14": payload})
+        self.assertEqual(quality["present"], context["key_metrics_present_count"])
+        self.assertEqual(len(quality["missing_metrics"]), context["key_metrics_total_count"] - context["key_metrics_present_count"])
+
     def test_morning_color_caption_structure(self):
         caption = main.build_morning_color_caption(
             {

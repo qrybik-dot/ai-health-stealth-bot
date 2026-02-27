@@ -2,7 +2,7 @@ import json
 import os
 import requests
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 CACHE_FILE = "cache.json"
@@ -18,6 +18,24 @@ RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
 DEFAULT_BOT_TZ = "Europe/Moscow"
+KEY_METRICS: Tuple[str, ...] = ("sleep", "body_battery", "rhr", "stress")
+METRIC_LABELS: Dict[str, str] = {
+    "sleep": "сон",
+    "body_battery": "Body Battery",
+    "rhr": "RHR",
+    "stress": "стресс",
+    "steps": "шаги",
+    "heart_rate": "пульс",
+    "daily_activity": "активность",
+    "respiration": "дыхание",
+    "pulse_ox": "SpO2",
+    "hrv": "ВСР",
+    "hrv_status": "статус ВСР",
+    "intensity_minutes": "интенсивные минуты",
+    "calories": "калории",
+    "floors": "этажи",
+    "activity_summary": "сводка активности",
+}
 
 
 def _load_local_cache() -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -189,6 +207,58 @@ def _is_meaningful(value: Any) -> bool:
     if isinstance(value, list):
         return len(value) > 0
     return True
+
+
+def _history_day_keys(cache: Dict[str, Any]) -> List[str]:
+    day_keys: List[str] = []
+    for key in cache.keys():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        try:
+            date.fromisoformat(key)
+            day_keys.append(key)
+        except ValueError:
+            continue
+    return sorted(day_keys)
+
+
+def _available_metric_keys(snapshot: Dict[str, Any]) -> List[str]:
+    return [metric for metric in METRIC_LABELS.keys() if _is_meaningful(snapshot.get(metric))]
+
+
+def build_day_context(day_key: Optional[str] = None, cache_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cache = cache_data if isinstance(cache_data, dict) else load_cache()
+    keys = _history_day_keys(cache)
+    target_day = day_key or current_day_key()
+    snapshot = cache.get(target_day) if isinstance(cache.get(target_day), dict) else {}
+
+    available_metrics = _available_metric_keys(snapshot)
+    missing_metrics = [metric for metric in METRIC_LABELS.keys() if metric not in available_metrics]
+    key_present = sum(1 for metric in KEY_METRICS if metric in available_metrics)
+    completeness = float(snapshot.get("data_completeness", 0.0) or 0.0)
+    confidence = float(snapshot.get("confidence", 0.0) or 0.0)
+    if not snapshot:
+        day_status = "no_data"
+    elif key_present < len(KEY_METRICS):
+        day_status = "partial"
+    else:
+        day_status = "ready"
+
+    return {
+        "latest_snapshot_date": target_day,
+        "available_metrics": available_metrics,
+        "missing_metrics": missing_metrics,
+        "key_metrics_present_count": key_present,
+        "key_metrics_total_count": len(KEY_METRICS),
+        "data_completeness": completeness,
+        "confidence": confidence,
+        "available_days_count": len(keys),
+        "available_days": keys,
+        "day_status": day_status,
+        "last_sync_time": str(snapshot.get("last_sync_time", snapshot.get("fetched_at_utc", ""))),
+        "updated_blocks": [],
+        "snapshot": snapshot,
+    }
 
 
 def _recalculate_quality(snapshot: Dict[str, Any]) -> None:
