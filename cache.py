@@ -11,6 +11,7 @@ DAILY_VOTES_KEY = "_daily_votes"
 TODAY_VOTES_KEY = "_today_votes"
 TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
+REFRESH_STATE_KEY = "_refresh_state"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
@@ -138,15 +139,33 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
     if sleep_seconds is None:
         sleep_seconds = sleep.get("totalSleepSeconds")
 
+    extra_metrics = {
+        "steps": snapshot_data.get("steps"),
+        "heart_rate": snapshot_data.get("heart_rate"),
+        "daily_activity": snapshot_data.get("daily_activity"),
+        "intensity_minutes": snapshot_data.get("intensity_minutes"),
+        "calories": snapshot_data.get("calories"),
+        "floors": snapshot_data.get("floors"),
+        "respiration": snapshot_data.get("respiration"),
+        "pulse_ox": snapshot_data.get("pulse_ox"),
+        "hrv": snapshot_data.get("hrv"),
+        "hrv_status": snapshot_data.get("hrv_status"),
+        "activity_summary": snapshot_data.get("activity_summary"),
+    }
+
     out: Dict[str, Any] = {
         "source": str(snapshot_data.get("source", "garmin")),
         "date": str(snapshot_data.get("date", day)),
         "fetched_at_utc": str(snapshot_data.get("fetched_at_utc", "")),
+        "last_sync_time": str(snapshot_data.get("last_sync_time", snapshot_data.get("fetched_at_utc", ""))),
         "missing_flags": {
             "body_battery": not bool(body),
             "stress": not bool(stress),
             "sleep": not bool(sleep),
             "rhr": not bool(rhr),
+            "steps": not bool(extra_metrics["steps"]),
+            "heart_rate": not bool(extra_metrics["heart_rate"]),
+            "daily_activity": not bool(extra_metrics["daily_activity"]),
         },
     }
 
@@ -181,8 +200,18 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
             "restingHeartRate": hr_rest,
         }
 
+    for metric_name, metric_value in extra_metrics.items():
+        if isinstance(metric_value, dict) and metric_value:
+            out[metric_name] = metric_value
+
+    metrics_total = len(out.get("missing_flags", {}))
+    missing_total = sum(1 for missing in out.get("missing_flags", {}).values() if missing)
+    completeness = round(max(0.0, min(1.0, (metrics_total - missing_total) / max(1, metrics_total))), 2)
+    out["data_completeness"] = completeness
+    out["confidence"] = round(0.35 + completeness * 0.6, 2)
+
     if errors:
-        out["errors"] = errors[:6]
+        out["errors"] = errors[:10]
     if snapshot_data.get("error"):
         out["error"] = str(snapshot_data.get("error"))
     return out
@@ -212,7 +241,7 @@ def prune_cache(retention_days: int = RETENTION_DAYS, weekly_retention_weeks: in
         except ValueError:
             continue
 
-    for state_key in (TODAY_STATE_KEY, TODAY_VOTES_KEY, DAILY_VOTES_KEY):
+    for state_key in (TODAY_STATE_KEY, TODAY_VOTES_KEY, DAILY_VOTES_KEY, REFRESH_STATE_KEY):
         state = cache.get(state_key)
         if not isinstance(state, dict):
             continue
@@ -551,3 +580,36 @@ def was_weekly_report_sent(chat_id: str, week_id: str) -> bool:
         return False
     key = f"weekly|{week_id}|{chat_id}"
     return key in state
+
+
+def log_refresh_attempt(
+    chat_id: str,
+    refresh_date: str,
+    had_updates: bool,
+    updated_blocks: list[str],
+    message: str,
+    refresh_ts: str,
+) -> None:
+    cache = load_cache()
+    state = cache.get(REFRESH_STATE_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[REFRESH_STATE_KEY] = state
+    key = _composite_key(chat_id, refresh_date)
+    existing = state.get(key) if isinstance(state.get(key), dict) else {}
+    count = int(existing.get("count", 0)) + 1
+    state[key] = {
+        "count": count,
+        "had_updates": bool(had_updates),
+        "updated_blocks": updated_blocks[:8],
+        "message": message,
+        "ts": refresh_ts,
+    }
+    _write_cache(cache)
+
+
+def get_refresh_state(chat_id: str, refresh_date: str) -> Optional[Dict[str, Any]]:
+    cache = load_cache()
+    state = cache.get(REFRESH_STATE_KEY, {})
+    raw = state.get(_composite_key(chat_id, refresh_date)) if isinstance(state, dict) else None
+    return raw if isinstance(raw, dict) else None

@@ -428,6 +428,76 @@ def generate_today_card_image(
         return str(path)
 
 
+def generate_weekly_card_image(
+    chat_id: str,
+    week_id: str,
+    hero_status: str,
+    day_points: List[Dict[str, str]],
+    chips: List[str],
+    weekly_quest: str,
+    out_dir: str = "generated/weekly_cards",
+) -> str:
+    from PIL import Image, ImageDraw
+
+    os.makedirs(out_dir, exist_ok=True)
+    safe_chat = str(chat_id).replace("/", "_")
+    path = Path(out_dir) / f"{safe_chat}_{week_id}.png"
+    if path.exists():
+        return str(path)
+
+    w, h = 1080, 1080
+    base = (22, 28, 40)
+    accent = (76, 108, 255)
+    gray = (156, 165, 182)
+    day_color_map = {
+        "best": (77, 201, 135),
+        "moderate": (244, 198, 95),
+        "tense": (236, 108, 116),
+        "partial": (160, 169, 186),
+    }
+
+    image = Image.new("RGB", (w, h), color=base)
+    draw = ImageDraw.Draw(image, "RGBA")
+
+    for y in range(h):
+        tint = int(22 + (y / max(1, h - 1)) * 18)
+        draw.line([(0, y), (w, y)], fill=(tint, tint + 6, tint + 16, 255), width=1)
+
+    draw.rounded_rectangle((56, 60, 1024, 1020), radius=44, fill=(17, 21, 32, 248), outline=(50, 60, 82, 255), width=2)
+    draw.rounded_rectangle((82, 108, 998, 244), radius=28, fill=(33, 42, 60, 255))
+    draw.text((114, 136), "📊 Итог недели", fill=(222, 229, 240), font=None)
+    draw.text((114, 184), hero_status, fill=(245, 248, 255), font=None)
+
+    line_left = 120
+    line_right = 960
+    y_line = 390
+    draw.line((line_left, y_line, line_right, y_line), fill=(74, 88, 118, 255), width=4)
+
+    labels = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    for idx, day in enumerate(day_points[:7]):
+        x = line_left + int((line_right - line_left) * idx / 6)
+        day_status = day.get("status", "partial")
+        fill = day_color_map.get(day_status, gray)
+        if day_status == "partial":
+            draw.ellipse((x - 18, y_line - 18, x + 18, y_line + 18), fill=(20, 25, 35, 255), outline=fill, width=3)
+        else:
+            draw.ellipse((x - 18, y_line - 18, x + 18, y_line + 18), fill=fill)
+        draw.text((x - 14, y_line + 34), labels[idx], fill=(205, 213, 228), font=None)
+
+    draw.rounded_rectangle((84, 486, 996, 744), radius=24, fill=(28, 35, 52, 210))
+    chip_y = 520
+    for chip in chips[:3]:
+        draw.rounded_rectangle((112, chip_y, 968, chip_y + 62), radius=18, fill=(39, 50, 74, 240))
+        draw.text((136, chip_y + 21), chip, fill=(227, 233, 243), font=None)
+        chip_y += 78
+
+    draw.rounded_rectangle((84, 778, 996, 964), radius=24, fill=(20, 42, 64, 235), outline=accent, width=2)
+    draw.text((114, 810), f"🎯 Квест недели: {weekly_quest}", fill=(231, 240, 255), font=None)
+
+    image.save(path, format="PNG", optimize=True)
+    return str(path)
+
+
 def self_check_today_card() -> List[str]:
     problems: List[str] = []
     try:
