@@ -97,6 +97,21 @@ class PipelineReliabilityTests(unittest.TestCase):
                                                             main.run_push("scheduled")
                                                     self.assertTrue(cache.was_slot_sent("c", "2026-01-14", "morning"))
 
+
+    def test_gist_and_local_history_are_merged_by_day_keys(self):
+        gist_cache = {
+            "2026-02-28": {"sleep": {"sleepTimeSeconds": 26000}, "last_sync_time": "2026-02-28T08:00:00Z"},
+            "_weekly_state": {"x": 1},
+        }
+        local_cache = {
+            "2026-02-27": {"sleep": {"sleepTimeSeconds": 25000}, "last_sync_time": "2026-02-27T08:00:00Z"},
+            "_today_votes": {"a": 1},
+        }
+        merged = cache._merge_runtime_cache(gist_cache, local_cache)
+        self.assertIn("2026-02-27", merged)
+        self.assertIn("2026-02-28", merged)
+        self.assertIn("_today_votes", merged)
+        self.assertEqual(merged["_today_votes"], {"a": 1})
     def test_weekly_stability_fingerprint_same_without_new_source(self):
         now = dt.datetime(2026, 1, 18, 20, 0)
         history = {

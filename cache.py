@@ -59,6 +59,47 @@ def _snapshot_freshness_score(snapshot: Any) -> str:
     return ""
 
 
+def _is_day_key(key: Any) -> bool:
+    if not isinstance(key, str) or key.startswith("_"):
+        return False
+    try:
+        date.fromisoformat(key)
+        return True
+    except ValueError:
+        return False
+
+
+def _merge_runtime_cache(gist_cache: Dict[str, Any], local_cache: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Builds a single runtime cache source of truth:
+    - daily snapshots: union by date key with freshness-aware merge
+    - service keys (_*): keep local to preserve bot interaction state
+    """
+    merged: Dict[str, Any] = {}
+    for key, value in local_cache.items():
+        merged[key] = value
+
+    for key, gist_value in gist_cache.items():
+        if key.startswith("_"):
+            continue
+        local_value = merged.get(key)
+        if _is_day_key(key):
+            if isinstance(local_value, dict) and isinstance(gist_value, dict):
+                gist_score = _snapshot_freshness_score(gist_value)
+                local_score = _snapshot_freshness_score(local_value)
+                if local_score and gist_score and local_score > gist_score:
+                    merged[key] = _merge_trimmed_snapshot(gist_value, local_value)
+                else:
+                    merged[key] = _merge_trimmed_snapshot(local_value, gist_value)
+            elif isinstance(gist_value, dict) and not isinstance(local_value, dict):
+                merged[key] = gist_value
+            elif key not in merged:
+                merged[key] = gist_value
+        else:
+            merged[key] = gist_value
+    return merged
+
+
 def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     If CACHE_GIST_ID env var is set, fetches the cache from the Gist.
@@ -126,6 +167,8 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
             cache = json.loads(content)
             if isinstance(cache, dict):
                 local_cache, local_meta = _load_local_cache()
+                if local_meta.get("available") and isinstance(local_cache, dict):
+                    cache = _merge_runtime_cache(cache, local_cache)
                 if local_meta.get("available") and isinstance(local_cache, dict):
                     day_key = current_day_key()
                     gist_score = _snapshot_freshness_score(cache.get(day_key))
