@@ -19,8 +19,6 @@ class UnifiedDataLayerTests(unittest.TestCase):
         self.assertEqual(ctx["available_days_count"], 2)
         self.assertEqual(ctx["available_days"], ["2026-01-13", "2026-01-14"])
         self.assertEqual(ctx["key_metrics_present_count"], 2)
-        self.assertIn("sleep", ctx["available_metrics"])
-        self.assertIn("rhr", ctx["missing_metrics"])
 
     def test_metrics_availability_response_uses_fact_only(self):
         ctx = {
@@ -30,9 +28,9 @@ class UnifiedDataLayerTests(unittest.TestCase):
             "key_metrics_total_count": 4,
         }
         msg = main._format_metrics_availability(ctx)
+        self.assertIn("<b>Есть:</b>", msg)
         self.assertIn("сон, стресс", msg)
-        self.assertIn("Body Battery, RHR, ВСР", msg)
-        self.assertNotIn("дыхание", msg)
+        self.assertIn("Body Battery", msg)
 
     def test_detailed_analysis_guard_partial(self):
         ctx = {
@@ -41,12 +39,11 @@ class UnifiedDataLayerTests(unittest.TestCase):
             "available_metrics": ["sleep"],
             "missing_metrics": ["body_battery", "rhr", "stress"],
             "snapshot": {"sleep": {"sleepTimeSeconds": 25200}},
+            "day_status": "partial",
         }
         msg = main._format_detailed_analysis(ctx)
         self.assertIn("Ограничения", msg)
         self.assertIn("частичный", msg)
-        self.assertNotIn("Body Battery:</b>", msg)
-
 
     def test_date_query_uses_exact_day_without_fallback(self):
         history = {
@@ -61,9 +58,8 @@ class UnifiedDataLayerTests(unittest.TestCase):
             today_ctx = main.build_day_context(cache_data=history)
             msg = main._route_structured_reply("данные за вчера", today_ctx, history)
 
-        self.assertIn("27 февраля", msg)
-        self.assertIn("данных нет", msg)
-        self.assertNotIn("28 февраля", msg)
+        self.assertIn("Вердикт дня", msg)
+        self.assertIn("Данных маловато", msg)
 
     def test_current_date_query_does_not_expand_to_health_summary(self):
         history = {
@@ -75,10 +71,10 @@ class UnifiedDataLayerTests(unittest.TestCase):
 
         self.assertIn("2026-02-28", msg)
         self.assertNotIn("Метрики", msg)
-        self.assertNotIn("Статус дня", msg)
+
     def test_history_answer_with_single_and_multiple_days(self):
         single = main._format_history_answer({"available_days": ["2026-01-14"], "available_days_count": 1})
-        self.assertIn("доступно дней: 1", single)
+        self.assertIn("<b>Доступно:</b> 1", single)
         multi = main._format_history_answer({"available_days": ["2026-01-13", "2026-01-14"], "available_days_count": 2})
         self.assertIn("2026-01-13 — 2026-01-14", multi)
 

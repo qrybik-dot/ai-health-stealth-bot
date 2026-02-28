@@ -1,164 +1,108 @@
-# Garmin Visual Insight Bot
+# Garmin Visual Insight Bot — Coach Potato
 
-Telegram-бот про ритм дня/недели на базе Garmin Connect. Без медицинских формулировок: только режим, состояние дня и практичные короткие подсказки.
+**Coach Potato** — ироничный AI-аналитик Garmin: превращает сухие цифры в короткий вердикт дня «Машина 🏎 или Пюре 🫠», без медицинского тона и без инфоцыганства.
 
-## Что делает бот
+## Кто такой Coach Potato
 
-- `/today`: карточка дня (PNG 1080x1080) + короткий статус + обратная связь ✅/🤷/❌.
-- Scheduled push: слоты `morning / midday / evening` в зоне `Europe/Moscow`.
-- `/week`: недельная карточка с контрастами, диапазонами и квестом недели.
-- `/color`: цвет недели (детерминированно по ISO-неделе).
-- `/refresh`: инкрементально подтягивает новые Garmin-данные, делает merge и показывает, какие блоки реально обновились.
-- `/debug_sync`: диагностика цепочки синхронизации (источник кэша, последний sync-trace, недостающие блоки).
+- Персонаж: умный, чуть колкий, саркастично полезный.
+- Роль: не «психологическая простыня», а короткий data-driven вердикт.
+- Ограничения: без диагнозов, без патоки, без generic AI-openers.
 
-## Сквозной pipeline синхронизации
+## Новый коммуникационный слой
 
-1. **Garmin fetch** (`fetch_garmin_minimal`): забираются доступные блоки (сон, stress, body battery, RHR, шаги, HRV и др.).
-2. **Local cache merge** (`upsert_day_snapshot`, `_merge_trimmed_snapshot`):
-   - новый payload trim-ится до нормализованного snapshot;
-   - выполняется merge c текущим днём;
-   - пустые/`None` значения **не стирают** старые полезные поля;
-   - пересчитываются `missing_flags`, `data_completeness`, `confidence`.
-3. **Gist sync** (`scripts/gist_upload.py` + `.github/workflows/sync.yml`): после `python main.py sync` workflow отдельным шагом делает upload `cache.json` в gist. Внутри `sync/refresh` команд `gist_upload_ts` не заполняется, потому что upload выполняется вне процесса бота.
-4. **Runtime read** (`load_cache_with_meta`): при `CACHE_GIST_ID` источник = gist; при ошибке gist или более свежем локальном snapshot используется `local_fallback`/`local_fresher_than_gist` (это явно видно в meta/debug).
-5. **Refresh compare** (`refresh_available_data`): diff считается по merged-снимку, обновлённые блоки фиксируются явно.
-6. **Push gating** (`run_push`): дедуп по слотам, manual-run не блокирует scheduled слот, добавлен deferred/catch-up сценарий утра.
+Коммуникация перестроена вокруг **вердиктов**, а не отчётов:
 
-## Как работает merge (вместо overwrite)
+- Вердикт утра
+- Вердикт середины дня
+- Вердикт вечера
+- Вердикт дня по запросу
+- Вердикт недели
+- Вердикт по конкретной дате/истории
 
-- Снимок дня не перезаписывается «целиком».
-- Для каждого блока:
-  - если в новом payload значение пустое — сохраняем старое;
-  - если пришло валидное значение — обновляем;
-  - вложенные dict-блоки мержатся глубоко (частичное обновление не удаляет старые под-поля).
-- После merge всегда пересчёт качества данных и флагов неполноты.
+### Каркас каждого сообщения
 
-## `/refresh`: что гарантирует и чего не гарантирует
+1. Яркий заголовок
+2. Verdict line (персонаж + состояние)
+3. 2–4 data-chips
+4. Короткая интерпретация
+5. Что делать / чего не делать
 
-`/refresh` делает честный incremental refresh:
+## Машина ↔ Пюре: динамический спектр
 
-1. fetch Garmin,
-2. merge с текущим snapshot дня,
-3. diff (updated blocks + completeness/confidence delta),
-4. запись trace,
-5. сообщение пользователю.
+Вместо одной фиксированной метки используется ротация состояний:
 
-Сообщения:
-- если обновился хотя бы 1 блок: «Обновил данные: …»;
-- если Garmin не отдал новые блоки: «Новых блоков пока нет…»;
-- если всё уже актуально: «Данные уже актуальны…».
+- высокий ресурс: «Машина», «Турбокартоха», «Ровный болид»
+- устойчиво-средний: «Рабочий клубень», «Ровный режим»
+- пограничный: «На честном топливе», «Без форсажа»
+- низкий ресурс: «Тёплое пюре», «Подуставший гарнир»
+- перегруз: «Чистое пюре», «Овощной отдел открыт»
 
-`/refresh` не может ускорить появление метрик, если Garmin Connect ещё не досинхронизировал их.
+Ротация детерминированная (по дню/слоту), чтобы стиль был живым, но предсказуемым.
 
-## Почему push может быть предварительным
+## Юмор: как применяется
 
-Утренний слот может быть частичным, если к моменту запуска Garmin отдал не все ключевые блоки. В этом случае:
+- 1 колкая строка на сообщение, не больше.
+- Юмор всегда привязан к данным и действию.
+- В fallback/no-data режиме — без клоунады.
 
-- отправляется предварительный morning-сигнал;
-- слот помечается как `morning_deferred`;
-- при следующем scheduled run в retry-окне выполняется catch-up morning (без дублей), если данные стали полнее.
+## Типы сообщений
 
-## Timezone и дата
+- push: утро/день/вечер
+- «Как мой день?»
+- «Как я сейчас?»
+- «Детализируй»
+- «Какие метрики есть?»
+- «За сколько дней есть данные?»
+- ответ по конкретной дате
+- weekly summary
+- /refresh, partial/no-data ответы
 
-- Day key считается timezone-aware через `BOT_TIMEZONE` (по умолчанию `Europe/Moscow`).
-- Ключи дня в sync/refresh/push согласованы (`current_day_key`).
-- GitHub cron работает в UTC, расписание в workflow уже сопоставлено с MSK.
+## Визуальный бонус (image card)
 
-## Ограничения
+Визуал показывается дозировано:
 
-- Garmin может отдавать часть блоков с задержкой.
-- Не все метрики доступны на всех моделях часов.
-- Weekly включает `source_fingerprint` (снимок source-данных за 7 дней), чтобы исключать «косметические» скачки без новых Garmin-данных.
-- Это не медицинский сервис.
+- по явному запросу («покажи красиво», «карточкой»)
+- по сильным триггерам данных (очень бодрый/тяжёлый день)
+- не ночью
+- не чаще 1–2 раз в неделю
 
-## Проверка и debug
+Поддержаны состояния персонажа для карточки:
+- Turbo Potato
+- Cruise Potato
+- Zen Potato
+- Soft Potato
+- Mashed Potato
+- Overclocked Potato
 
-- `python -m unittest`
-- `python main.py cache-self-check`
+## Guardrails anti-cringe
+
+- блок generic-openers
+- лимит длины сообщений
+- обязательные data anchors в meaningful-ответах
+- единый стиль между push и chat-ответами
+- fallback на частичные данные
+
+## Архитектура
+
+Коммуникация вынесена в отдельный модуль `communication.py`:
+
+- `resolve_intent(...)`
+- `build_verdict_label(...)`
+- `build_mode_phrase(...)`
+- `build_data_chips(...)`
+- `build_action_block(...)`
+- `build_push_message(...)`
+- `build_day_verdict_message(...)`
+- `build_day_detail_message(...)`
+- `build_history_message(...)`
+- `should_send_visual_bonus(...)`
+- `choose_visual_state(...)`
+
+`main.py` использует этот слой для scheduled push, chat-intents и weekly-caption.
+
+## Проверка
+
+- `python -m unittest discover -s tests`
 - `python main.py push-self-check`
+- `python main.py cache-self-check`
 - `python main.py debug-sync`
-
-Что смотреть:
-- источник кэша (`gist/local/local_fallback/local_fresher_than_gist`),
-- причина fallback (`cache_error`, `fallback_reason`),
-- note про устойчивость после рестарта (`source of truth note`),
-- последний sync/refresh run-id,
-- `had real updates` (реально ли появились новые блоки),
-- `updated_blocks` (какие блоки изменились),
-- `still missing` + по каждому ключевому полю: `raw`, `normalized`, `expected_day`, `raw_dates`, `reason`.
-
-## Workflow
-
-- Sync: `.github/workflows/sync.yml` (fetch + merge + gist upload).
-- Push: `.github/workflows/push.yml` (утро/день/вечер + доп. retry-точки для catch-up после неполного утра).
-
-## Env
-
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-- `GARMIN_EMAIL`, `GARMIN_PASSWORD`
-- `GEMINI_API_KEY`, `GEMINI_MODEL`
-- `CACHE_GIST_ID`
-- `GIST_TOKEN` (или `GIST_SYNC_TOKEN` / `GITHUB_TOKEN`)
-- `BOT_TIMEZONE` (опционально, default `Europe/Moscow`)
-
-
-## Единый source of truth для ответов
-
-- Введён единый слой `build_day_context` (файл `cache.py`), который возвращает нормализованный контекст дня и истории:
-  - `latest_snapshot_date`, `available_metrics`, `missing_metrics`
-  - `key_metrics_present_count`, `key_metrics_total_count`
-  - `data_completeness`, `confidence`, `available_days_count`, `available_days`
-  - `day_status`, `last_sync_time`
-- Этот слой одинаково используется для push и для чат-ответов: «какие метрики есть», «детальнее», «за сколько дней есть данные».
-
-## Ключевые метрики readiness / push gating
-
-Фиксированный набор key metrics:
-- `sleep` (сон)
-- `body_battery` (Body Battery)
-- `rhr` (RHR)
-- `stress` (стресс)
-
-Если в push написано «1 из 4», это всегда про этот набор.
-
-## Почему ответы могут быть частичными
-
-- Garmin часто отдаёт блоки не одновременно.
-- Поэтому в течение дня снимок дообогащается через merge.
-- `/refresh` подтягивает новые блоки, но не может «ускорить» появление данных на стороне Garmin.
-- Если ключевых метрик мало, бот делает честный partial-answer и явно показывает ограничения.
-
-## Как читать ответы бота
-
-- **Push**: статус дня, что уже есть, чего не хватает, действие, ограничение, надёжность.
-- **Какие метрики есть**: только фактически доступные поля + список отсутствующих.
-- **Детальнее**: анализ только по реальным значениям; при дефиците данных добавляется блок ограничений.
-- **За сколько дней есть данные**: фактическое число дней и диапазон дат из кэша.
-
-## Ограничения текущей реализации истории
-
-- История хранится по дням в `cache.json` и накапливается инкрементально.
-- Глубина истории ограничена `RETENTION_DAYS`.
-- Если fetch в текущем run вернул только текущий день, прошлые дни всё равно доступны из ранее сохранённого кэша.
-
-
-## Что значит `local_fresher_than_gist`
-
-Это состояние, когда:
-- gist доступен,
-- но у локального `cache.json` свежий `last_sync_time/fetched_at_utc` для текущего дня.
-
-Тогда runtime выбирает локальный snapshot как более актуальный. Это безопасно для текущего процесса, но в другом runtime после рестарта без этого файла может произойти откат к состоянию gist. Поэтому в `/debug_sync` добавлен явный note про риск после рестарта.
-
-## Почему могут отсутствовать `sleep/body_battery/rhr/steps`
-
-Диагностика теперь разделяет причины по каждому полю:
-- `raw_absent`: Garmin не прислал блок в raw payload.
-- `date_mismatch`: в raw есть дата, но не совпадает с `expected_date_key` (часто ночной сон уходит в соседний день).
-- `mapping_or_shape_mismatch`: raw есть, но нормализация не смогла извлечь поле.
-
-Нормализация поддерживает дополнительные формы payload:
-- `sleep`: `dailySleepDTO/sleepSummary` + стандартные поля;
-- `body_battery`: `bodyBatteryValuesArray` и fallback-поля;
-- `rhr`: `value/averageRestingHeartRate` + стандартные поля;
-- `steps`: `steps/totalSteps/stepCount/value` и вложенные структуры.
