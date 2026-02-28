@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 import datetime as dt
+import re
 import requests
 import html
 from typing import Any, Dict, List, Optional, Tuple
@@ -2020,7 +2021,107 @@ def _format_history_answer(context: Dict[str, Any]) -> str:
     )
 
 
-def _route_structured_reply(query: str, context: Dict[str, Any]) -> Optional[str]:
+RU_MONTHS = {
+    "январ": 1,
+    "феврал": 2,
+    "март": 3,
+    "апрел": 4,
+    "ма": 5,
+    "июн": 6,
+    "июл": 7,
+    "август": 8,
+    "сентябр": 9,
+    "октябр": 10,
+    "ноябр": 11,
+    "декабр": 12,
+}
+
+
+def _format_ru_date(day: dt.date) -> str:
+    months = [
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    ]
+    return f"{day.day} {months[day.month - 1]}"
+
+
+def _resolve_relative_day(q: str, now_day: dt.date) -> Optional[dt.date]:
+    if "позавчера" in q:
+        return now_day - dt.timedelta(days=2)
+    if "вчера" in q:
+        return now_day - dt.timedelta(days=1)
+    if "сегодня" in q:
+        return now_day
+    return None
+
+
+def _parse_explicit_ru_date(q: str, now_day: dt.date) -> Optional[dt.date]:
+    m = re.search(r"\b(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?\b", q)
+    if not m:
+        return None
+    day = int(m.group(1))
+    month_token = m.group(2)
+    year_token = m.group(3)
+    month = None
+    for stem, value in RU_MONTHS.items():
+        if month_token.startswith(stem):
+            month = value
+            break
+    if month is None:
+        return None
+    year = int(year_token) if year_token else now_day.year
+    try:
+        return dt.date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _resolve_target_date(query: str, now_day: dt.date) -> Optional[dt.date]:
+    q = query.strip().lower()
+    explicit = _parse_explicit_ru_date(q, now_day)
+    if explicit:
+        return explicit
+    return _resolve_relative_day(q, now_day)
+
+
+def _is_current_date_only_query(q: str) -> bool:
+    if "какое число" in q or "какая дата" in q:
+        return True
+    if "сегодня" in q and "число" in q:
+        return True
+    return False
+
+
+def _is_date_data_query(q: str) -> bool:
+    if any(token in q for token in ("данные", "стат", "показ")):
+        return True
+    return bool(_resolve_target_date(q, _now_msk().date()))
+
+
+def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> str:
+    day_iso = target_date.isoformat()
+    ru_date = _format_ru_date(target_date)
+    if context.get("day_status") == "no_data":
+        if context.get("available_days"):
+            return (
+                f"🗓 <b>{ru_date}</b>\n\n"
+                f"За {ru_date} данных нет.\n"
+                f"<b>Доступный диапазон:</b> {context['available_days'][0]} — {context['available_days'][-1]}"
+            )
+        return f"🗓 <b>{ru_date}</b>\n\nЗа {ru_date} данных нет."
+
+    lines = [
+        f"🗓 <b>{ru_date}</b>",
+        "",
+        f"<b>Date key:</b> {day_iso}",
+        f"<b>Статус дня:</b> {context.get('day_status', 'partial')}",
+    ]
+    available = context.get("available_metrics", [])
+    lines.append(f"<b>Метрики:</b> {_metric_name_list(available) if available else 'нет'}")
+    return "\n".join(lines)
+
+
+def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any]) -> Optional[str]:
     q = query.strip().lower()
     if "какие метрики" in q:
         return _format_metrics_availability(context)
@@ -2028,6 +2129,15 @@ def _route_structured_reply(query: str, context: Dict[str, Any]) -> Optional[str
         return _format_detailed_analysis(context)
     if "за сколько" in q and "дн" in q:
         return _format_history_answer(context)
+    if _is_current_date_only_query(q):
+        today = _now_msk().date()
+        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()})."
+    if _is_date_data_query(q):
+        target_date = _resolve_target_date(query, _now_msk().date())
+        if target_date is None:
+            return None
+        day_context = build_day_context(day_key=target_date.isoformat(), cache_data=history_cache)
+        return _format_day_data_answer(target_date, day_context)
     return None
 
 
@@ -2134,7 +2244,7 @@ async def webhook(request: Request):
         # Load unified day context from cache and use deterministic handlers first
         history_cache = load_cache()
         context = build_day_context(cache_data=history_cache)
-        response_msg = _route_structured_reply(text, context)
+        response_msg = _route_structured_reply(text, context, history_cache)
         if response_msg is None:
             response_msg = generate_chat_message(
                 env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
