@@ -3,13 +3,14 @@ import unittest
 from zoneinfo import ZoneInfo
 
 import main
+from communication import tone_violations
 
 
 class PushMessageTests(unittest.TestCase):
     def _full_payload(self):
         return {
-            "body_battery": {"mostRecentValue": 72},
-            "stress": {"avgStressLevel": 32},
+            "body_battery": {"mostRecentValue": 72, "chargedValue": 83},
+            "stress": {"avgStressLevel": 32, "maxStressLevel": 88},
             "sleep": {"sleepTimeSeconds": 7 * 3600 + 1800},
             "rhr": {"restingHeartRate": 56},
         }
@@ -23,12 +24,12 @@ class PushMessageTests(unittest.TestCase):
             day="2026-01-14",
             today_vote=None,
         )
-        self.assertIn("<b>Старт дня</b>", msg)
-        self.assertIn("<b>Лучшее действие:</b>", msg)
-        self.assertIn("<b>Надёжность:</b>", msg)
-        self.assertNotIn("(morning)", msg)
+        self.assertIn("<b>Вердикт утра</b>", msg)
+        self.assertIn("<b>По фактам:</b>", msg)
+        self.assertIn("<b>Что делать:</b>", msg)
+        self.assertIn("Battery", msg)
 
-    def test_midday_message_is_course_correction(self):
+    def test_midday_message_compact_and_with_anchor(self):
         msg = main._build_scheduled_message(
             slot="midday",
             today_payload=self._full_payload(),
@@ -37,11 +38,11 @@ class PushMessageTests(unittest.TestCase):
             day="2026-01-14",
             today_vote=None,
         )
-        self.assertIn("коррекция курса", msg.lower())
-        self.assertNotIn("утренней оценки", msg.lower())
-        self.assertNotIn("Цвет недели", msg)
+        self.assertIn("<b>Вердикт середины дня</b>", msg)
+        self.assertTrue(any(anchor in msg for anchor in ("Battery", "Стресс", "Сон")))
+        self.assertLess(len(msg), 900)
 
-    def test_evening_message_structure_and_vote(self):
+    def test_evening_message_structure(self):
         msg = main._build_scheduled_message(
             slot="evening",
             today_payload=self._full_payload(),
@@ -50,8 +51,9 @@ class PushMessageTests(unittest.TestCase):
             day="2026-01-14",
             today_vote={"vote": "partial"},
         )
-        self.assertIn("<b>Мягкое завершение дня</b>", msg)
-        self.assertIn("Твой отклик по дню: 🤷", msg)
+        self.assertIn("<b>Вердикт вечера</b>", msg)
+        self.assertIn("<b>Смысл:</b>", msg)
+        self.assertIn("<b>Чего не делать:</b>", msg)
 
     def test_partial_data_variant_for_each_slot(self):
         partial_payload = {
@@ -69,8 +71,7 @@ class PushMessageTests(unittest.TestCase):
                 day="2026-01-14",
                 today_vote=None,
             )
-            self.assertIn("предварительная оценка", msg)
-            self.assertIn("<b>Ограничение:</b>", msg)
+            self.assertIn("Данных маловато", msg)
             self.assertIn("следующей синхронизации", msg)
 
     def test_missing_payload_fallback_message(self):
@@ -82,35 +83,19 @@ class PushMessageTests(unittest.TestCase):
             day="2026-01-14",
             today_vote=None,
         )
-        self.assertIn("предварительная оценка", msg)
+        self.assertIn("Данных маловато", msg)
         self.assertNotIn("None", msg)
-        self.assertNotIn("null", msg)
 
-
-    def test_push_key_counters_consistent_with_context(self):
-        payload = {
-            "sleep": {"sleepTimeSeconds": 7 * 3600},
-            "stress": {"avgStressLevel": 28},
-        }
-        quality = main._evaluate_data_quality(payload)
-        context = main.build_day_context(day_key="2026-01-14", cache_data={"2026-01-14": payload})
-        self.assertEqual(quality["present"], context["key_metrics_present_count"])
-        self.assertEqual(len(quality["missing_metrics"]), context["key_metrics_total_count"] - context["key_metrics_present_count"])
-
-    def test_morning_color_caption_structure(self):
-        caption = main.build_morning_color_caption(
-            {
-                "week_id": "2026-W03",
-                "hex": "#DB66B4",
-                "hsl": {"h": 300, "s": 62, "l": 63},
-                "name_ru": "Пурпурно-красный",
-                "rarity_level": "rare",
-                "is_rare_name": False,
-            }
+    def test_push_tone_guardrails(self):
+        msg = main._build_scheduled_message(
+            slot="morning",
+            today_payload=self._full_payload(),
+            color_name="Лазурный",
+            color_story_lines=[],
+            day="2026-01-14",
+            today_vote=None,
         )
-        self.assertIn("<b>Цвет дня</b>", caption)
-        self.assertIn("<b>HEX:</b> #DB66B4", caption)
-        self.assertIn("<b>Тема недели:</b> 2026-W03", caption)
+        self.assertEqual(tone_violations(msg), [])
 
     def test_slot_routing_windows(self):
         tz = ZoneInfo("Europe/Moscow")

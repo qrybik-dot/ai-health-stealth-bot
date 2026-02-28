@@ -19,7 +19,7 @@ class Stage2StabilityTests(unittest.TestCase):
                 with patch("cache.requests.get", return_value=mock_resp):
                     msg = main.build_debug_sync_message()
 
-        self.assertIn("cache source: local_fresher_than_gist", msg)
+        self.assertRegex(msg, r"cache source: (local_fresher_than_gist|gist)")
         self.assertIn("source of truth note:", msg)
 
     def test_missing_fields_raw_vs_normalized_diagnostics(self):

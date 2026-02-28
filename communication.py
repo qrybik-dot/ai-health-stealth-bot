@@ -1,0 +1,312 @@
+import datetime as dt
+from typing import Any, Dict, List, Optional
+
+KEY_METRICS = ("sleep", "body_battery", "stress", "rhr")
+
+GENERIC_OPENERS = (
+    "отличный вопрос",
+    "давай посмотрим",
+    "рада, что ты спросил",
+)
+
+INTENT_PATTERNS = {
+    "day_verdict": ("как мой день", "вердикт дня", "итог дня", "день как"),
+    "current_state": ("как я сейчас", "как сейчас", "мой статус", "мой режим"),
+    "detail": ("детализ", "деталь", "разбор"),
+    "metrics": ("какие метрики", "что по метрикам", "что видно по данным"),
+    "history": ("за сколько", "сколько дней", "история данных", "диапазон"),
+    "weekly": ("недел", "итог недели", "weekly"),
+    "visual": ("покажи красиво", "сделай карточкой", "дай визуально"),
+}
+
+STATE_POOL = {
+    "high": ["Машина 🏎", "Турбокартоха", "Ровный болид", "Боевой клубень"],
+    "steady": ["Рабочий клубень", "Ровный режим", "Едет без скрипа", "Картоха в форме"],
+    "border": ["На честном топливе", "Ещё едет, но без понтов", "Без форсажа", "На морально-волевых"],
+    "low": ["Тёплое пюре 🫠", "Подуставший гарнир", "Варёный режим", "Почти столовка"],
+    "overload": ["Чистое пюре 🫠", "Овощной отдел открыт", "Размазня, но с достоинством", "Гарнир, не двигатель"],
+}
+
+
+def _seed(*parts: str) -> int:
+    return sum(ord(ch) for ch in "|".join(parts))
+
+
+def resolve_intent(query: str) -> str:
+    q = query.strip().lower()
+    for intent, patterns in INTENT_PATTERNS.items():
+        if any(p in q for p in patterns):
+            return intent
+    return "fallback"
+
+
+def _safe(snapshot: Dict[str, Any], *path: str) -> Optional[Any]:
+    node: Any = snapshot
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _extract_metrics(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    bb_now = _safe(snapshot, "body_battery", "mostRecentValue")
+    bb_start = _safe(snapshot, "body_battery", "chargedValue")
+    stress_avg = _safe(snapshot, "stress", "avgStressLevel")
+    stress_peak = _safe(snapshot, "stress", "maxStressLevel")
+    sleep_seconds = _safe(snapshot, "sleep", "sleepTimeSeconds") or _safe(snapshot, "sleep", "totalSleepSeconds")
+    hrv_status = _safe(snapshot, "hrv_status", "status")
+    steps = _safe(snapshot, "steps", "totalSteps")
+    rhr = _safe(snapshot, "rhr", "restingHeartRate")
+    return {
+        "bb_now": bb_now,
+        "bb_start": bb_start,
+        "stress_avg": stress_avg,
+        "stress_peak": stress_peak,
+        "sleep_seconds": sleep_seconds,
+        "hrv_status": hrv_status,
+        "steps": steps,
+        "rhr": rhr,
+    }
+
+
+def _score(metrics: Dict[str, Any]) -> float:
+    score = 0.0
+    if isinstance(metrics.get("bb_now"), (int, float)):
+        score += (float(metrics["bb_now"]) - 55.0) / 25.0
+    if isinstance(metrics.get("stress_avg"), (int, float)):
+        score += (40.0 - float(metrics["stress_avg"])) / 30.0
+    if isinstance(metrics.get("sleep_seconds"), (int, float)):
+        score += ((float(metrics["sleep_seconds"]) / 3600.0) - 7.0) / 1.8
+    return round(score, 2)
+
+
+def _state_bucket(score: float) -> str:
+    if score >= 1.1:
+        return "high"
+    if score >= 0.2:
+        return "steady"
+    if score >= -0.4:
+        return "border"
+    if score >= -1.2:
+        return "low"
+    return "overload"
+
+
+def build_verdict_label(snapshot: Optional[Dict[str, Any]], day_key: str, slot: str = "day") -> str:
+    metrics = _extract_metrics(snapshot)
+    bucket = _state_bucket(_score(metrics))
+    options = STATE_POOL[bucket]
+    return options[_seed(day_key, slot, bucket) % len(options)]
+
+
+def build_mode_phrase(slot: str, verdict_label: str) -> str:
+    heads = {
+        "morning": "Вердикт утра",
+        "midday": "Вердикт середины дня",
+        "evening": "Вердикт вечера",
+        "day": "Вердикт дня",
+        "current": "Вердикт момента",
+        "weekly": "Вердикт недели",
+    }
+    return f"🥔 <b>{heads.get(slot, 'Вердикт')}</b>\n\nСегодня ты в режиме <b>{verdict_label}</b>."
+
+
+def build_data_chips(snapshot: Optional[Dict[str, Any]], max_items: int = 4) -> List[str]:
+    m = _extract_metrics(snapshot)
+    chips: List[str] = []
+    if isinstance(m.get("bb_now"), (int, float)):
+        if isinstance(m.get("bb_start"), (int, float)):
+            chips.append(f"🔋 Battery: <b>{int(m['bb_start'])} → {int(m['bb_now'])}</b>")
+        else:
+            chips.append(f"🔋 Battery: <b>{int(m['bb_now'])}</b>")
+    if isinstance(m.get("stress_avg"), (int, float)):
+        if isinstance(m.get("stress_peak"), (int, float)):
+            chips.append(f"😵 Стресс: <b>{int(m['stress_avg'])}</b>, пики до <b>{int(m['stress_peak'])}</b>")
+        else:
+            chips.append(f"😵 Стресс: <b>{int(m['stress_avg'])}</b>")
+    if isinstance(m.get("sleep_seconds"), (int, float)):
+        total_min = int(m["sleep_seconds"] // 60)
+        chips.append(f"🛌 Сон: <b>{total_min // 60}ч {total_min % 60:02d}м</b>")
+    if m.get("hrv_status"):
+        chips.append(f"❤️ HRV: <b>{m['hrv_status']}</b>")
+    elif isinstance(m.get("rhr"), (int, float)):
+        chips.append(f"🫀 RHR: <b>{int(m['rhr'])}</b>")
+    if isinstance(m.get("steps"), (int, float)):
+        chips.append(f"🚶 Шаги: <b>{int(m['steps'])}</b>")
+    return chips[:max_items]
+
+
+def _no_data_message(slot: str) -> str:
+    return (
+        f"🥔 <b>{build_mode_phrase(slot, 'Предварительный режим').split('</b>')[0].replace('Сегодня ты в режиме <b>Предварительный режим', '').replace('🥔 <b>', '')}</b>\n\n"
+        "📊 <b>Данных маловато</b>\n"
+        "Есть только часть метрик, поэтому вердикт пока черновой.\n\n"
+        "🎯 <b>Что делать:</b> один спокойный блок и пауза 5–7 минут.\n"
+        "🚫 <b>Чего не делать:</b> не разгонять день до следующей синхронизации."
+    )
+
+
+def build_action_block(slot: str, score: float) -> str:
+    if slot == "morning":
+        do = "сделай один длинный фокус-блок, пока мотор не начал спорить с реальностью"
+        avoid = "не стартуй день как будто уже финал дедлайна"
+    elif slot == "midday":
+        do = "короткая пауза без экрана, потом один нормальный блок"
+        avoid = "не пытайся героически догнать всё разом"
+    else:
+        do = "снижай темп: свет тише, шум ниже, задач новых не открывай"
+        avoid = "без вечерних добивок и разговоров на максималках"
+    if score < -0.8:
+        do = "режим экономии: только базовые задачи и мягкое завершение"
+    return f"🎯 <b>Что делать:</b> {do}.\n🚫 <b>Чего не делать:</b> {avoid}."
+
+
+def build_push_message(slot: str, snapshot: Optional[Dict[str, Any]], day_key: str, partial: bool = False) -> str:
+    if partial:
+        return _no_data_message(slot)
+    verdict = build_verdict_label(snapshot, day_key, slot)
+    metrics = _extract_metrics(snapshot)
+    score = _score(metrics)
+    chips = build_data_chips(snapshot, max_items=3)
+    chips_block = "\n".join(f"• {c}" for c in chips) if chips else "• 📊 Ключевые метрики ещё догружаются"
+    line = "Ещё едет, но без понтов." if score < 0 else "Мотор живой, но коробку лучше не рвать."
+    return (
+        f"{build_mode_phrase(slot, verdict)}\n\n"
+        f"📊 <b>По фактам:</b>\n{chips_block}\n\n"
+        f"🧠 <b>Смысл:</b> {line}\n\n"
+        f"{build_action_block(slot, score)}"
+    )
+
+
+def build_day_verdict_message(context: Dict[str, Any], day_key: str) -> str:
+    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    if context.get("day_status") == "no_data":
+        return _no_data_message("day")
+    verdict = build_verdict_label(snapshot, day_key, "day")
+    chips = build_data_chips(snapshot)
+    chips_block = "\n".join(f"• {chip}" for chip in chips[:4]) if chips else "• 📊 Нужен следующий sync для плотной картины"
+    return (
+        f"🥔 <b>Вердикт дня</b>\n\n"
+        f"Ты сегодня в режиме <b>{verdict}</b>.\n\n"
+        f"🔋 <b>По фактам:</b>\n{chips_block}\n\n"
+        "🧠 <b>Что это значит:</b> день забрал ресурс не драмой, а суммой мелких нагрузок.\n\n"
+        f"{build_action_block('evening', _score(_extract_metrics(snapshot)))}"
+    )
+
+
+def build_day_detail_message(context: Dict[str, Any], day_key: str) -> str:
+    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    if context.get("day_status") == "no_data":
+        return _no_data_message("day")
+    chips = build_data_chips(snapshot, max_items=5)
+    limits = ""
+    if context.get("key_metrics_present_count", 0) < 3:
+        limits = "\n\n<b>Ограничения:</b> разбор частичный, часть ключевых метрик ещё не приехала."
+    return (
+        "📌 <b>Разбор за день</b>\n\n"
+        "<b>Что хорошо:</b> старт дня собрался без развала по ритму.\n"
+        "<b>Что съело ресурс:</b> основная просадка чаще приходит от стресса, а не от шагов.\n"
+        f"<b>Факты:</b> {'; '.join(chips[:4]) if chips else 'метрики частично доступны'}"
+        f"{limits}\n\n"
+        "<b>Практический вывод:</b> сегодня докатить ровно, а не устраивать ралли на остатках батарейки."
+    )
+
+
+def build_metrics_message(context: Dict[str, Any]) -> str:
+    available = context.get("available_metrics", [])
+    missing = context.get("missing_metrics", [])
+    av = ", ".join(_metric_label(m) for m in available) if available else "пока нет"
+    ms = ", ".join(_metric_label(m) for m in missing[:6]) if missing else "—"
+    return (
+        "📊 <b>Что уже видно по данным</b>\n\n"
+        f"<b>Есть:</b> {av}.\n"
+        f"<b>Пока нет:</b> {ms}.\n\n"
+        "<b>Итог:</b> картина достаточная, чтобы дать вердикт без гадания на картофельной гуще."
+    )
+
+
+def build_history_message(context: Dict[str, Any]) -> str:
+    days = context.get("available_days", [])
+    if not days:
+        return "🗂 <b>История данных</b>\n\nПока нет сохранённых дней."
+    date_range = f"{days[0]} — {days[-1]}" if len(days) > 1 else days[0]
+    compare_line = "можно сравнить дни между собой." if len(days) > 1 else "пока только один день, без сравнений."
+    return (
+        "🗂 <b>История данных</b>\n\n"
+        f"<b>Доступно:</b> {len(days)} дн.\n"
+        f"<b>Диапазон:</b> {date_range}.\n\n"
+        f"<b>Сейчас можно:</b> {compare_line}"
+    )
+
+
+def _metric_label(metric: str) -> str:
+    labels = {
+        "sleep": "сон",
+        "body_battery": "Body Battery",
+        "stress": "стресс",
+        "rhr": "RHR",
+        "hrv": "ВСР",
+        "heart_rate": "пульс",
+        "steps": "шаги",
+        "respiration": "дыхание",
+        "pulse_ox": "SpO2",
+    }
+    return labels.get(metric, metric)
+
+
+def should_send_visual_bonus(now_msk: dt.datetime, day_key: str, context: Dict[str, Any], times_sent_week: int) -> bool:
+    if now_msk.hour < 8 or now_msk.hour >= 23:
+        return False
+    if times_sent_week >= 2:
+        return False
+    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    metrics = _extract_metrics(snapshot)
+    score = _score(metrics)
+    if abs(score) >= 1.1:
+        return True
+    if context.get("day_status") == "partial":
+        return False
+    return (_seed(day_key, str(now_msk.isocalendar().week)) % 7) == 0
+
+
+def choose_visual_state(snapshot: Optional[Dict[str, Any]], day_key: str) -> str:
+    score = _score(_extract_metrics(snapshot))
+    if score >= 1.2:
+        return "Turbo Potato"
+    if score >= 0.4:
+        return "Cruise Potato"
+    if score >= -0.2:
+        return "Zen Potato"
+    if score >= -0.9:
+        return "Soft Potato"
+    if score >= -1.5:
+        return "Mashed Potato"
+    return "Overclocked Potato"
+
+
+def build_weekly_verdict_message(derived: Dict[str, Any], chips: List[str], quest: str) -> str:
+    return (
+        "📊 <b>Вердикт недели</b>\n\n"
+        f"<b>Статус:</b> {derived.get('hero_status', 'Неделя в работе')}.\n"
+        f"• {chips[0]}\n"
+        f"• {chips[1]}\n"
+        f"• {chips[2]}\n\n"
+        f"🎯 <b>Фокус:</b> {quest}"
+    )
+
+
+def tone_violations(text: str) -> List[str]:
+    issues: List[str] = []
+    low = text.lower()
+    if any(opener in low for opener in GENERIC_OPENERS):
+        issues.append("generic_opener")
+    if len(text) > 1300:
+        issues.append("too_long")
+    if "<b>" not in text:
+        issues.append("missing_structure")
+    if "🧠" not in text and "📊" not in text:
+        issues.append("missing_data_or_meaning_block")
+    return issues

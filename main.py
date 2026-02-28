@@ -65,6 +65,15 @@ from color_engine import (
 
 
 from prompts import SYSTEM_PROMPT, CODEX_RULES
+from communication import (
+    build_day_detail_message,
+    build_day_verdict_message,
+    build_history_message,
+    build_metrics_message,
+    build_push_message,
+    build_weekly_verdict_message,
+    resolve_intent,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -585,16 +594,12 @@ def _build_scheduled_message(
     today_vote: Optional[Dict[str, Any]],
 ) -> str:
     quality = _evaluate_data_quality(today_payload)
-    if quality["is_partial"]:
-        return _build_partial_data_variant(slot, quality)
-
-    scores = _extract_scores(today_payload)
-    confidence_line = _confidence_text(today_payload, quality)
-    if slot == "morning":
-        return build_morning_push(scores, confidence_line, color_name, color_story_lines, day)
-    if slot == "midday":
-        return build_day_push(scores, confidence_line)
-    return build_evening_push(scores, confidence_line, today_vote, day)
+    return build_push_message(
+        slot=slot,
+        snapshot=today_payload,
+        day_key=day,
+        partial=bool(quality["is_partial"]),
+    )
 
 
 def _safe_today_payload(cache: Dict[str, Any], day: str) -> Optional[Dict[str, Any]]:
@@ -790,12 +795,7 @@ def generate_weekly_quest(derived: Dict[str, Any], weekly_days: List[Dict[str, A
 
 
 def build_weekly_caption(derived: Dict[str, Any], chips: List[str], quest: str) -> str:
-    return "\n".join([
-        f"📊 {derived['hero_status']}",
-        chips[0],
-        chips[2],
-        f"🎯 {quest}",
-    ])
+    return build_weekly_verdict_message(derived, chips, quest)
 
 
 def build_weekly_keyboard(week_id: str) -> Dict[str, Any]:
@@ -1947,16 +1947,7 @@ def _metric_name_list(metric_keys: List[str]) -> str:
 
 
 def _format_metrics_availability(context: Dict[str, Any]) -> str:
-    available = context.get("available_metrics", [])
-    missing = context.get("missing_metrics", [])
-    available_line = _metric_name_list(available) if available else "пока нет"
-    missing_line = _metric_name_list(missing[:8]) if missing else "—"
-    return (
-        "📊 <b>Метрики за текущий день</b>\n\n"
-        f"<b>Доступно сейчас:</b> {available_line}\n"
-        f"<b>Пока не хватает:</b> {missing_line}\n\n"
-        f"<b>Что это значит:</b> сигнал собран по {context['key_metrics_present_count']} из {context['key_metrics_total_count']} ключевых метрик."
-    )
+    return build_metrics_message(context)
 
 
 def _safe_value(snapshot: Dict[str, Any], path: List[str]) -> Optional[Any]:
@@ -1969,56 +1960,11 @@ def _safe_value(snapshot: Dict[str, Any], path: List[str]) -> Optional[Any]:
 
 
 def _format_detailed_analysis(context: Dict[str, Any]) -> str:
-    snapshot = context.get("snapshot", {}) if isinstance(context.get("snapshot"), dict) else {}
-    available = set(context.get("available_metrics", []))
-    blocks: List[str] = ["🔎 <b>Детальнее по текущему дню</b>"]
-
-    summary = f"<b>Общий фон:</b> ключевых метрик {context['key_metrics_present_count']} из {context['key_metrics_total_count']}."
-    blocks.append(summary)
-
-    if "sleep" in available:
-        sleep_s = _safe_value(snapshot, ["sleep", "sleepTimeSeconds"])
-        if isinstance(sleep_s, (int, float)):
-            blocks.append(f"• <b>Сон:</b> {round(float(sleep_s)/3600, 1)} ч")
-    if "body_battery" in available:
-        val = _safe_value(snapshot, ["body_battery", "mostRecentValue"])
-        if isinstance(val, (int, float)):
-            blocks.append(f"• <b>Body Battery:</b> {int(val)}")
-    if "stress" in available:
-        val = _safe_value(snapshot, ["stress", "avgStressLevel"])
-        if isinstance(val, (int, float)):
-            blocks.append(f"• <b>Стресс:</b> {int(val)}")
-    if "rhr" in available:
-        val = _safe_value(snapshot, ["rhr", "restingHeartRate"])
-        if isinstance(val, (int, float)):
-            blocks.append(f"• <b>RHR:</b> {int(val)}")
-    if "steps" in available:
-        val = _safe_value(snapshot, ["steps", "totalSteps"])
-        if isinstance(val, (int, float)):
-            blocks.append(f"• <b>Шаги:</b> {int(val)}")
-
-    if context["key_metrics_present_count"] < 3:
-        missing_key_labels = [METRIC_LABELS[m] for m in KEY_METRICS if m in context.get("missing_metrics", [])]
-        blocks.append("")
-        blocks.append("<b>Ограничения:</b>")
-        blocks.append("• Подробный разбор частичный: не хватает " + (", ".join(missing_key_labels) if missing_key_labels else "ключевых блоков") + ".")
-
-    blocks.append("")
-    blocks.append("<b>Практический вывод:</b> держать ровный ритм и дождаться следующей синхронизации для полного среза.")
-    return "\n".join(blocks)
+    return build_day_detail_message(context, str(context.get("target_day", current_day_key())))
 
 
 def _format_history_answer(context: Dict[str, Any]) -> str:
-    days = context.get("available_days", [])
-    if not days:
-        return "🗂 <b>История данных</b>\n\nПока нет сохранённых дней."
-    date_range = f"{days[0]} — {days[-1]}" if len(days) > 1 else days[0]
-    return (
-        "🗂 <b>История данных</b>\n\n"
-        f"<b>Факт:</b> доступно дней: {context['available_days_count']}\n"
-        f"<b>Диапазон:</b> {date_range}\n\n"
-        "<b>Что можно анализировать сейчас:</b> текущий день и недельные контрасты в пределах доступной истории."
-    )
+    return build_history_message(context)
 
 
 RU_MONTHS = {
@@ -2099,36 +2045,26 @@ def _is_date_data_query(q: str) -> bool:
 
 
 def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> str:
-    day_iso = target_date.isoformat()
-    ru_date = _format_ru_date(target_date)
-    if context.get("day_status") == "no_data":
-        if context.get("available_days"):
-            return (
-                f"🗓 <b>{ru_date}</b>\n\n"
-                f"За {ru_date} данных нет.\n"
-                f"<b>Доступный диапазон:</b> {context['available_days'][0]} — {context['available_days'][-1]}"
-            )
-        return f"🗓 <b>{ru_date}</b>\n\nЗа {ru_date} данных нет."
-
-    lines = [
-        f"🗓 <b>{ru_date}</b>",
-        "",
-        f"<b>Date key:</b> {day_iso}",
-        f"<b>Статус дня:</b> {context.get('day_status', 'partial')}",
-    ]
-    available = context.get("available_metrics", [])
-    lines.append(f"<b>Метрики:</b> {_metric_name_list(available) if available else 'нет'}")
-    return "\n".join(lines)
+    return build_day_verdict_message(context, target_date.isoformat())
 
 
 def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any]) -> Optional[str]:
     q = query.strip().lower()
-    if "какие метрики" in q:
+    intent = resolve_intent(q)
+    if intent == "metrics":
         return _format_metrics_availability(context)
-    if "деталь" in q:
+    if intent == "detail":
         return _format_detailed_analysis(context)
-    if "за сколько" in q and "дн" in q:
+    if intent == "history":
         return _format_history_answer(context)
+    if intent == "day_verdict":
+        return build_day_verdict_message(context, str(context.get("day_key", current_day_key())))
+    if intent == "current_state":
+        return build_push_message("midday", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready")
+    if intent == "weekly":
+        history = load_cache()
+        payload = build_weekly_payload(history, _now_msk(), chat_id="ad-hoc")
+        return payload["caption"]
     if _is_current_date_only_query(q):
         today = _now_msk().date()
         return f"Сегодня {_format_ru_date(today)} ({today.isoformat()})."
