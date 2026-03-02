@@ -35,6 +35,7 @@ from cache import (
     log_refresh_attempt,
     log_sync_trace,
     mark_slot_sent,
+    mark_sent_record,
     mark_weekly_report_sent,
     prune_cache,
     save_daily_snapshot,
@@ -44,6 +45,8 @@ from cache import (
     upsert_today_vote,
     upsert_color_vote,
     was_slot_sent,
+    was_sent_record,
+    get_today_sent_registry,
     was_weekly_report_sent,
     KEY_METRICS,
     METRIC_LABELS,
@@ -128,6 +131,7 @@ def ensure_bot_commands(token: str) -> None:
         {"command": "help", "description": "подсказка"},
         {"command": "refresh", "description": "обновить данные"},
         {"command": "debug_sync", "description": "диагностика синхронизации"},
+        {"command": "debug_sent", "description": "что отправлено сегодня"},
     ]
     response = requests.post(url, json={"commands": commands}, timeout=15)
     if response.status_code != 200:
@@ -357,7 +361,7 @@ def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optio
     window_slot = _resolve_push_slot(now_msk)
     slot = _resolve_scheduled_push_kind(now_msk, override=override)
     today_str = now_msk.date().isoformat()
-    already_sent = was_slot_sent(chat_id=chat_id, send_date=today_str, slot=slot)
+    already_sent = _already_sent_for_slot(chat_id=chat_id, send_date=today_str, slot=slot)
     return {
         "now_msk": now_msk.isoformat(),
         "window_matched": window_slot if window_slot is not None else "none",
@@ -367,6 +371,42 @@ def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optio
         "date": today_str,
     }
 
+
+
+
+def _already_sent_for_slot(chat_id: str, send_date: str, slot: str) -> bool:
+    message_types = ["verdict"]
+    if slot == "morning":
+        message_types.append("color")
+    return any(was_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=mt) for mt in message_types)
+
+
+def _state_to_asset(status_tag: str) -> str:
+    mapping = {
+        "push": "machine",
+        "recovery": "soft_mash",
+        "steady": "cruise",
+        "no_data": "zen",
+        "high": "battle_club",
+        "border": "focused",
+        "low": "soft_mash",
+        "overload": "overheated",
+    }
+    state = mapping.get(status_tag, "zen")
+    return os.path.join("assets", "coach_states", f"{state}.png")
+
+
+def _build_debug_sent_message(chat_id: str, send_date: str) -> str:
+    records = get_today_sent_registry(chat_id=chat_id, send_date=send_date)
+    if not records:
+        return f"sent-registry {send_date}: пусто"
+    lines = [f"sent-registry {send_date}:"]
+    for key in sorted(records.keys()):
+        payload = records[key] if isinstance(records[key], dict) else {}
+        lines.append(
+            f"• {key} | ts={payload.get('ts','')} | source={payload.get('trigger_source','')} | run_id={payload.get('run_id','')}"
+        )
+    return "\n".join(lines)
 
 def _log_schedule_decision(decision: Dict[str, Any]) -> None:
     log.info(
@@ -675,14 +715,24 @@ def _day_signal(payload: Dict[str, Any]) -> Dict[str, Any]:
 def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
     points = []
     scores: List[float] = []
-    partial_count = 0
+    incomplete_count = 0
+    no_data_count = 0
     best_count = 0
     tense_count = 0
+    available_days = 0
+
     for row in weekly_days:
-        signal = _day_signal(row["payload"])
+        payload = row["payload"] if isinstance(row.get("payload"), dict) else {}
+        signal = _day_signal(payload)
+        has_any_data = any(isinstance(payload.get(metric), dict) and bool(payload.get(metric)) for metric in ("sleep", "stress", "body_battery", "rhr"))
+        if not has_any_data:
+            no_data_count += 1
+            points.append({"date": row["date"], "status": "no_data"})
+            continue
+        available_days += 1
         points.append({"date": row["date"], "status": signal["status"]})
         if signal["status"] == "partial":
-            partial_count += 1
+            incomplete_count += 1
             continue
         scores.append(signal["score"])
         if signal["status"] == "best":
@@ -690,9 +740,12 @@ def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
         if signal["status"] == "tense":
             tense_count += 1
 
-    hero = "Неделя предварительная"
-    if len(scores) >= 4:
-        spread = max(scores) - min(scores) if scores else 0.0
+    if available_days < 3:
+        hero = "Ранний черновик недели"
+    elif available_days < 7:
+        hero = f"Неделя по доступным дням ({available_days})"
+    elif len(scores) >= 4:
+        spread = max(scores) - min(scores)
         if spread >= 2.0:
             hero = "Неделя с перегибами"
         elif scores[-1] < scores[0] - 0.7:
@@ -701,45 +754,25 @@ def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
             hero = "Неделя ровная"
         else:
             hero = "Ритм менялся по дням"
+    else:
+        hero = "Неделя предварительная"
 
-    period_scores = {"утро": 0, "день": 0, "вечер": 0}
-    period_hits = {"утро": 0, "день": 0, "вечер": 0}
-    for row in weekly_days:
-        payload = row["payload"]
-        if not isinstance(payload, dict):
-            continue
-        sleep = payload.get("sleep") if isinstance(payload.get("sleep"), dict) else {}
-        body = payload.get("body_battery") if isinstance(payload.get("body_battery"), dict) else {}
-        stress = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
-        sleep_seconds = sleep.get("sleepTimeSeconds") or sleep.get("totalSleepSeconds")
-        body_level = body.get("mostRecentValue") or body.get("chargedValue")
-        stress_level = stress.get("avgStressLevel") or stress.get("overallStressLevel")
-        if isinstance(sleep_seconds, (int, float)):
-            period_scores["утро"] += 1 if sleep_seconds >= 7 * 3600 else 0
-            period_hits["утро"] += 1
-        if isinstance(body_level, (int, float)):
-            period_scores["день"] += 1 if body_level >= 55 else 0
-            period_hits["день"] += 1
-        if isinstance(stress_level, (int, float)):
-            period_scores["вечер"] += 1 if stress_level <= 40 else 0
-            period_hits["вечер"] += 1
-
-    period_ratio = {
-        k: (period_scores[k] / period_hits[k]) if period_hits[k] else 0.0
-        for k in period_scores
-    }
-    strongest_period = max(period_ratio.keys(), key=lambda k: period_ratio[k])
+    period_ratio = {"утро": 0.0, "день": 0.0, "вечер": 0.0}
+    strongest_period = "день"
 
     return {
         "hero_status": hero,
         "day_points": points,
-        "partial_days": partial_count,
+        "incomplete_days": incomplete_count,
+        "no_data_days": no_data_count,
+        "available_days": available_days,
         "scores": scores,
         "best_days": best_count,
         "tense_days": tense_count,
         "strongest_period": strongest_period,
         "period_ratio": period_ratio,
         "stability": round(1.0 / (1.0 + (max(scores) - min(scores))) if scores else 0.0, 2),
+        "partial_days": incomplete_count,
     }
 
 
@@ -748,9 +781,9 @@ def build_human_weekly_chips(derived: Dict[str, Any], week_id: str, chat_id: str
     total = int(color_acc.get("total", 0))
     hit_score = int(color_acc.get("yes_count", 0)) + int(color_acc.get("partial_count", 0))
     color_chip = f"🎨 Цветовой отклик: {hit_score} из {max(1, total)} дней"
-    period_chip = f"🌅 В ресурсе чаще был период: {derived['strongest_period']}"
-    partial_chip = f"☁️ Дней с неполной картиной: {derived['partial_days']}"
-    return [color_chip, period_chip, partial_chip]
+    available_chip = f"📅 Доступных дней: {derived.get('available_days', 0)}"
+    quality_chip = f"☁️ Неполных: {derived.get('incomplete_days', 0)}; без данных: {derived.get('no_data_days', 0)}"
+    return [color_chip, available_chip, quality_chip]
 
 
 def generate_weekly_quest(derived: Dict[str, Any], weekly_days: List[Dict[str, Any]]) -> str:
@@ -848,14 +881,6 @@ def build_weekly_payload(full_history: Dict[str, Any], now_msk: dt.datetime, cha
 def send_weekly_report(tg_token: str, chat_id: str, full_history: Dict[str, Any], now_msk: dt.datetime) -> None:
     payload = build_weekly_payload(full_history, now_msk, chat_id)
     week_id = payload["week_id"]
-    image_path = generate_weekly_card_image(
-        chat_id=chat_id,
-        week_id=week_id,
-        hero_status=payload["derived"]["hero_status"],
-        day_points=payload["derived"]["day_points"],
-        chips=payload["chips"],
-        weekly_quest=payload["quest"],
-    )
     save_weekly_state(
         week_id,
         {
@@ -869,12 +894,12 @@ def send_weekly_report(tg_token: str, chat_id: str, full_history: Dict[str, Any]
             "source_fingerprint": payload.get("source_fingerprint", ""),
         },
     )
-    telegram_send_photo_with_markup(
+    telegram_send_with_markup(
         tg_token,
         chat_id,
-        image_path,
         payload["caption"],
         build_weekly_keyboard(week_id),
+        parse_mode="HTML",
     )
 
 
@@ -883,6 +908,8 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     chat_id = env("TELEGRAM_CHAT_ID")
     now_msk = _now_msk()
     now_utc = dt.datetime.now(dt.timezone.utc)
+    run_id = _new_run_id("push")
+    trigger_source = "schedule" if push_kind == "scheduled" else "manual"
 
     prune_summary = prune_cache()
     log.info("cache_prune summary=%s", prune_summary)
@@ -900,6 +927,10 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
 
     if push_kind == "scheduled" and decision["already_sent"]:
         log.info("dedupe_skip slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+        return
+
+    if push_kind != "scheduled":
+        log.info("manual_preview_only slot=%s run_id=%s", resolved_slot, run_id)
         return
 
     if dry_run:
@@ -941,11 +972,11 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         else:
             _send_push_fallback(tg_token, chat_id, _build_fallback_message(resolved_slot))
         if push_kind != "scheduled" or deferred_slot is None:
-            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", resolved_slot, today_str, chat_id, run_id)
         else:
-            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=deferred_slot, sent_ts=utc_now_iso())
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s", deferred_slot, today_str, chat_id)
+            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=deferred_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", deferred_slot, today_str, chat_id, run_id)
         log.info("send_result=ok fallback=true reason=%s slot_id=%s cache_source=%s cache_available=%s", reason_code, resolved_slot, cache_meta.get("source", "unknown"), cache_meta.get("available", False))
         return
 
@@ -990,6 +1021,21 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
 
     try:
         if resolved_slot == "morning":
+            color_image_path = generate_color_card_image(week_color["week_id"], week_color["hex"])
+            today_color_vote = get_color_vote(chat_id=chat_id, vote_date=today_str)
+            color_keyboard = build_color_keyboard(week_color["week_id"])
+            if today_color_vote:
+                color_keyboard = build_color_voted_keyboard(today_color_vote.get("vote_value", "partial"))
+            telegram_send_photo_with_markup(
+                tg_token,
+                chat_id,
+                color_image_path,
+                build_morning_color_caption(week_color),
+                color_keyboard,
+                parse_mode="HTML",
+            )
+            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="color", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+
             mode_tag = classify_mode_tag(today_payload)
             signal = compute_today_signal(today_payload)
             accent_hex = generate_daily_accent_hex(chat_id, today_str, week_color["week_id"], week_color["hex"])
@@ -1004,47 +1050,20 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
                     "week_id": week_color["week_id"],
                 },
             )
-            image_started = dt.datetime.now(dt.timezone.utc)
-            image_path = generate_today_card_image(
-                chat_id=chat_id,
-                day=today_str,
-                week_id=week_color["week_id"],
-                week_color_hex=week_color["hex"],
-                mode_tag=mode_tag,
-                accent_hex=today_state.get("accent_hex", accent_hex),
-            )
-            elapsed = (dt.datetime.now(dt.timezone.utc) - image_started).total_seconds()
-            log.info("morning_photo_generated path=%s elapsed_s=%.3f", image_path, elapsed)
-            telegram_send_photo_with_markup(
-                tg_token,
-                chat_id,
-                image_path,
-                msg,
-                {"inline_keyboard": []},
-                parse_mode="HTML",
-            )
-            color_image_path = generate_color_card_image(week_color["week_id"], week_color["hex"])
-            today_color_vote = get_color_vote(chat_id=chat_id, vote_date=today_str)
-            color_keyboard = build_color_keyboard(week_color["week_id"])
-            if today_color_vote:
-                color_keyboard = build_color_voted_keyboard(today_color_vote.get("vote_value", "partial"))
-            telegram_send_photo_with_markup(
-                tg_token,
-                chat_id,
-                color_image_path,
-                build_morning_color_caption(week_color),
-                color_keyboard,
-                parse_mode="HTML",
-            )
+            mascot_asset = _state_to_asset(mode_tag)
+            if os.path.exists(mascot_asset):
+                telegram_send_photo_with_markup(tg_token, chat_id, mascot_asset, msg, {"inline_keyboard": []}, parse_mode="HTML")
+            else:
+                telegram_send(tg_token, chat_id, msg, parse_mode="HTML")
         else:
             telegram_send(tg_token, chat_id, msg, parse_mode="HTML")
 
         if push_kind != "scheduled" or deferred_slot is None:
-            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=resolved_slot, sent_ts=utc_now_iso())
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
+            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", resolved_slot, today_str, chat_id, run_id)
         else:
-            mark_slot_sent(chat_id=chat_id, send_date=today_str, slot=deferred_slot, sent_ts=utc_now_iso())
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s", deferred_slot, today_str, chat_id)
+            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=deferred_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", deferred_slot, today_str, chat_id, run_id)
 
         is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
         if is_sunday_evening:
@@ -1054,7 +1073,8 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             else:
                 send_weekly_report(tg_token, chat_id, full_history, now_msk)
                 mark_weekly_report_sent(chat_id=chat_id, week_id=week_id, sent_ts=utc_now_iso())
-                log.info("weekly_report_sent week_id=%s chat_id=%s", week_id, chat_id)
+                mark_sent_record(chat_id=chat_id, send_date=today_str, slot="evening", message_type="weekly", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+                log.info("weekly_report_sent week_id=%s chat_id=%s run_id=%s", week_id, chat_id, run_id)
 
         log.info("send_result=ok fallback=%s slot_id=%s", str(today_payload is None).lower(), resolved_slot)
     except Exception:
@@ -1677,7 +1697,7 @@ def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/help"
+    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/debug_sent\n/help"
 
 
 def handle_stats_command(tg_token: str, chat_id: str) -> None:
@@ -1891,6 +1911,10 @@ def build_debug_sync_message() -> str:
             f"• confidence: {trace.get('old_confidence', '-')} -> {trace.get('new_confidence', '-')}",
             f"• had real updates: {str(bool(trace.get('had_real_updates', False))).lower()}",
         ])
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if chat_id:
+        lines.append("• sent registry entries today: " + str(len(get_today_sent_registry(chat_id=chat_id, send_date=day_key))))
+
     if missing_blocks:
         lines.append("• still missing: " + ", ".join(missing_blocks[:6]))
         for metric in missing_blocks:
@@ -2175,6 +2199,9 @@ async def webhook(request: Request):
             return Response(status_code=200)
         if text.lower() == "/debug_sync":
             telegram_send(tg_token, message_chat_id, build_debug_sync_message())
+            return Response(status_code=200)
+        if text.lower() == "/debug_sent":
+            telegram_send(tg_token, message_chat_id, _build_debug_sent_message(message_chat_id, current_day_key()))
             return Response(status_code=200)
 
         # Load unified day context from cache and use deterministic handlers first

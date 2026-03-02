@@ -1017,23 +1017,71 @@ def get_today_vote_accuracy(week_id: str, chat_id: Optional[str] = None) -> Dict
 
 
 def mark_slot_sent(chat_id: str, send_date: str, slot: str, sent_ts: str) -> None:
+    mark_sent_record(
+        chat_id=chat_id,
+        send_date=send_date,
+        slot=slot,
+        message_type="verdict",
+        sent_ts=sent_ts,
+        trigger_source="legacy",
+        run_id="",
+    )
+
+
+def _sent_key(chat_id: str, send_date: str, slot: str, message_type: str) -> str:
+    return f"{send_date}|{chat_id}|{slot}|{message_type}"
+
+
+def mark_sent_record(
+    chat_id: str,
+    send_date: str,
+    slot: str,
+    message_type: str,
+    sent_ts: str,
+    trigger_source: str,
+    run_id: str,
+    manual_preview: bool = False,
+) -> None:
     cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
         state = {}
         cache[PUSH_STATE_KEY] = state
-    key = f"{send_date}|{chat_id}|{slot}"
-    state[key] = {"ts": sent_ts}
+    key = _sent_key(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type)
+    state[key] = {
+        "ts": sent_ts,
+        "run_id": run_id,
+        "trigger_source": trigger_source,
+        "manual_preview": bool(manual_preview),
+    }
     _write_cache(cache)
 
 
 def was_slot_sent(chat_id: str, send_date: str, slot: str) -> bool:
+    return was_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type="verdict")
+
+
+def was_sent_record(chat_id: str, send_date: str, slot: str, message_type: str) -> bool:
     cache = load_cache()
     state = cache.get(PUSH_STATE_KEY, {})
     if not isinstance(state, dict):
         return False
-    key = f"{send_date}|{chat_id}|{slot}"
+    key = _sent_key(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type)
     return key in state
+
+
+def get_today_sent_registry(chat_id: str, send_date: str) -> Dict[str, Dict[str, Any]]:
+    cache = load_cache()
+    state = cache.get(PUSH_STATE_KEY, {})
+    if not isinstance(state, dict):
+        return {}
+    result: Dict[str, Dict[str, Any]] = {}
+    prefix = f"{send_date}|{chat_id}|"
+    for key, payload in state.items():
+        if not key.startswith(prefix):
+            continue
+        result[key] = payload if isinstance(payload, dict) else {"ts": ""}
+    return result
 
 
 def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:

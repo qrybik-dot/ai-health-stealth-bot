@@ -284,6 +284,29 @@ def build_color_story(color: WeeklyColor) -> str:
     )
 
 
+
+
+def _load_cyrillic_font(size: int):
+    from PIL import ImageFont
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size=size)
+    return ImageFont.load_default()
+
+
+def render_cyrillic_probe(text: str, out_dir: str = "generated/weekly_cards") -> str:
+    from PIL import Image, ImageDraw
+    os.makedirs(out_dir, exist_ok=True)
+    path = Path(out_dir) / "cyrillic_probe.png"
+    image = Image.new("RGB", (620, 180), color=(20, 24, 30))
+    draw = ImageDraw.Draw(image)
+    draw.text((20, 60), text, fill=(240, 242, 246), font=_load_cyrillic_font(30))
+    image.save(path, format="PNG", optimize=True)
+    return str(path)
 def generate_color_card_image(week_id: str, hex_color: str, out_dir: str = "artifacts/color_cards") -> str:
     from PIL import Image, ImageDraw
     os.makedirs(out_dir, exist_ok=True)
@@ -465,8 +488,8 @@ def generate_weekly_card_image(
 
     draw.rounded_rectangle((56, 60, 1024, 1020), radius=44, fill=(17, 21, 32, 248), outline=(50, 60, 82, 255), width=2)
     draw.rounded_rectangle((82, 108, 998, 244), radius=28, fill=(33, 42, 60, 255))
-    draw.text((114, 136), "📊 Итог недели", fill=(222, 229, 240), font=None)
-    draw.text((114, 184), hero_status, fill=(245, 248, 255), font=None)
+    draw.text((114, 136), "📊 Итог недели", fill=(222, 229, 240), font=_load_cyrillic_font(44))
+    draw.text((114, 184), hero_status, fill=(245, 248, 255), font=_load_cyrillic_font(44))
 
     line_left = 120
     line_right = 960
@@ -482,17 +505,17 @@ def generate_weekly_card_image(
             draw.ellipse((x - 18, y_line - 18, x + 18, y_line + 18), fill=(20, 25, 35, 255), outline=fill, width=3)
         else:
             draw.ellipse((x - 18, y_line - 18, x + 18, y_line + 18), fill=fill)
-        draw.text((x - 14, y_line + 34), labels[idx], fill=(205, 213, 228), font=None)
+        draw.text((x - 14, y_line + 34), labels[idx], fill=(205, 213, 228), font=_load_cyrillic_font(44))
 
     draw.rounded_rectangle((84, 486, 996, 744), radius=24, fill=(28, 35, 52, 210))
     chip_y = 520
     for chip in chips[:3]:
         draw.rounded_rectangle((112, chip_y, 968, chip_y + 62), radius=18, fill=(39, 50, 74, 240))
-        draw.text((136, chip_y + 21), chip, fill=(227, 233, 243), font=None)
+        draw.text((136, chip_y + 21), chip, fill=(227, 233, 243), font=_load_cyrillic_font(44))
         chip_y += 78
 
     draw.rounded_rectangle((84, 778, 996, 964), radius=24, fill=(20, 42, 64, 235), outline=accent, width=2)
-    draw.text((114, 810), f"🎯 Квест недели: {weekly_quest}", fill=(231, 240, 255), font=None)
+    draw.text((114, 810), f"🎯 Квест недели: {weekly_quest}", fill=(231, 240, 255), font=_load_cyrillic_font(44))
 
     image.save(path, format="PNG", optimize=True)
     return str(path)

@@ -83,6 +83,24 @@ def _score(metrics: Dict[str, Any]) -> float:
     return round(score, 2)
 
 
+
+
+def _fmt_int(value: Any, min_v: int = 0, max_v: int = 999) -> Optional[int]:
+    if not isinstance(value, (int, float)):
+        return None
+    iv = int(value)
+    if iv < min_v or iv > max_v:
+        return None
+    return iv
+
+
+def _fmt_sleep_seconds(value: Any) -> Optional[str]:
+    if not isinstance(value, (int, float)):
+        return None
+    total_min = int(value // 60)
+    if total_min <= 0 or total_min > 24 * 60:
+        return None
+    return f"{total_min // 60}ч {total_min % 60:02d}м"
 def _state_bucket(score: float) -> str:
     if score >= 1.1:
         return "high"
@@ -117,25 +135,32 @@ def build_mode_phrase(slot: str, verdict_label: str) -> str:
 def build_data_chips(snapshot: Optional[Dict[str, Any]], max_items: int = 4) -> List[str]:
     m = _extract_metrics(snapshot)
     chips: List[str] = []
-    if isinstance(m.get("bb_now"), (int, float)):
-        if isinstance(m.get("bb_start"), (int, float)):
-            chips.append(f"🔋 Battery: <b>{int(m['bb_start'])} → {int(m['bb_now'])}</b>")
+    bb_now = _fmt_int(m.get("bb_now"), 0, 100)
+    bb_start = _fmt_int(m.get("bb_start"), 0, 100)
+    if bb_now is not None:
+        if bb_start is not None:
+            chips.append(f"🔋 Battery: <b>{bb_start} → {bb_now}</b>")
         else:
-            chips.append(f"🔋 Battery: <b>{int(m['bb_now'])}</b>")
-    if isinstance(m.get("stress_avg"), (int, float)):
-        if isinstance(m.get("stress_peak"), (int, float)):
-            chips.append(f"😵 Стресс: <b>{int(m['stress_avg'])}</b>, пики до <b>{int(m['stress_peak'])}</b>")
+            chips.append(f"🔋 Battery: <b>{bb_now}</b>")
+    stress_avg = _fmt_int(m.get("stress_avg"), 0, 100)
+    stress_peak = _fmt_int(m.get("stress_peak"), 0, 100)
+    if stress_avg is not None:
+        if stress_peak is not None:
+            chips.append(f"😵 Стресс: <b>{stress_avg}</b>, пики до <b>{stress_peak}</b>")
         else:
-            chips.append(f"😵 Стресс: <b>{int(m['stress_avg'])}</b>")
-    if isinstance(m.get("sleep_seconds"), (int, float)):
-        total_min = int(m["sleep_seconds"] // 60)
-        chips.append(f"🛌 Сон: <b>{total_min // 60}ч {total_min % 60:02d}м</b>")
+            chips.append(f"😵 Стресс: <b>{stress_avg}</b>")
+    sleep_fmt = _fmt_sleep_seconds(m.get("sleep_seconds"))
+    if sleep_fmt:
+        chips.append(f"🛌 Сон: <b>{sleep_fmt}</b>")
     if m.get("hrv_status"):
         chips.append(f"❤️ HRV: <b>{m['hrv_status']}</b>")
-    elif isinstance(m.get("rhr"), (int, float)):
-        chips.append(f"🫀 RHR: <b>{int(m['rhr'])}</b>")
-    if isinstance(m.get("steps"), (int, float)):
-        chips.append(f"🚶 Шаги: <b>{int(m['steps'])}</b>")
+    else:
+        rhr = _fmt_int(m.get("rhr"), 25, 220)
+        if rhr is not None:
+            chips.append(f"🫀 RHR: <b>{rhr}</b>")
+    steps = _fmt_int(m.get("steps"), 0, 120000)
+    if steps is not None:
+        chips.append(f"🚶 Шаги: <b>{steps}</b>")
     return chips[:max_items]
 
 
