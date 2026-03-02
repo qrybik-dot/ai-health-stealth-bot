@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Coach Potato</title>
+<style>body{font-family:Arial,sans-serif;margin:0;background:#111;color:#f5f5f5}header{padding:12px 16px;font-weight:700}.tabs{display:flex;gap:8px;padding:8px}.tabs button{flex:1;padding:10px;border-radius:10px;border:0;background:#2a2a2a;color:#fff}.card{background:#1b1b1b;margin:10px;padding:12px;border-radius:12px}.hidden{display:none}.muted{opacity:.75}</style></head>
+<body>
+<header>🥔 Сканер картошки</header>
+<div class="tabs">
+<button onclick="openTab('today')">Сегодня</button><button onclick="openTab('day')">День</button><button onclick="openTab('color')">Цвет</button><button onclick="openTab('week')">Неделя</button>
+</div>
+<section id="today" class="card"></section>
+<section id="day" class="card hidden"></section>
+<section id="color" class="card hidden"></section>
+<section id="week" class="card hidden"></section>
+<section class="card">
+<h3>Настройки</h3>
+<label>Режим: <select id="speech"><option value="short">Коротко</option><option value="facts">По фактам</option><option value="roast">Пожарь</option></select></label>
+</section>
+<script>
+const tabs=['today','day','color','week'];
+function openTab(id){tabs.forEach(t=>document.getElementById(t).classList.toggle('hidden',t!==id));}
+const prefs=JSON.parse(localStorage.getItem('cp_prefs')||'{}');
+document.getElementById('speech').value=prefs.speech_mode||'short';
+document.getElementById('speech').onchange=(e)=>{const p={...prefs,speech_mode:e.target.value};localStorage.setItem('cp_prefs',JSON.stringify(p));fetch('/miniapp/api/prefs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});};
+fetch('/miniapp/api/dashboard').then(r=>r.json()).then(data=>{
+ document.getElementById('today').innerHTML=`<h3>Сегодня</h3><div>${data.status}</div><div class='muted'>Sync: ${data.sync}</div>`;
+ document.getElementById('day').innerHTML=`<h3>Таймлайн</h3><div>${data.timeline.join('<br>')}</div>`;
+ document.getElementById('color').innerHTML=`<h3>Color Lab</h3><div>${data.color.name} ${data.color.hex}</div>`;
+ document.getElementById('week').innerHTML=`<h3>Карта недели</h3><div>${data.week_map.join('<br>')}</div>`;
+});
+</script>
+</body></html>

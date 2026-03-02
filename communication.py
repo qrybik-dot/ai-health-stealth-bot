@@ -17,7 +17,10 @@ INTENT_PATTERNS = {
     "history": ("за сколько", "сколько дней", "история данных", "диапазон"),
     "weekly": ("недел", "итог недели", "weekly"),
     "visual": ("покажи красиво", "сделай карточкой", "дай визуально"),
+    "why": ("почему", "из-за чего", "причины"),
 }
+
+SPEECH_MODES = {"short", "facts", "roast"}
 
 STATE_POOL = {
     "high": ["Машина 🏎", "Турбокартоха", "Ровный болид", "Боевой клубень"],
@@ -94,6 +97,10 @@ def _fmt_int(value: Any, min_v: int = 0, max_v: int = 999) -> Optional[int]:
     return iv
 
 
+def _safe_rhr(value: Any) -> Optional[int]:
+    return _fmt_int(value, 30, 130)
+
+
 def _fmt_sleep_seconds(value: Any) -> Optional[str]:
     if not isinstance(value, (int, float)):
         return None
@@ -101,6 +108,37 @@ def _fmt_sleep_seconds(value: Any) -> Optional[str]:
     if total_min <= 0 or total_min > 24 * 60:
         return None
     return f"{total_min // 60}ч {total_min % 60:02d}м"
+
+
+def _reason_lines(snapshot: Optional[Dict[str, Any]]) -> List[str]:
+    m = _extract_metrics(snapshot)
+    reasons: List[str] = []
+    bb_now = _fmt_int(m.get("bb_now"), 0, 100)
+    if bb_now is not None:
+        trend = "низкий" if bb_now < 40 else ("высокий" if bb_now >= 70 else "средний")
+        reasons.append(f"• 🔋 Battery {bb_now} ({trend} уровень ресурса)")
+    stress_avg = _fmt_int(m.get("stress_avg"), 0, 100)
+    if stress_avg is not None:
+        direction = "высокий" if stress_avg >= 45 else "контролируемый"
+        reasons.append(f"• 😵 Стресс {stress_avg} ({direction})")
+    sleep_seconds = m.get("sleep_seconds")
+    sleep = _fmt_sleep_seconds(sleep_seconds)
+    if sleep is not None:
+        sleep_hours = int(float(sleep_seconds) // 3600) if isinstance(sleep_seconds, (int, float)) else 0
+        direction = "короткий" if sleep_hours < 7 else "достаточный"
+        reasons.append(f"• 😴 Сон {sleep} ({direction})")
+    if len(reasons) < 3:
+        rhr = _safe_rhr(m.get("rhr"))
+        if rhr is not None:
+            reasons.append(f"• ❤️ RHR {rhr} (фон восстановления)")
+    while len(reasons) < 3:
+        reasons.append("• 📉 Данных мало: вывод предварительный")
+    return reasons[:3]
+
+
+def build_why_message(snapshot: Optional[Dict[str, Any]]) -> str:
+    reasons = _reason_lines(snapshot)
+    return "🧩 <b>Почему такой вердикт</b>\n\n" + "\n".join(reasons)
 def _state_bucket(score: float) -> str:
     if score >= 1.1:
         return "high"
@@ -189,7 +227,14 @@ def build_action_block(slot: str, score: float) -> str:
     return f"🎯 <b>Что делать:</b> {do}.\n🚫 <b>Чего не делать:</b> {avoid}."
 
 
-def build_push_message(slot: str, snapshot: Optional[Dict[str, Any]], day_key: str, partial: bool = False) -> str:
+def build_push_message(
+    slot: str,
+    snapshot: Optional[Dict[str, Any]],
+    day_key: str,
+    partial: bool = False,
+    mode: str = "short",
+) -> str:
+    mode = mode if mode in SPEECH_MODES else "short"
     if partial:
         return _no_data_message(slot)
     verdict = build_verdict_label(snapshot, day_key, slot)
@@ -198,6 +243,14 @@ def build_push_message(slot: str, snapshot: Optional[Dict[str, Any]], day_key: s
     chips = build_data_chips(snapshot, max_items=3)
     chips_block = "\n".join(f"• {c}" for c in chips) if chips else "• 📊 Ключевые метрики ещё догружаются"
     line = "Ещё едет, но без понтов." if score < 0 else "Мотор живой, но коробку лучше не рвать."
+    if mode == "facts":
+        return (
+            f"{build_mode_phrase(slot, verdict)}\n\n"
+            f"📊 <b>По фактам:</b>\n{chips_block}\n\n"
+            f"🧾 <b>Вывод:</b> {line}"
+        )
+    if mode == "roast":
+        line = "Картоха едет, но без дрифта на ровном месте." if score >= 0 else "Пюрешка близко, играем в эконом-режим."
     return (
         f"{build_mode_phrase(slot, verdict)}\n\n"
         f"📊 <b>По фактам:</b>\n{chips_block}\n\n"

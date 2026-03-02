@@ -17,6 +17,7 @@ load_dotenv()
 from zoneinfo import ZoneInfo
 import uvicorn
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from cache import (
     get_color_vote,
     get_today_state,
@@ -47,7 +48,10 @@ from cache import (
     was_slot_sent,
     was_sent_record,
     get_today_sent_registry,
+    get_sent_registry_for_date,
+    get_user_prefs,
     was_weekly_report_sent,
+    upsert_user_prefs,
     KEY_METRICS,
     METRIC_LABELS,
 )
@@ -69,12 +73,14 @@ from color_engine import (
 
 from prompts import SYSTEM_PROMPT, CODEX_RULES
 from communication import (
+    build_verdict_label,
     build_day_detail_message,
     build_day_verdict_message,
     build_history_message,
     build_metrics_message,
     build_push_message,
     build_weekly_verdict_message,
+    build_why_message,
     resolve_intent,
 )
 
@@ -408,6 +414,46 @@ def _build_debug_sent_message(chat_id: str, send_date: str) -> str:
         )
     return "\n".join(lines)
 
+
+def _slot_button_row(slot: str, day_key: str) -> List[Dict[str, str]]:
+    return [
+        {"text": "Почему?", "callback_data": f"why:{slot}:{day_key}"},
+        {"text": "По фактам", "callback_data": f"mode:facts:{slot}:{day_key}"},
+        {"text": "Пожарь", "callback_data": f"mode:roast:{slot}:{day_key}"},
+        {"text": "Что делать (15м)", "callback_data": f"what15:{slot}:{day_key}"},
+    ]
+
+
+def _build_verdict_keyboard(slot: str, day_key: str) -> Dict[str, Any]:
+    return {"inline_keyboard": [_slot_button_row(slot, day_key)]}
+
+
+def _send_once(
+    tg_token: str,
+    chat_id: str,
+    send_date: str,
+    slot: str,
+    message_type: str,
+    trigger_source: str,
+    run_id: str,
+    sender: Any,
+    force: bool = False,
+) -> bool:
+    if (not force) and was_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type):
+        log.info("dedupe_skip key=%s|%s|%s|%s source=%s", chat_id, send_date, slot, message_type, trigger_source)
+        return False
+    sender()
+    mark_sent_record(
+        chat_id=chat_id,
+        send_date=send_date,
+        slot=slot,
+        message_type=message_type,
+        sent_ts=utc_now_iso(),
+        trigger_source=trigger_source,
+        run_id=run_id,
+    )
+    return True
+
 def _log_schedule_decision(decision: Dict[str, Any]) -> None:
     log.info(
         "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
@@ -632,6 +678,7 @@ def _build_scheduled_message(
     color_story_lines: list[str],
     day: str,
     today_vote: Optional[Dict[str, Any]],
+    speech_mode: str = "short",
 ) -> str:
     quality = _evaluate_data_quality(today_payload)
     return build_push_message(
@@ -639,6 +686,7 @@ def _build_scheduled_message(
         snapshot=today_payload,
         day_key=day,
         partial=bool(quality["is_partial"]),
+        mode=speech_mode,
     )
 
 
@@ -715,7 +763,7 @@ def _day_signal(payload: Dict[str, Any]) -> Dict[str, Any]:
 def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
     points = []
     scores: List[float] = []
-    incomplete_count = 0
+    partial_count = 0
     no_data_count = 0
     best_count = 0
     tense_count = 0
@@ -732,7 +780,7 @@ def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
         available_days += 1
         points.append({"date": row["date"], "status": signal["status"]})
         if signal["status"] == "partial":
-            incomplete_count += 1
+            partial_count += 1
             continue
         scores.append(signal["score"])
         if signal["status"] == "best":
@@ -741,7 +789,7 @@ def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
             tense_count += 1
 
     if available_days < 3:
-        hero = "Ранний черновик недели"
+        hero = f"Ранний черновик недели ({available_days} дн.)"
     elif available_days < 7:
         hero = f"Неделя по доступным дням ({available_days})"
     elif len(scores) >= 4:
@@ -757,22 +805,19 @@ def derive_weekly_status(weekly_days: List[Dict[str, Any]]) -> Dict[str, Any]:
     else:
         hero = "Неделя предварительная"
 
-    period_ratio = {"утро": 0.0, "день": 0.0, "вечер": 0.0}
-    strongest_period = "день"
-
     return {
         "hero_status": hero,
         "day_points": points,
-        "incomplete_days": incomplete_count,
+        "incomplete_days": partial_count,
+        "partial_days": partial_count,
         "no_data_days": no_data_count,
         "available_days": available_days,
         "scores": scores,
         "best_days": best_count,
         "tense_days": tense_count,
-        "strongest_period": strongest_period,
-        "period_ratio": period_ratio,
-        "stability": round(1.0 / (1.0 + (max(scores) - min(scores))) if scores else 0.0, 2),
-        "partial_days": incomplete_count,
+        "strongest_period": "день",
+        "period_ratio": {"утро": 0.0, "день": 0.0, "вечер": 0.0},
+        "stability": round((sum(scores) / len(scores)) if scores else 0.0, 2),
     }
 
 
@@ -825,6 +870,24 @@ def generate_weekly_quest(derived: Dict[str, Any], weekly_days: List[Dict[str, A
     return templates["rough_week"][(best + tense) % len(templates["rough_week"])]
 
 
+def build_weekly_map_lines(day_points: List[Dict[str, Any]], weekly_days: List[Dict[str, Any]]) -> List[str]:
+    icon_map = {"best": "🟢", "moderate": "🟡", "tense": "🟠", "partial": "🟣", "no_data": "⚪"}
+    payload_by_day = {
+        str(row.get("date", "")): (row.get("payload") if isinstance(row.get("payload"), dict) else {})
+        for row in weekly_days
+    }
+    lines: List[str] = []
+    for point in day_points:
+        day = str(point.get("date", ""))
+        status = str(point.get("status", "no_data"))
+        payload = payload_by_day.get(day, {})
+        battery = payload.get("body_battery", {}) if isinstance(payload.get("body_battery"), dict) else {}
+        bb = battery.get("mostRecentValue")
+        value = str(int(bb)) if isinstance(bb, (int, float)) else "нет"
+        lines.append(f"{icon_map.get(status, '⚪')} {day[5:]} · {value}")
+    return lines
+
+
 
 
 def build_weekly_caption(derived: Dict[str, Any], chips: List[str], quest: str) -> str:
@@ -868,12 +931,15 @@ def build_weekly_payload(full_history: Dict[str, Any], now_msk: dt.datetime, cha
     chips = build_human_weekly_chips(derived, week_id, chat_id)
     quest = generate_weekly_quest(derived, weekly_days)
     caption = build_weekly_caption(derived, chips, quest)
+    map_lines = build_weekly_map_lines(derived.get("day_points", []), weekly_days)
+    caption = caption + "\n\n🗺 <b>Карта недели</b>\n" + "\n".join(map_lines)
     return {
         "week_id": week_id,
         "derived": derived,
         "chips": chips,
         "quest": quest,
         "caption": caption,
+        "map_lines": map_lines,
         "source_fingerprint": _weekly_source_fingerprint(weekly_days),
     }
 
@@ -994,6 +1060,15 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     if push_kind == "scheduled" and resolved_slot == "morning" and quality.get("is_partial", True):
         if not was_slot_sent(chat_id=chat_id, send_date=today_str, slot="morning_deferred"):
             deferred_slot = "morning_deferred"
+            mark_sent_record(
+                chat_id=chat_id,
+                send_date=today_str,
+                slot="morning_deferred",
+                message_type="verdict",
+                sent_ts=utc_now_iso(),
+                trigger_source="deferred_window",
+                run_id=run_id,
+            )
             log.info("deferred_window_open slot=morning present=%s", quality.get("present", 0))
     should_catch_up_morning = (
         push_kind == "scheduled"
@@ -1010,6 +1085,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     color_story_text = build_color_story(weekly_color_from_dict(week_color))
     color_story_lines = [line.strip() for line in color_story_text.splitlines()[1:] if line.strip()][:4]
     today_vote = get_today_vote(chat_id=chat_id, vote_date=today_str)
+    speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short"))
     msg = _build_scheduled_message(
         slot=resolved_slot,
         today_payload=today_payload,
@@ -1017,6 +1093,7 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
         color_story_lines=color_story_lines,
         day=today_str,
         today_vote=today_vote,
+        speech_mode=speech_mode,
     )
 
     try:
@@ -1026,15 +1103,23 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             color_keyboard = build_color_keyboard(week_color["week_id"])
             if today_color_vote:
                 color_keyboard = build_color_voted_keyboard(today_color_vote.get("vote_value", "partial"))
-            telegram_send_photo_with_markup(
-                tg_token,
-                chat_id,
-                color_image_path,
-                build_morning_color_caption(week_color),
-                color_keyboard,
-                parse_mode="HTML",
+            _send_once(
+                tg_token=tg_token,
+                chat_id=chat_id,
+                send_date=today_str,
+                slot=resolved_slot,
+                message_type="color",
+                trigger_source=trigger_source,
+                run_id=run_id,
+                sender=lambda: telegram_send_photo_with_markup(
+                    tg_token,
+                    chat_id,
+                    color_image_path,
+                    build_morning_color_caption(week_color),
+                    color_keyboard,
+                    parse_mode="HTML",
+                ),
             )
-            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="color", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
 
             mode_tag = classify_mode_tag(today_payload)
             signal = compute_today_signal(today_payload)
@@ -1052,18 +1137,20 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             )
             mascot_asset = _state_to_asset(mode_tag)
             if os.path.exists(mascot_asset):
-                telegram_send_photo_with_markup(tg_token, chat_id, mascot_asset, msg, {"inline_keyboard": []}, parse_mode="HTML")
+                telegram_send_photo_with_markup(
+                    tg_token,
+                    chat_id,
+                    mascot_asset,
+                    msg,
+                    _build_verdict_keyboard("morning", today_str),
+                    parse_mode="HTML",
+                )
             else:
-                telegram_send(tg_token, chat_id, msg, parse_mode="HTML")
+                telegram_send_with_markup(tg_token, chat_id, msg, _build_verdict_keyboard("morning", today_str), parse_mode="HTML")
         else:
-            telegram_send(tg_token, chat_id, msg, parse_mode="HTML")
+            telegram_send_with_markup(tg_token, chat_id, msg, _build_verdict_keyboard(resolved_slot, today_str), parse_mode="HTML")
 
-        if push_kind != "scheduled" or deferred_slot is None:
-            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", resolved_slot, today_str, chat_id, run_id)
-        else:
-            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=deferred_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", deferred_slot, today_str, chat_id, run_id)
+        mark_sent_record(chat_id=chat_id, send_date=today_str, slot=(deferred_slot or resolved_slot), message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
 
         is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
         if is_sunday_evening:
@@ -1080,6 +1167,15 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     except Exception:
         log.exception("Push send failed")
         _send_push_fallback(tg_token, chat_id, f"Слот {resolved_slot}: отправка не удалась, повторю позже.")
+        mark_sent_record(
+            chat_id=chat_id,
+            send_date=today_str,
+            slot=(deferred_slot or resolved_slot),
+            message_type="verdict",
+            sent_ts=utc_now_iso(),
+            trigger_source="retry_fallback",
+            run_id=run_id,
+        )
         log.info("send_result=error slot_id=%s", resolved_slot)
 
 
@@ -1697,7 +1793,15 @@ def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/debug_sent\n/help"
+    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/debug_sent\n/mode short|facts|roast\n/help"
+
+
+def _parse_mode_command(text: str) -> Optional[str]:
+    parts = text.strip().lower().split()
+    if len(parts) != 2 or parts[0] != "/mode":
+        return None
+    alias = {"short": "short", "facts": "facts", "roast": "roast", "коротко": "short", "факты": "facts", "пожарь": "roast"}
+    return alias.get(parts[1])
 
 
 def handle_stats_command(tg_token: str, chat_id: str) -> None:
@@ -1913,7 +2017,12 @@ def build_debug_sync_message() -> str:
         ])
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if chat_id:
-        lines.append("• sent registry entries today: " + str(len(get_today_sent_registry(chat_id=chat_id, send_date=day_key))))
+        sent_today = get_today_sent_registry(chat_id=chat_id, send_date=day_key)
+        lines.append("• sent registry entries today: " + str(len(sent_today)))
+        for slot in ("morning", "midday", "evening"):
+            for message_type in ("color", "verdict", "weekly"):
+                key = f"{day_key}|{chat_id}|{slot}|{message_type}"
+                lines.append(f"  - {slot}/{message_type}: {'yes' if key in sent_today else 'no'}")
 
     if missing_blocks:
         lines.append("• still missing: " + ", ".join(missing_blocks[:6]))
@@ -2072,9 +2181,10 @@ def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> st
     return build_day_verdict_message(context, target_date.isoformat())
 
 
-def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any]) -> Optional[str]:
+def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
     q = query.strip().lower()
     intent = resolve_intent(q)
+    speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":
         return _format_metrics_availability(context)
     if intent == "detail":
@@ -2082,7 +2192,13 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
     if intent == "history":
         return _format_history_answer(context)
     if intent == "day_verdict":
-        return build_day_verdict_message(context, str(context.get("day_key", current_day_key())))
+        return build_push_message(
+            slot="day",
+            snapshot=context.get("snapshot"),
+            day_key=str(context.get("day_key", current_day_key())),
+            partial=context.get("day_status") != "ready",
+            mode=speech_mode,
+        )
     if intent == "current_state":
         return build_push_message("midday", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready")
     if intent == "weekly":
@@ -2135,6 +2251,40 @@ def health_check():
     return "ok"
 
 
+@app.get("/miniapp", response_class=HTMLResponse)
+def miniapp_page():
+    with open("miniapp/index.html", "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
+
+
+@app.get("/miniapp/api/dashboard")
+def miniapp_dashboard():
+    now = _now_msk()
+    history = load_cache()
+    day_key = now.date().isoformat()
+    context = build_day_context(day_key=day_key, cache_data=history)
+    weekly_payload = build_weekly_payload(history, now, chat_id=os.getenv("TELEGRAM_CHAT_ID", "miniapp"))
+    return JSONResponse(
+        {
+            "status": build_verdict_label(context.get("snapshot"), day_key, "day"),
+            "sync": (context.get("snapshot") or {}).get("last_sync_time", "нет"),
+            "timeline": ["утро", "день", "вечер"],
+            "color": get_or_create_weekly_color_state(),
+            "week_map": weekly_payload.get("map_lines", []),
+        }
+    )
+
+
+@app.post("/miniapp/api/prefs")
+async def miniapp_prefs(request: Request):
+    payload = await request.json()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "miniapp")
+    allowed = {"speech_mode", "visual_bonus", "sarcasm", "short_only"}
+    data = {k: v for k, v in payload.items() if k in allowed}
+    upsert_user_prefs(chat_id, data)
+    return JSONResponse({"ok": True, "saved": data})
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     """Telegram webhook endpoint."""
@@ -2164,6 +2314,18 @@ async def webhook(request: Request):
                 callback_id = callback_query.get("id")
                 if callback_id:
                     telegram_answer_callback(tg_token, callback_id)
+            elif callback_data.startswith("why:"):
+                history_cache = load_cache()
+                context = build_day_context(cache_data=history_cache)
+                telegram_send(tg_token, callback_chat_id, build_why_message(context.get("snapshot")), parse_mode="HTML")
+            elif callback_data.startswith("mode:"):
+                parts = callback_data.split(":")
+                selected = parts[1] if len(parts) > 1 else "short"
+                if selected in {"short", "facts", "roast"}:
+                    upsert_user_prefs(callback_chat_id, {"speech_mode": selected})
+                    telegram_send(tg_token, callback_chat_id, f"Режим ответа: {selected}.")
+            elif callback_data.startswith("what15:"):
+                telegram_send(tg_token, callback_chat_id, "🎯 15 минут: один спокойный фокус-блок + 5 минут паузы без экрана.")
             return Response(status_code=200)
 
         message = data.get("message", {})
@@ -2203,11 +2365,16 @@ async def webhook(request: Request):
         if text.lower() == "/debug_sent":
             telegram_send(tg_token, message_chat_id, _build_debug_sent_message(message_chat_id, current_day_key()))
             return Response(status_code=200)
+        parsed_mode = _parse_mode_command(text)
+        if parsed_mode:
+            upsert_user_prefs(message_chat_id, {"speech_mode": parsed_mode})
+            telegram_send(tg_token, message_chat_id, f"Ок, режим: {parsed_mode}.")
+            return Response(status_code=200)
 
         # Load unified day context from cache and use deterministic handlers first
         history_cache = load_cache()
         context = build_day_context(cache_data=history_cache)
-        response_msg = _route_structured_reply(text, context, history_cache)
+        response_msg = _route_structured_reply(text, context, history_cache, chat_id=message_chat_id)
         if response_msg is None:
             response_msg = generate_chat_message(
                 env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
