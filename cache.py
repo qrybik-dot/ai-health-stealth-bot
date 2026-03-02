@@ -14,6 +14,7 @@ TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
 REFRESH_STATE_KEY = "_refresh_state"
 SYNC_DEBUG_KEY = "_sync_debug"
+USER_PREFS_KEY = "_user_prefs"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
@@ -1082,6 +1083,37 @@ def get_today_sent_registry(chat_id: str, send_date: str) -> Dict[str, Dict[str,
             continue
         result[key] = payload if isinstance(payload, dict) else {"ts": ""}
     return result
+
+
+def get_sent_registry_for_date(send_date: str) -> Dict[str, Dict[str, Any]]:
+    cache = load_cache()
+    state = cache.get(PUSH_STATE_KEY, {})
+    if not isinstance(state, dict):
+        return {}
+    prefix = f"{send_date}|"
+    return {k: (v if isinstance(v, dict) else {"ts": ""}) for k, v in state.items() if k.startswith(prefix)}
+
+
+def get_user_prefs(chat_id: str) -> Dict[str, Any]:
+    cache = load_cache()
+    state = cache.get(USER_PREFS_KEY, {})
+    if not isinstance(state, dict):
+        return {}
+    raw = state.get(chat_id)
+    return raw if isinstance(raw, dict) else {}
+
+
+def upsert_user_prefs(chat_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
+    cache, _ = _load_local_cache()
+    state = cache.get(USER_PREFS_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[USER_PREFS_KEY] = state
+    existing = state.get(chat_id) if isinstance(state.get(chat_id), dict) else {}
+    merged = {**existing, **prefs}
+    state[chat_id] = merged
+    _write_cache(cache)
+    return merged
 
 
 def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
