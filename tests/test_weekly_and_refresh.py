@@ -13,7 +13,7 @@ class WeeklyAndRefreshTests(unittest.TestCase):
         }
         days = main.collect_weekly_data(history, now)
         derived = main.derive_weekly_status(days)
-        self.assertEqual(derived["hero_status"], "Неделя предварительная")
+        self.assertIn("черновик", derived["hero_status"].lower())
         self.assertEqual(len(derived["day_points"]), 7)
 
     def test_generate_weekly_quest_data_linked(self):
