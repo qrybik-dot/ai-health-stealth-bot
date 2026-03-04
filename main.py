@@ -434,8 +434,8 @@ def _build_debug_sent_message(chat_id: str, send_date: str) -> str:
 def _slot_button_row(slot: str, day_key: str) -> List[Dict[str, str]]:
     return [
         {"text": "Почему?", "callback_data": f"why:{slot}:{day_key}"},
-        {"text": "По фактам", "callback_data": f"mode:facts:{slot}:{day_key}"},
-        {"text": "Пожарь", "callback_data": f"mode:roast:{slot}:{day_key}"},
+        {"text": "По фактам", "callback_data": f"facts:{slot}:{day_key}"},
+        {"text": "Пожарь", "callback_data": f"roast:{slot}:{day_key}"},
         {"text": "Что делать (15м)", "callback_data": f"what15:{slot}:{day_key}"},
     ]
 
@@ -1809,15 +1809,90 @@ def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/debug_sent\n/mode short|facts|roast\n/help"
+    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/backfill 30\n/debug_sync\n/debug_sent\n/help"
 
 
-def _parse_mode_command(text: str) -> Optional[str]:
+def _parse_backfill_days(text: str) -> Optional[int]:
     parts = text.strip().lower().split()
-    if len(parts) != 2 or parts[0] != "/mode":
+    if len(parts) != 2 or parts[0] != "/backfill":
         return None
-    alias = {"short": "short", "facts": "facts", "roast": "roast", "коротко": "short", "факты": "facts", "пожарь": "roast"}
-    return alias.get(parts[1])
+    try:
+        days = int(parts[1])
+    except ValueError:
+        return None
+    if days <= 0:
+        return None
+    return min(days, 90)
+
+
+def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
+    garmin_email = env("GARMIN_EMAIL")
+    garmin_password = env("GARMIN_PASSWORD")
+    api = Garmin(garmin_email, garmin_password)
+    auth_state = get_garmin_auth_state()
+    tokenstore = auth_state.get("tokenstore") if isinstance(auth_state, dict) else None
+    try:
+        if isinstance(tokenstore, str) and tokenstore.strip():
+            api.login(tokenstore=tokenstore)
+        else:
+            api.login()
+    except Exception:
+        api.login()
+    try:
+        serialized = api.garth.dumps() if hasattr(api, "garth") else ""
+        if serialized:
+            upsert_garmin_auth_state({"tokenstore": serialized})
+    except Exception:
+        log.warning("garmin_tokenstore_persist_failed", exc_info=True)
+
+    now_msk = _now_msk()
+    out: Dict[str, Dict[str, Any]] = {}
+    calls = {
+        "body_battery": "get_body_battery",
+        "stress": "get_stress_data",
+        "sleep": "get_sleep_data",
+        "rhr": "get_rhr_day",
+        "steps": "get_steps_data",
+        "heart_rate": "get_heart_rates",
+        "daily_activity": "get_user_summary",
+        "intensity_minutes": "get_intensity_minutes_data",
+        "calories": "get_calories_data",
+        "floors": "get_floors",
+        "respiration": "get_respiration_data",
+        "pulse_ox": "get_pulse_ox_data",
+        "hrv": "get_hrv_data",
+        "hrv_status": "get_hrv_status_data",
+        "activity_summary": "get_activities_by_date",
+    }
+    for delta in range(days):
+        day = (now_msk.date() - dt.timedelta(days=delta)).isoformat()
+        payload: Dict[str, Any] = {
+            "source": "garmin",
+            "date": day,
+            "fetched_at_utc": utc_now_iso(),
+            "last_sync_time": utc_now_iso(),
+            "errors": [],
+        }
+        for key, method_name in calls.items():
+            method = getattr(api, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                payload[key] = method(day)
+            except Exception as e:
+                payload["errors"].append({"metric": key, "error": str(e)})
+        out[day] = payload
+    return out
+
+
+def run_backfill(days: int = 30) -> int:
+    day_payloads = fetch_last_days(days)
+    stored = 0
+    for day_key in sorted(day_payloads.keys()):
+        upsert_day_snapshot(day_key, day_payloads[day_key])
+        stored += 1
+    log.info("backfill stored days=%s requested=%s", stored, days)
+    return stored
 
 
 def handle_stats_command(tg_token: str, chat_id: str) -> None:
@@ -2334,18 +2409,24 @@ async def webhook(request: Request):
                 history_cache = load_cache()
                 context = build_day_context(cache_data=history_cache)
                 telegram_send(tg_token, callback_chat_id, build_why_message(context.get("snapshot")), parse_mode="HTML")
-            elif callback_data.startswith("mode:"):
+            elif callback_data.startswith("facts:"):
                 parts = callback_data.split(":")
-                if len(parts) >= 4:
-                    selected = parts[1].strip().lower()
-                    slot = parts[2].strip().lower()
-                    day_key = parts[3].strip()
-                    if selected in {"short", "facts", "roast"}:
-                        upsert_user_prefs(callback_chat_id, {"speech_mode": selected})
-                        snapshot = get_day_snapshot(day_key)
-                        partial = not bool(snapshot)
-                        message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode=selected)
-                        telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
+                if len(parts) >= 3:
+                    slot = parts[1].strip().lower()
+                    day_key = parts[2].strip()
+                    snapshot = get_day_snapshot(day_key)
+                    partial = not bool(snapshot)
+                    message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="facts")
+                    telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
+            elif callback_data.startswith("roast:"):
+                parts = callback_data.split(":")
+                if len(parts) >= 3:
+                    slot = parts[1].strip().lower()
+                    day_key = parts[2].strip()
+                    snapshot = get_day_snapshot(day_key)
+                    partial = not bool(snapshot)
+                    message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
+                    telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
             elif callback_data.startswith("what15:"):
                 telegram_send(
                     tg_token,
@@ -2391,10 +2472,10 @@ async def webhook(request: Request):
         if text.lower() == "/debug_sent":
             telegram_send(tg_token, message_chat_id, _build_debug_sent_message(message_chat_id, current_day_key()))
             return Response(status_code=200)
-        parsed_mode = _parse_mode_command(text)
-        if parsed_mode:
-            upsert_user_prefs(message_chat_id, {"speech_mode": parsed_mode})
-            telegram_send(tg_token, message_chat_id, f"Ок, режим: {parsed_mode}.")
+        backfill_days = _parse_backfill_days(text)
+        if backfill_days is not None:
+            stored_days = run_backfill(backfill_days)
+            telegram_send(tg_token, message_chat_id, f"Backfill готов: сохранено {stored_days} дней.")
             return Response(status_code=200)
 
         # Load unified day context from cache and use deterministic handlers first
@@ -2430,13 +2511,23 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|push|push-self-check|cache-self-check|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|backfill|push|push-self-check|cache-self-check|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
 
     if mode == "sync":
         run_sync()
+    elif mode == "backfill":
+        days = 30
+        if len(sys.argv) >= 3:
+            try:
+                days = max(1, min(90, int(sys.argv[2])))
+            except ValueError:
+                print("Error: backfill requires integer days")
+                return
+        stored = run_backfill(days)
+        print(f"backfill done: requested={days} stored={stored}")
     elif mode == "push":
         push_kind = "scheduled"
         explicit_slot = None
@@ -2537,7 +2628,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, push, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, backfill, push, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)

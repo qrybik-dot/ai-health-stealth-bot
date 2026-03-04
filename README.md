@@ -52,9 +52,9 @@ Coach Potato отправляет короткие data-driven вердикты 
 - `/week` — недельный отчёт
 - `/stats` — статистика голосов
 - `/refresh` — ручной sync
+- `/backfill 30` — догрузить до 30 последних дней
 - `/debug_sync` — состояние sync/кэша
 - `/debug_sent` — что отправлено сегодня и почему
-- `/mode short|facts|roast` — переключение режима речи
 
 ## Dedup registry (надёжность отправок)
 
