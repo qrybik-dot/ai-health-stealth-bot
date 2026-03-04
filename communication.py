@@ -233,8 +233,8 @@ def build_action_block(slot: str, score: float) -> str:
     return f"🎯 <b>Что делать:</b> {do}.\n🚫 <b>Чего не делать:</b> {avoid}."
 
 
-def _build_facts_rich(snapshot: Optional[Dict[str, Any]]) -> str:
-    chips = build_data_chips(snapshot, max_items=5)
+def render_facts_rich(day_summary: Optional[Dict[str, Any]]) -> str:
+    chips = build_data_chips(day_summary, max_items=5)
     top = "\n".join(f"• {c}" for c in chips) if chips else "• ключевые метрики ещё не догружены"
     extras = [
         "дыхание/SpO2/этажи/интенсивность/тренировки — показываем по мере прихода данных",
@@ -250,17 +250,20 @@ def _build_facts_rich(snapshot: Optional[Dict[str, Any]]) -> str:
     )
 
 
-def _build_roast(snapshot: Optional[Dict[str, Any]], slot: str) -> str:
-    chips = build_data_chips(snapshot, max_items=2)
-    facts = "\n".join(f"• {c}" for c in chips) if chips else "• метрик мало, жарим аккуратно"
+def render_roast(day_summary: Optional[Dict[str, Any]], history_optional: Optional[Dict[str, Any]] = None, slot: str = "day") -> str:
+    chips = build_data_chips(day_summary, max_items=2)
+    facts = "\n".join(f"• {c}" for c in chips) if chips else "• метрик мало, но ритм дня всё равно читается"
+    history_hint = ""
+    if isinstance(history_optional, dict) and isinstance(history_optional.get("available_days_count"), int):
+        history_hint = f" (история: {history_optional.get('available_days_count')} дн.)"
     return (
         "🥔 <b>Пожарь</b>\n"
-        "Картоха на ходу, но без дрифта в поворотах.\n\n"
+        "Темп бодрый, но день не для заносов.\n\n"
         "<b>Факты:</b>\n"
         + facts
         + "\n\n"
-        + "<b>Гипотеза:</b> просадка чаще из-за рваного темпа, не из-за объёма.\n"
-        + build_action_block(slot, _score(_extract_metrics(snapshot)))
+        + f"<b>Гипотеза:</b> просадка больше связана с рваным ритмом, чем с объёмом нагрузки{history_hint}.\n"
+        + build_action_block(slot, _score(_extract_metrics(day_summary)))
     )
 
 
@@ -281,9 +284,9 @@ def build_push_message(
     chips_block = "\n".join(f"• {c}" for c in chips) if chips else "• 📊 Ключевые метрики ещё догружаются"
     line = "Ещё едет, но без понтов." if score < 0 else "Мотор живой, но коробку лучше не рвать."
     if mode == "facts":
-        return _build_facts_rich(snapshot)
+        return render_facts_rich(snapshot)
     if mode == "roast":
-        return _build_roast(snapshot, slot)
+        return render_roast(snapshot, slot=slot)
     return (
         f"{build_mode_phrase(slot, verdict)}\n\n"
         f"📊 <b>По фактам:</b>\n{chips_block}\n\n"

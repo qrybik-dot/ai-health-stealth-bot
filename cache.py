@@ -258,6 +258,24 @@ def _safe_date(value: Any) -> Optional[str]:
         return None
 
 
+def normalize_day_key_msk(value: Any) -> str:
+    tz = ZoneInfo(DEFAULT_BOT_TZ)
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            parsed_date = _safe_date(raw)
+            if parsed_date:
+                return parsed_date
+            try:
+                parsed_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=tz)
+                return parsed_dt.astimezone(tz).date().isoformat()
+            except ValueError:
+                pass
+    return datetime.now(tz).date().isoformat()
+
+
 def _collect_dates(node: Any) -> List[str]:
     found: List[str] = []
     if isinstance(node, dict):
@@ -442,14 +460,19 @@ def _history_day_keys(cache: Dict[str, Any]) -> List[str]:
     return sorted(day_keys)
 
 
+def history_list(cache_data: Optional[Dict[str, Any]] = None) -> List[str]:
+    cache = cache_data if isinstance(cache_data, dict) else load_cache()
+    return _history_day_keys(cache)
+
+
 def _available_metric_keys(snapshot: Dict[str, Any]) -> List[str]:
     return [metric for metric in METRIC_LABELS.keys() if _is_meaningful(snapshot.get(metric))]
 
 
 def build_day_context(day_key: Optional[str] = None, cache_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cache = cache_data if isinstance(cache_data, dict) else load_cache()
-    keys = _history_day_keys(cache)
-    target_day = day_key or current_day_key()
+    keys = history_list(cache)
+    target_day = normalize_day_key_msk(day_key) if day_key else current_day_key()
     snapshot = cache.get(target_day) if isinstance(cache.get(target_day), dict) else {}
 
     available_metrics = _available_metric_keys(snapshot)
@@ -499,7 +522,7 @@ def _recalculate_quality(snapshot: Dict[str, Any]) -> None:
 
 
 def _tz_name() -> str:
-    return os.getenv("BOT_TIMEZONE", DEFAULT_BOT_TZ).strip() or DEFAULT_BOT_TZ
+    return DEFAULT_BOT_TZ
 
 
 def current_day_key() -> str:
@@ -725,7 +748,7 @@ def prune_cache(retention_days: int = RETENTION_DAYS, weekly_retention_weeks: in
 
 
 def save_daily_snapshot(snapshot_data: Dict[str, Any]) -> None:
-    today_str = str(snapshot_data.get("date") or current_day_key())
+    today_str = normalize_day_key_msk(snapshot_data.get("date") or current_day_key())
     cache, _ = _load_local_cache()
     existing = cache.get(today_str) if isinstance(cache.get(today_str), dict) else {}
     incoming = _trim_daily_snapshot(snapshot_data, today_str)
@@ -774,16 +797,20 @@ def build_snapshot_merge_diff(before: Dict[str, Any], after: Dict[str, Any]) -> 
 
 
 def get_day_snapshot(day_key: str) -> Dict[str, Any]:
+    day_key = normalize_day_key_msk(day_key)
+    cache, _ = _load_local_cache()
+    snapshot = cache.get(day_key)
+    if isinstance(snapshot, dict) and snapshot:
+        return snapshot
     if FIRESTORE.enabled:
         remote = FIRESTORE.get_day(DEFAULT_CHAT_SCOPE, day_key)
         if isinstance(remote, dict) and remote:
             return remote
-    cache, _ = _load_local_cache()
-    snapshot = cache.get(day_key)
     return snapshot if isinstance(snapshot, dict) else {}
 
 
 def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any]) -> Dict[str, Any]:
+    day_key = normalize_day_key_msk(day_key)
     cache, _ = _load_local_cache()
     existing = cache.get(day_key) if isinstance(cache.get(day_key), dict) else {}
     incoming = _trim_daily_snapshot(snapshot_data, day_key)
