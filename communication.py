@@ -138,7 +138,13 @@ def _reason_lines(snapshot: Optional[Dict[str, Any]]) -> List[str]:
 
 def build_why_message(snapshot: Optional[Dict[str, Any]]) -> str:
     reasons = _reason_lines(snapshot)
-    return "🧩 <b>Почему такой вердикт</b>\n\n" + "\n".join(reasons)
+    return (
+        "🧩 <b>Почему так:</b> день держится, но запас ресурса зависит от ритма, а не от рывков.\n\n"
+        "<b>Причины:</b>\n"
+        + "\n".join(reasons)
+        + "\n\n🎯 <b>Рычаг:</b> 15 минут ровного темпа без переключений и затем короткая пауза."
+    )
+
 def _state_bucket(score: float) -> str:
     if score >= 1.1:
         return "high"
@@ -227,6 +233,37 @@ def build_action_block(slot: str, score: float) -> str:
     return f"🎯 <b>Что делать:</b> {do}.\n🚫 <b>Чего не делать:</b> {avoid}."
 
 
+def _build_facts_rich(snapshot: Optional[Dict[str, Any]]) -> str:
+    chips = build_data_chips(snapshot, max_items=5)
+    top = "\n".join(f"• {c}" for c in chips) if chips else "• ключевые метрики ещё не догружены"
+    extras = [
+        "дыхание/SpO2/этажи/интенсивность/тренировки — показываем по мере прихода данных",
+    ]
+    return (
+        "📊 <b>По фактам (top-5)</b>\n"
+        + top
+        + "\n\n"
+        + "🧾 <b>Остальное</b>\n• "
+        + "\n• ".join(extras)
+        + "\n\n"
+        + "<b>Вывод:</b> держим ровный режим, без лишних ускорений."
+    )
+
+
+def _build_roast(snapshot: Optional[Dict[str, Any]], slot: str) -> str:
+    chips = build_data_chips(snapshot, max_items=2)
+    facts = "\n".join(f"• {c}" for c in chips) if chips else "• метрик мало, жарим аккуратно"
+    return (
+        "🥔 <b>Пожарь</b>\n"
+        "Картоха на ходу, но без дрифта в поворотах.\n\n"
+        "<b>Факты:</b>\n"
+        + facts
+        + "\n\n"
+        + "<b>Гипотеза:</b> просадка чаще из-за рваного темпа, не из-за объёма.\n"
+        + build_action_block(slot, _score(_extract_metrics(snapshot)))
+    )
+
+
 def build_push_message(
     slot: str,
     snapshot: Optional[Dict[str, Any]],
@@ -244,13 +281,9 @@ def build_push_message(
     chips_block = "\n".join(f"• {c}" for c in chips) if chips else "• 📊 Ключевые метрики ещё догружаются"
     line = "Ещё едет, но без понтов." if score < 0 else "Мотор живой, но коробку лучше не рвать."
     if mode == "facts":
-        return (
-            f"{build_mode_phrase(slot, verdict)}\n\n"
-            f"📊 <b>По фактам:</b>\n{chips_block}\n\n"
-            f"🧾 <b>Вывод:</b> {line}"
-        )
+        return _build_facts_rich(snapshot)
     if mode == "roast":
-        line = "Картоха едет, но без дрифта на ровном месте." if score >= 0 else "Пюрешка близко, играем в эконом-режим."
+        return _build_roast(snapshot, slot)
     return (
         f"{build_mode_phrase(slot, verdict)}\n\n"
         f"📊 <b>По фактам:</b>\n{chips_block}\n\n"

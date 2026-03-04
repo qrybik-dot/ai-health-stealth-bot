@@ -6,3 +6,4 @@ fastapi
 uvicorn
 
 Pillow==10.4.0
+google-cloud-firestore==2.19.0

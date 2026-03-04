@@ -52,6 +52,8 @@ from cache import (
     get_user_prefs,
     was_weekly_report_sent,
     upsert_user_prefs,
+    get_garmin_auth_state,
+    upsert_garmin_auth_state,
     KEY_METRICS,
     METRIC_LABELS,
 )
@@ -165,7 +167,21 @@ def _garmin_last_sync(raw: Dict[str, Any]) -> str:
 
 def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
     api = Garmin(email, password)
-    api.login()
+    auth_state = get_garmin_auth_state()
+    tokenstore = auth_state.get("tokenstore") if isinstance(auth_state, dict) else None
+    try:
+        if isinstance(tokenstore, str) and tokenstore.strip():
+            api.login(tokenstore=tokenstore)
+        else:
+            api.login()
+    except Exception:
+        api.login()
+    try:
+        serialized = api.garth.dumps() if hasattr(api, "garth") else ""
+        if serialized:
+            upsert_garmin_auth_state({"tokenstore": serialized})
+    except Exception:
+        log.warning("garmin_tokenstore_persist_failed", exc_info=True)
 
     today = current_day_key()
     out: Dict[str, Any] = {
@@ -2320,12 +2336,22 @@ async def webhook(request: Request):
                 telegram_send(tg_token, callback_chat_id, build_why_message(context.get("snapshot")), parse_mode="HTML")
             elif callback_data.startswith("mode:"):
                 parts = callback_data.split(":")
-                selected = parts[1] if len(parts) > 1 else "short"
-                if selected in {"short", "facts", "roast"}:
-                    upsert_user_prefs(callback_chat_id, {"speech_mode": selected})
-                    telegram_send(tg_token, callback_chat_id, f"Режим ответа: {selected}.")
+                if len(parts) >= 4:
+                    selected = parts[1].strip().lower()
+                    slot = parts[2].strip().lower()
+                    day_key = parts[3].strip()
+                    if selected in {"short", "facts", "roast"}:
+                        upsert_user_prefs(callback_chat_id, {"speech_mode": selected})
+                        snapshot = get_day_snapshot(day_key)
+                        partial = not bool(snapshot)
+                        message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode=selected)
+                        telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
             elif callback_data.startswith("what15:"):
-                telegram_send(tg_token, callback_chat_id, "🎯 15 минут: один спокойный фокус-блок + 5 минут паузы без экрана.")
+                telegram_send(
+                    tg_token,
+                    callback_chat_id,
+                    "🎯 15 минут: 2 минуты дыхания, 8 минут один фокус-блок, 5 минут тишины без экрана.",
+                )
             return Response(status_code=200)
 
         message = data.get("message", {})

@@ -4,6 +4,7 @@ import requests
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+from firestore_store import STORE as FIRESTORE
 
 CACHE_FILE = "cache.json"
 MEMORY_DAYS = 120
@@ -15,10 +16,12 @@ PUSH_STATE_KEY = "_push_state"
 REFRESH_STATE_KEY = "_refresh_state"
 SYNC_DEBUG_KEY = "_sync_debug"
 USER_PREFS_KEY = "_user_prefs"
+AUTH_STATE_KEY = "_auth_state"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
 DEFAULT_BOT_TZ = "Europe/Moscow"
+DEFAULT_CHAT_SCOPE = os.getenv("DEFAULT_CHAT_ID", "default")
 KEY_METRICS: Tuple[str, ...] = ("sleep", "body_battery", "rhr", "stress")
 METRIC_LABELS: Dict[str, str] = {
     "sleep": "сон",
@@ -771,6 +774,10 @@ def build_snapshot_merge_diff(before: Dict[str, Any], after: Dict[str, Any]) -> 
 
 
 def get_day_snapshot(day_key: str) -> Dict[str, Any]:
+    if FIRESTORE.enabled:
+        remote = FIRESTORE.get_day(DEFAULT_CHAT_SCOPE, day_key)
+        if isinstance(remote, dict) and remote:
+            return remote
     cache, _ = _load_local_cache()
     snapshot = cache.get(day_key)
     return snapshot if isinstance(snapshot, dict) else {}
@@ -783,6 +790,8 @@ def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any]) -> Dict[str
     merged = _merge_trimmed_snapshot(existing, incoming)
     cache[day_key] = merged
     _write_cache(cache)
+    if FIRESTORE.enabled:
+        FIRESTORE.upsert_day(DEFAULT_CHAT_SCOPE, day_key, merged)
     prune_cache(retention_days=RETENTION_DAYS)
     return merged
 
@@ -1043,6 +1052,21 @@ def mark_sent_record(
     run_id: str,
     manual_preview: bool = False,
 ) -> None:
+    if FIRESTORE.enabled:
+        key = _sent_key(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type)
+        FIRESTORE.set_sent(
+            chat_id,
+            key,
+            {
+                "sent_at": sent_ts,
+                "slot": slot,
+                "msg_type": message_type,
+                "trigger_source": trigger_source,
+                "run_id": run_id,
+                "manual_preview": bool(manual_preview),
+                "date_msk": send_date,
+            },
+        )
     cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
@@ -1063,6 +1087,10 @@ def was_slot_sent(chat_id: str, send_date: str, slot: str) -> bool:
 
 
 def was_sent_record(chat_id: str, send_date: str, slot: str, message_type: str) -> bool:
+    if FIRESTORE.enabled:
+        key = _sent_key(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type)
+        if FIRESTORE.get_sent(chat_id, key):
+            return True
     cache = load_cache()
     state = cache.get(PUSH_STATE_KEY, {})
     if not isinstance(state, dict):
@@ -1117,6 +1145,12 @@ def upsert_user_prefs(chat_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
+    if FIRESTORE.enabled:
+        FIRESTORE.set_sent(
+            chat_id,
+            f"weekly|{week_id}|{chat_id}",
+            {"sent_at": sent_ts, "slot": "weekly", "msg_type": "weekly_map", "date_msk": ""},
+        )
     cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
@@ -1128,6 +1162,9 @@ def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
 
 
 def was_weekly_report_sent(chat_id: str, week_id: str) -> bool:
+    if FIRESTORE.enabled:
+        if FIRESTORE.get_sent(chat_id, f"weekly|{week_id}|{chat_id}"):
+            return True
     cache = load_cache()
     state = cache.get(PUSH_STATE_KEY, {})
     if not isinstance(state, dict):
@@ -1191,3 +1228,26 @@ def get_latest_sync_trace() -> Optional[Dict[str, Any]]:
     if isinstance(payload, dict):
         return payload
     return None
+
+
+def get_garmin_auth_state(chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
+    if FIRESTORE.enabled:
+        return FIRESTORE.get_auth(chat_id, provider="garmin")
+    cache = load_cache()
+    state = cache.get(AUTH_STATE_KEY, {})
+    if not isinstance(state, dict):
+        return {}
+    raw = state.get(chat_id)
+    return raw if isinstance(raw, dict) else {}
+
+
+def upsert_garmin_auth_state(payload: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE) -> None:
+    if FIRESTORE.enabled:
+        FIRESTORE.set_auth(chat_id, payload, provider="garmin")
+    cache, _ = _load_local_cache()
+    state = cache.get(AUTH_STATE_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[AUTH_STATE_KEY] = state
+    state[chat_id] = payload
+    _write_cache(cache)

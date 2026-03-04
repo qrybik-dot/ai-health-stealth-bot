@@ -12,7 +12,8 @@ Coach Potato отправляет короткие data-driven вердикты 
 ## Источники данных
 
 - Garmin Connect (минимальный набор метрик): сон, stress, body battery, RHR, шаги и др.
-- Локальный кэш `cache.json` + merge истории по датам (без перезаписи прошлых дней).
+- Cloud-first store: Firestore (`users/{chat_id}/days`, `users/{chat_id}/sent`, `users/{chat_id}/auth/garmin`).
+- Локальный `cache.json` используется как dev fallback и для аварийной деградации.
 
 ## Расписание
 
@@ -120,6 +121,8 @@ API:
 
 Схема `_push_state` расширена: ключ теперь включает `message_type`.
 Старые ключи без типа не мешают работе, но для чистоты можно очистить `_push_state`.
+
+Полные шаги миграции и скрипт: `docs/MIGRATION_NOTES.md`, `scripts/migrate_cache_to_firestore.py`.
 
 ## Проверка
 
