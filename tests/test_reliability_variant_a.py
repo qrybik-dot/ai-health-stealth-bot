@@ -41,12 +41,26 @@ class ReliabilityVariantATests(unittest.TestCase):
         text = " ".join(chips)
         self.assertNotIn("123456789", text)
 
-    def test_manual_preview_no_send(self):
+    def test_manual_run_respects_dedup_registry(self):
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c"}, clear=False):
             with patch.object(main, "env", side_effect=lambda n: os.environ[n]):
-                with patch.object(main, "telegram_send") as send_mock:
-                    main.run_push("morning")
-                    send_mock.assert_not_called()
+                with patch.object(main, "_build_schedule_decision", return_value={
+                    "now_msk": "2026-01-01T09:30:00+03:00",
+                    "window_matched": "morning",
+                    "slot_id": "morning",
+                    "already_sent": True,
+                    "target_chat_id": "c",
+                    "date": "2026-01-01",
+                }):
+                    with patch.object(main, "telegram_send") as send_mock:
+                        main.run_push("morning")
+                        send_mock.assert_not_called()
+
+    def test_callback_dedup_ttl_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cache, "CACHE_FILE", os.path.join(tmp, "cache.json")):
+                self.assertFalse(cache.callback_dedup_hit("c1", "cb-1", ttl_seconds=30))
+                self.assertTrue(cache.callback_dedup_hit("c1", "cb-1", ttl_seconds=30))
 
 
 if __name__ == "__main__":

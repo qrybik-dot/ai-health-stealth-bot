@@ -9,6 +9,19 @@ import main
 
 
 class BackfillAndRenderingTests(unittest.TestCase):
+    def test_get_day_summary_full_completeness(self):
+        history = {
+            "2026-02-20": {
+                "sleep": {"sleepTimeSeconds": 25000},
+                "stress": {"avgStressLevel": 29},
+                "body_battery": {"mostRecentValue": 65},
+                "rhr": {"restingHeartRate": 54},
+                "data_completeness": 1.0,
+            }
+        }
+        summary = cache.get_day_summary("2026-02-20", cache_data=history)
+        self.assertEqual(summary["completeness_state"], "FULL")
+
     def test_snapshot_renderers_are_different_for_same_input(self):
         snapshot = {
             "body_battery": {"mostRecentValue": 59, "chargedValue": 75},
@@ -45,7 +58,7 @@ class BackfillAndRenderingTests(unittest.TestCase):
                     "2026-01-01": {"source": "garmin", "date": "2026-01-01", "stress": {"avgStressLevel": 31}},
                     "2026-01-02": {"source": "garmin", "date": "2026-01-02", "sleep": {"sleepTimeSeconds": 25200}},
                 }
-                with patch.object(main, "fetch_last_days", return_value=payloads):
+                with patch.object(main, "fetch_range", return_value=payloads):
                     stored = main.run_backfill(30)
                 loaded = cache.load_cache()
 
