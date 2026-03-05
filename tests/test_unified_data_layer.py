@@ -26,9 +26,12 @@ class UnifiedDataLayerTests(unittest.TestCase):
             "missing_metrics": ["body_battery", "rhr", "hrv"],
             "key_metrics_present_count": 2,
             "key_metrics_total_count": 4,
+            "available_days_count": 3,
+            "available_days": ["2026-01-10", "2026-01-11", "2026-01-12"],
         }
         msg = main._format_metrics_availability(ctx)
-        self.assertIn("<b>Есть:</b>", msg)
+        self.assertIn("<b>History</b>", msg)
+        self.assertIn("<b>Data groups</b>", msg)
         self.assertIn("сон, стресс", msg)
         self.assertIn("Body Battery", msg)
 

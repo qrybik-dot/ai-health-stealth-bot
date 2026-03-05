@@ -3,11 +3,7 @@ from typing import Any, Dict, List, Optional
 
 KEY_METRICS = ("sleep", "body_battery", "stress", "rhr")
 
-GENERIC_OPENERS = (
-    "отличный вопрос",
-    "давай посмотрим",
-    "рада, что ты спросил",
-)
+GENERIC_OPENERS = ()
 
 INTENT_PATTERNS = {
     "day_verdict": ("как мой день", "вердикт дня", "итог дня", "день как"),
@@ -334,11 +330,15 @@ def build_metrics_message(context: Dict[str, Any]) -> str:
     missing = context.get("missing_metrics", [])
     av = ", ".join(_metric_label(m) for m in available) if available else "пока нет"
     ms = ", ".join(_metric_label(m) for m in missing[:6]) if missing else "—"
+    days = context.get("available_days", [])
+    date_range = f"{days[0]} — {days[-1]}" if len(days) > 1 else (days[0] if days else "—")
     return (
-        "📊 <b>Что уже видно по данным</b>\n\n"
-        f"<b>Есть:</b> {av}.\n"
-        f"<b>Пока нет:</b> {ms}.\n\n"
-        "<b>Итог:</b> картина достаточная, чтобы дать вердикт без гадания на картофельной гуще."
+        "<b>History</b>\n"
+        f"дней: {int(context.get('available_days_count', 0))}\n"
+        f"диапазон: {date_range}\n\n"
+        "<b>Data groups</b>\n"
+        f"есть: {av}\n"
+        f"нет: {ms}"
     )
 
 

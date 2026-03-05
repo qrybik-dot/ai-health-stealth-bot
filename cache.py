@@ -13,6 +13,7 @@ DAILY_VOTES_KEY = "_daily_votes"
 TODAY_VOTES_KEY = "_today_votes"
 TODAY_STATE_KEY = "_today_state"
 PUSH_STATE_KEY = "_push_state"
+CALLBACK_DEDUP_KEY = "_callback_dedup"
 REFRESH_STATE_KEY = "_refresh_state"
 SYNC_DEBUG_KEY = "_sync_debug"
 USER_PREFS_KEY = "_user_prefs"
@@ -796,20 +797,20 @@ def build_snapshot_merge_diff(before: Dict[str, Any], after: Dict[str, Any]) -> 
     }
 
 
-def get_day_snapshot(day_key: str) -> Dict[str, Any]:
+def get_day_snapshot(day_key: str, chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
     day_key = normalize_day_key_msk(day_key)
     cache, _ = _load_local_cache()
     snapshot = cache.get(day_key)
     if isinstance(snapshot, dict) and snapshot:
         return snapshot
     if FIRESTORE.enabled:
-        remote = FIRESTORE.get_day(DEFAULT_CHAT_SCOPE, day_key)
+        remote = FIRESTORE.get_day(chat_id, day_key)
         if isinstance(remote, dict) and remote:
             return remote
     return snapshot if isinstance(snapshot, dict) else {}
 
 
-def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any]) -> Dict[str, Any]:
+def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
     day_key = normalize_day_key_msk(day_key)
     cache, _ = _load_local_cache()
     existing = cache.get(day_key) if isinstance(cache.get(day_key), dict) else {}
@@ -818,9 +819,54 @@ def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any]) -> Dict[str
     cache[day_key] = merged
     _write_cache(cache)
     if FIRESTORE.enabled:
-        FIRESTORE.upsert_day(DEFAULT_CHAT_SCOPE, day_key, merged)
+        FIRESTORE.upsert_day(chat_id, day_key, merged)
     prune_cache(retention_days=RETENTION_DAYS)
     return merged
+
+
+def get_day_summary(date_msk: str, cache_data: Optional[Dict[str, Any]] = None, chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
+    normalized_day = normalize_day_key_msk(date_msk)
+    source_cache = cache_data if isinstance(cache_data, dict) else load_cache()
+    snapshot = get_day_snapshot(normalized_day, chat_id=chat_id)
+    if isinstance(snapshot, dict) and snapshot:
+        source_cache = dict(source_cache)
+        source_cache[normalized_day] = snapshot
+    context = build_day_context(day_key=normalized_day, cache_data=source_cache)
+    return {
+        "date_msk": normalized_day,
+        "snapshot": context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {},
+        "completeness_state": "FULL" if context.get("day_status") == "ready" else "PARTIAL",
+        "data_completeness": float(context.get("data_completeness", 0.0) or 0.0),
+        "available_metrics": list(context.get("available_metrics", [])),
+        "missing_metrics": list(context.get("missing_metrics", [])),
+        "available_days": list(context.get("available_days", [])),
+        "available_days_count": int(context.get("available_days_count", 0)),
+    }
+
+
+def callback_dedup_hit(chat_id: str, callback_key: str, ttl_seconds: int = 30) -> bool:
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cache, _ = _load_local_cache()
+    state = cache.get(CALLBACK_DEDUP_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[CALLBACK_DEDUP_KEY] = state
+
+    expire_before = now_ts - max(1, ttl_seconds)
+    for key in list(state.keys()):
+        ts = state.get(key)
+        if not isinstance(ts, (int, float)) or float(ts) < expire_before:
+            state.pop(key, None)
+
+    scoped_key = f"{chat_id}|{callback_key}"
+    last_seen = state.get(scoped_key)
+    if isinstance(last_seen, (int, float)) and float(last_seen) >= expire_before:
+        _write_cache(cache)
+        return True
+
+    state[scoped_key] = now_ts
+    _write_cache(cache)
+    return False
 
 
 def load_weekly_state() -> Dict[str, Any]:

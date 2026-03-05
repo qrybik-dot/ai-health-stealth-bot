@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from cache import (
+    callback_dedup_hit,
     get_color_vote,
     get_today_state,
     get_today_vote,
@@ -29,6 +30,7 @@ from cache import (
     build_day_context,
     current_day_key,
     get_day_snapshot,
+    get_day_summary,
     get_latest_sync_trace,
     load_cache,
     load_cache_with_meta,
@@ -469,6 +471,28 @@ def _send_once(
         run_id=run_id,
     )
     return True
+
+
+def _is_admin(chat_id: str) -> bool:
+    owner = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    admins_raw = os.getenv("ADMIN_CHAT_IDS", "").strip()
+    admins = {item.strip() for item in admins_raw.split(",") if item.strip()}
+    if owner:
+        admins.add(owner)
+    return chat_id in admins
+
+
+def _callback_duplicate_guard(tg_token: str, chat_id: str, callback_query: Dict[str, Any]) -> bool:
+    callback_id = str(callback_query.get("id", "")).strip()
+    callback_data = str(callback_query.get("data", "")).strip()
+    key = callback_id or callback_data
+    if not key:
+        return False
+    is_dup = callback_dedup_hit(chat_id=chat_id, callback_key=key, ttl_seconds=30)
+    if is_dup and callback_id:
+        telegram_answer_callback(tg_token, callback_id)
+        log.info("callback_dedup_skip chat_id=%s callback=%s", chat_id, key)
+    return is_dup
 
 def _log_schedule_decision(decision: Dict[str, Any]) -> None:
     log.info(
@@ -1007,12 +1031,8 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     log.info("push_clock now_utc=%s now_msk=%s", now_utc.isoformat(), now_msk.isoformat())
     today_str = decision["date"]
 
-    if push_kind == "scheduled" and decision["already_sent"]:
+    if decision["already_sent"]:
         log.info("dedupe_skip slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
-        return
-
-    if push_kind != "scheduled":
-        log.info("manual_preview_only slot=%s run_id=%s", resolved_slot, run_id)
         return
 
     if dry_run:
@@ -1053,19 +1073,20 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             )
         else:
             _send_push_fallback(tg_token, chat_id, _build_fallback_message(resolved_slot))
-        if push_kind != "scheduled" or deferred_slot is None:
-            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
-            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", resolved_slot, today_str, chat_id, run_id)
-        else:
+        if deferred_slot is not None:
             mark_sent_record(chat_id=chat_id, send_date=today_str, slot=deferred_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
             log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", deferred_slot, today_str, chat_id, run_id)
+        else:
+            mark_sent_record(chat_id=chat_id, send_date=today_str, slot=resolved_slot, message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+            log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", resolved_slot, today_str, chat_id, run_id)
         log.info("send_result=ok fallback=true reason=%s slot_id=%s cache_source=%s cache_available=%s", reason_code, resolved_slot, cache_meta.get("source", "unknown"), cache_meta.get("available", False))
         return
 
+    day_summary = get_day_summary(today_str, cache_data=full_history, chat_id=chat_id)
     day_context = build_day_context(day_key=today_str, cache_data=full_history)
-    today_payload = day_context.get("snapshot") if isinstance(day_context.get("snapshot"), dict) else _safe_today_payload(full_history, today_str)
+    today_payload = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else _safe_today_payload(full_history, today_str)
     quality = {
-        "is_partial": day_context.get("day_status") != "ready",
+        "is_partial": day_summary.get("completeness_state") != "FULL",
         "present": day_context.get("key_metrics_present_count", 0),
         "quality_label": "высокая" if day_context.get("day_status") == "ready" else ("средняя" if day_context.get("key_metrics_present_count", 0) >= 2 else "низкая"),
         "missing_labels": [METRIC_LABELS.get(m, m) for m in day_context.get("missing_metrics", []) if m in KEY_METRICS],
@@ -1631,9 +1652,9 @@ def handle_today_story_callback(tg_token: str, chat_id: str, callback_query: Dic
 def handle_today_command(tg_token: str, chat_id: str) -> None:
     prune_summary = prune_cache()
     log.info("cache_prune summary=%s", prune_summary)
-    day = dt.date.today().isoformat()
-    history = load_cache()
-    today_payload = history.get(day)
+    day = current_day_key()
+    day_summary = get_day_summary(day)
+    today_payload = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
     week_color = get_or_create_weekly_color_state()
     mode_tag = classify_mode_tag(today_payload)
     signal = compute_today_signal(today_payload)
@@ -1885,8 +1906,13 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def fetch_range(days: int) -> Dict[str, Dict[str, Any]]:
+    safe_days = max(1, min(int(days), 90))
+    return fetch_last_days(safe_days)
+
+
 def run_backfill(days: int = 30) -> int:
-    day_payloads = fetch_last_days(days)
+    day_payloads = fetch_range(days)
     stored = 0
     for day_key in sorted(day_payloads.keys()):
         upsert_day_snapshot(day_key, day_payloads[day_key])
@@ -2389,6 +2415,8 @@ async def webhook(request: Request):
         if callback_query:
             callback_data = callback_query.get("data", "")
             callback_chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", chat_id))
+            if _callback_duplicate_guard(tg_token, callback_chat_id, callback_query):
+                return Response(status_code=200)
             if callback_data.startswith("color_story"):
                 handle_color_story_callback(tg_token, callback_chat_id, callback_query)
             elif callback_data.startswith("color_vote"):
@@ -2406,16 +2434,18 @@ async def webhook(request: Request):
                 if callback_id:
                     telegram_answer_callback(tg_token, callback_id)
             elif callback_data.startswith("why:"):
-                history_cache = load_cache()
-                context = build_day_context(cache_data=history_cache)
-                telegram_send(tg_token, callback_chat_id, build_why_message(context.get("snapshot")), parse_mode="HTML")
+                parts = callback_data.split(":")
+                day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
+                day_summary = get_day_summary(day_key)
+                telegram_send(tg_token, callback_chat_id, build_why_message(day_summary.get("snapshot")), parse_mode="HTML")
             elif callback_data.startswith("facts:"):
                 parts = callback_data.split(":")
                 if len(parts) >= 3:
                     slot = parts[1].strip().lower()
                     day_key = parts[2].strip()
-                    snapshot = get_day_snapshot(day_key)
-                    partial = not bool(snapshot)
+                    day_summary = get_day_summary(day_key)
+                    snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
+                    partial = day_summary.get("completeness_state") != "FULL"
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="facts")
                     telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
             elif callback_data.startswith("roast:"):
@@ -2423,8 +2453,9 @@ async def webhook(request: Request):
                 if len(parts) >= 3:
                     slot = parts[1].strip().lower()
                     day_key = parts[2].strip()
-                    snapshot = get_day_snapshot(day_key)
-                    partial = not bool(snapshot)
+                    day_summary = get_day_summary(day_key)
+                    snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
+                    partial = day_summary.get("completeness_state") != "FULL"
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
                     telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
             elif callback_data.startswith("what15:"):
@@ -2474,6 +2505,9 @@ async def webhook(request: Request):
             return Response(status_code=200)
         backfill_days = _parse_backfill_days(text)
         if backfill_days is not None:
+            if not _is_admin(message_chat_id):
+                telegram_send(tg_token, message_chat_id, "Команда доступна только владельцу/админу.")
+                return Response(status_code=200)
             stored_days = run_backfill(backfill_days)
             telegram_send(tg_token, message_chat_id, f"Backfill готов: сохранено {stored_days} дней.")
             return Response(status_code=200)
