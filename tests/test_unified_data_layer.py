@@ -30,8 +30,8 @@ class UnifiedDataLayerTests(unittest.TestCase):
             "available_days": ["2026-01-10", "2026-01-11", "2026-01-12"],
         }
         msg = main._format_metrics_availability(ctx)
-        self.assertIn("<b>History</b>", msg)
-        self.assertIn("<b>Data groups</b>", msg)
+        self.assertIn("<b>Какие данные есть</b>", msg)
+        self.assertIn("<b>Группы метрик</b>", msg)
         self.assertIn("сон, стресс", msg)
         self.assertIn("Body Battery", msg)
 
@@ -80,6 +80,20 @@ class UnifiedDataLayerTests(unittest.TestCase):
         self.assertIn("<b>Доступно:</b> 1", single)
         multi = main._format_history_answer({"available_days": ["2026-01-13", "2026-01-14"], "available_days_count": 2})
         self.assertIn("2026-01-13 — 2026-01-14", multi)
+
+
+    def test_compare_days_is_structured_html(self):
+        history = {
+            "2026-03-05": {"sleep": {"sleepTimeSeconds": 25000}, "stress": {"avgStressLevel": 40}, "body_battery": {"mostRecentValue": 50}, "rhr": {"restingHeartRate": 58}},
+            "2026-03-06": {"sleep": {"sleepTimeSeconds": 27000}, "stress": {"avgStressLevel": 31}, "body_battery": {"mostRecentValue": 66}, "rhr": {"restingHeartRate": 54}},
+        }
+        ctx = build_day_context(day_key="2026-03-06", cache_data=history)
+        msg = main._route_structured_reply("сравни дни", ctx, history)
+        self.assertIn("<b>🥔 Сравнение", msg)
+        self.assertNotIn("**", msg)
+
+    def test_sanitize_user_text_removes_markdown_stars(self):
+        self.assertEqual(main._sanitize_user_text("**тест**"), "тест")
 
 
 if __name__ == "__main__":

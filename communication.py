@@ -11,6 +11,8 @@ INTENT_PATTERNS = {
     "detail": ("детализ", "деталь", "разбор"),
     "metrics": ("какие метрики", "что по метрикам", "что видно по данным"),
     "history": ("за сколько", "сколько дней", "история данных", "диапазон"),
+    "compare_days": ("сравни", "сравнить", "сравнение", "vs", "против"),
+    "what_data": ("какие данные есть", "что есть по данным", "какие данные доступны"),
     "weekly": ("недел", "итог недели", "weekly"),
     "visual": ("покажи красиво", "сделай карточкой", "дай визуально"),
     "why": ("почему", "из-за чего", "причины"),
@@ -333,12 +335,13 @@ def build_metrics_message(context: Dict[str, Any]) -> str:
     days = context.get("available_days", [])
     date_range = f"{days[0]} — {days[-1]}" if len(days) > 1 else (days[0] if days else "—")
     return (
-        "<b>History</b>\n"
-        f"дней: {int(context.get('available_days_count', 0))}\n"
-        f"диапазон: {date_range}\n\n"
-        "<b>Data groups</b>\n"
-        f"есть: {av}\n"
-        f"нет: {ms}"
+        "<b>Какие данные есть</b>\n\n"
+        "<b>История</b>\n"
+        f"• дней: {int(context.get('available_days_count', 0))}\n"
+        f"• диапазон: {date_range}\n\n"
+        "<b>Группы метрик</b>\n"
+        f"• есть: {av}\n"
+        f"• нет: {ms}"
     )
 
 
@@ -354,6 +357,44 @@ def build_history_message(context: Dict[str, Any]) -> str:
         f"<b>Диапазон:</b> {date_range}.\n\n"
         f"<b>Сейчас можно:</b> {compare_line}"
     )
+
+
+def render_compare_days(day1: str, day2: str, snapshot1: Optional[Dict[str, Any]], snapshot2: Optional[Dict[str, Any]]) -> str:
+    chips1 = build_data_chips(snapshot1, max_items=5)
+    chips2 = build_data_chips(snapshot2, max_items=5)
+    score1 = _score(_extract_metrics(snapshot1))
+    score2 = _score(_extract_metrics(snapshot2))
+    if score2 > score1 + 0.3:
+        verdict = "второй день выглядит ровнее и собраннее"
+    elif score1 > score2 + 0.3:
+        verdict = "первый день был устойчивее"
+    else:
+        verdict = "дни близки по ритму"
+    diff_lines: List[str] = []
+    if chips1:
+        diff_lines.append(f"• {day1}: {chips1[0]}")
+    if chips2:
+        diff_lines.append(f"• {day2}: {chips2[0]}")
+    if not diff_lines:
+        diff_lines = ["• По обоим дням данных пока мало"]
+    action = "один фокус-блок 45–60 минут и пауза 5 минут."
+    return (
+        f"<b>🥔 Сравнение: {day1} → {day2}</b>\n\n"
+        f"<b>Вердикт:</b> {verdict}.\n\n"
+        "<b>Главные отличия:</b>\n"
+        + "\n".join(diff_lines[:4])
+        + "\n\n"
+        "<b>Что это значит:</b> ритм меняется точечно, без резких разворотов.\n\n"
+        f"<b>Что сделать сегодня:</b> {action}"
+    )
+
+
+def render_history_summary(context: Dict[str, Any]) -> str:
+    return build_history_message(context)
+
+
+def render_what_data_available(context: Dict[str, Any]) -> str:
+    return build_metrics_message(context)
 
 
 def _metric_label(metric: str) -> str:
