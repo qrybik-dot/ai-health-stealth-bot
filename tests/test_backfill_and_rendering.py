@@ -59,7 +59,7 @@ class BackfillAndRenderingTests(unittest.TestCase):
                     "2026-01-02": {"source": "garmin", "date": "2026-01-02", "sleep": {"sleepTimeSeconds": 25200}},
                 }
                 with patch.object(main, "fetch_range", return_value=payloads):
-                    stored = main.run_backfill(30)
+                    stored = main.run_backfill(90)
                 loaded = cache.load_cache()
 
         self.assertEqual(stored, 2)
@@ -110,6 +110,19 @@ class BackfillAndRenderingTests(unittest.TestCase):
         self.assertEqual(len(cache.history_list(history)), 1)
         self.assertEqual(ok_context["day_status"], "ready")
         self.assertIn("По фактам", facts)
+
+    def test_refresh_after_backfill_does_not_reduce_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "cache.json")
+            with patch.object(cache, "CACHE_FILE", cache_path):
+                payloads = {f"2026-01-{i:02d}": {"source": "garmin", "date": f"2026-01-{i:02d}", "stress": {"avgStressLevel": 31}} for i in range(1, 31)}
+                with patch.object(main, "fetch_range", return_value=payloads):
+                    main.run_backfill(90)
+                before = len(cache.history_list(cache.load_cache()))
+                cache.upsert_day_snapshot("2026-01-30", {"source": "garmin", "date": "2026-01-30", "sleep": {"sleepTimeSeconds": 25000}})
+                after = len(cache.history_list(cache.load_cache()))
+        self.assertGreaterEqual(before, 30)
+        self.assertGreaterEqual(after, before)
 
 
 if __name__ == "__main__":

@@ -85,6 +85,7 @@ from communication import (
     build_push_message,
     build_weekly_verdict_message,
     build_why_message,
+    render_compare_days,
     resolve_intent,
 )
 
@@ -485,12 +486,16 @@ def _is_admin(chat_id: str) -> bool:
 def _callback_duplicate_guard(tg_token: str, chat_id: str, callback_query: Dict[str, Any]) -> bool:
     callback_id = str(callback_query.get("id", "")).strip()
     callback_data = str(callback_query.get("data", "")).strip()
-    key = callback_id or callback_data
+    message_id = str((callback_query.get("message") or {}).get("message_id", "")).strip()
+    button_id = callback_data.split(":", 1)[0] if callback_data else "unknown"
+    key = f"{message_id}|{button_id}"
+    if not message_id:
+        key = callback_data or callback_id
     if not key:
         return False
-    is_dup = callback_dedup_hit(chat_id=chat_id, callback_key=key, ttl_seconds=30)
+    is_dup = callback_dedup_hit(chat_id=chat_id, callback_key=key, ttl_seconds=45)
     if is_dup and callback_id:
-        telegram_answer_callback(tg_token, callback_id)
+        telegram_answer_callback(tg_token, callback_id, text="Уже показал выше")
         log.info("callback_dedup_skip chat_id=%s callback=%s", chat_id, key)
     return is_dup
 
@@ -1173,21 +1178,43 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
                 },
             )
             mascot_asset = _state_to_asset(mode_tag)
-            if os.path.exists(mascot_asset):
-                telegram_send_photo_with_markup(
+            verdict_sent = _send_once(
+                tg_token=tg_token,
+                chat_id=chat_id,
+                send_date=today_str,
+                slot=(deferred_slot or resolved_slot),
+                message_type="verdict",
+                trigger_source=trigger_source,
+                run_id=run_id,
+                sender=lambda: telegram_send_photo_with_markup(
                     tg_token,
                     chat_id,
                     mascot_asset,
                     msg,
                     _build_verdict_keyboard("morning", today_str),
                     parse_mode="HTML",
-                )
-            else:
-                telegram_send_with_markup(tg_token, chat_id, msg, _build_verdict_keyboard("morning", today_str), parse_mode="HTML")
+                ) if os.path.exists(mascot_asset) else telegram_send_with_markup(
+                    tg_token,
+                    chat_id,
+                    msg,
+                    _build_verdict_keyboard("morning", today_str),
+                    parse_mode="HTML",
+                ),
+            )
         else:
-            telegram_send_with_markup(tg_token, chat_id, msg, _build_verdict_keyboard(resolved_slot, today_str), parse_mode="HTML")
+            verdict_sent = _send_once(
+                tg_token=tg_token,
+                chat_id=chat_id,
+                send_date=today_str,
+                slot=(deferred_slot or resolved_slot),
+                message_type="verdict",
+                trigger_source=trigger_source,
+                run_id=run_id,
+                sender=lambda: telegram_send_with_markup(tg_token, chat_id, msg, _build_verdict_keyboard(resolved_slot, today_str), parse_mode="HTML"),
+            )
 
-        mark_sent_record(chat_id=chat_id, send_date=today_str, slot=(deferred_slot or resolved_slot), message_type="verdict", sent_ts=utc_now_iso(), trigger_source=trigger_source, run_id=run_id)
+        if not verdict_sent:
+            return
 
         is_sunday_evening = resolved_slot == "evening" and now_msk.isoweekday() == 7
         if is_sunday_evening:
@@ -1830,7 +1857,7 @@ def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/backfill 30\n/debug_sync\n/debug_sent\n/help"
+    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/backfill 90\n/debug_sync\n/debug_sent\n/help"
 
 
 def _parse_backfill_days(text: str) -> Optional[int]:
@@ -2196,6 +2223,12 @@ def _metric_name_list(metric_keys: List[str]) -> str:
     return ", ".join(METRIC_LABELS.get(key, key) for key in metric_keys)
 
 
+def _sanitize_user_text(text: str) -> str:
+    if "**" not in text:
+        return text
+    return text.replace("**", "")
+
+
 def _format_metrics_availability(context: Dict[str, Any]) -> str:
     return build_metrics_message(context)
 
@@ -2308,6 +2341,8 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
         return _format_detailed_analysis(context)
     if intent == "history":
         return _format_history_answer(context)
+    if intent == "what_data":
+        return build_metrics_message(context)
     if intent == "day_verdict":
         return build_push_message(
             slot="day",
@@ -2322,6 +2357,14 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
         history = load_cache()
         payload = build_weekly_payload(history, _now_msk(), chat_id="ad-hoc")
         return payload["caption"]
+    if intent == "compare_days":
+        days = list(context.get("available_days", []))
+        if len(days) < 2:
+            return _format_history_answer(context)
+        d1, d2 = days[-2], days[-1]
+        s1 = build_day_context(day_key=d1, cache_data=history_cache).get("snapshot")
+        s2 = build_day_context(day_key=d2, cache_data=history_cache).get("snapshot")
+        return render_compare_days(d1, d2, s1, s2)
     if _is_current_date_only_query(q):
         today = _now_msk().date()
         return f"Сегодня {_format_ru_date(today)} ({today.isoformat()})."
@@ -2521,7 +2564,7 @@ async def webhook(request: Request):
                 env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
             )
 
-        telegram_send(tg_token, message_chat_id, response_msg, parse_mode="HTML")
+        telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
 
     except Exception:
         log.exception("Webhook processing failed")
