@@ -75,7 +75,9 @@ from color_engine import (
 )
 
 
-from prompts import SYSTEM_PROMPT, CODEX_RULES
+from prompts import SYSTEM_PROMPT, CODEX_RULES, AURELIUS_SYSTEM_PROMPT
+from aurelius import analyze_idea_fallback, build_final_reply, parse_llm_reply
+from image_flow import extract_image_prompt, is_image_request, send_generated_image
 from communication import (
     build_verdict_label,
     build_day_detail_message,
@@ -112,6 +114,38 @@ def telegram_send(token: str, chat_id: str, text: str, parse_mode: Optional[str]
     r = requests.post(url, json=payload)
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
+
+
+def telegram_send_with_result(token: str, chat_id: str, text: str) -> Dict[str, Any]:
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    response = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=20)
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram error {response.status_code}: {response.text}")
+    payload = response.json()
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram sendMessage rejected: {payload}")
+    return payload.get("result", {})
+
+
+def telegram_edit_message(token: str, chat_id: str, message_id: int, text: str) -> None:
+    url = f"https://api.telegram.org/bot{token}/editMessageText"
+    response = requests.post(
+        url,
+        json={"chat_id": chat_id, "message_id": message_id, "text": text},
+        timeout=20,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram editMessageText error {response.status_code}: {response.text}")
+
+
+def telegram_send_photo(token: str, chat_id: str, photo_url: str, caption: str = "") -> None:
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    payload: Dict[str, Any] = {"chat_id": chat_id, "photo": photo_url}
+    if caption:
+        payload["caption"] = caption
+    response = requests.post(url, json=payload, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram sendPhoto error {response.status_code}: {response.text}")
 
 
 def telegram_send_with_markup(
@@ -2327,6 +2361,22 @@ def _is_date_data_query(q: str) -> bool:
     return bool(_resolve_target_date(q, _now_msk().date()))
 
 
+def _resolve_style_command(text: str) -> Optional[Dict[str, str]]:
+    q = (text or "").strip().lower()
+    if "отвечай дерзко" in q:
+        return {"style": "bold", "reply": "Режим ответа: bold."}
+    if "режим обычный" in q:
+        return {"style": "default", "reply": "Режим ответа: default."}
+    if "режим стоик" in q:
+        return {"style": "stoic", "reply": "Режим ответа: stoic."}
+    custom_match = re.search(r"отвечай как\s+(.+)", text, flags=re.IGNORECASE)
+    if custom_match:
+        custom_value = custom_match.group(1).strip()
+        if custom_value:
+            return {"style": "custom", "custom_style": custom_value[:120], "reply": "Режим ответа: custom."}
+    return None
+
+
 def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> str:
     return build_day_verdict_message(context, target_date.isoformat())
 
@@ -2400,6 +2450,17 @@ def generate_chat_message(gemini_key: str, model_name: str, cache: Dict[str, Any
     if not text:
         raise RuntimeError("Gemini returned empty text for chat")
     return text
+
+
+def generate_aurelius_llm_reply(gemini_key: str, model_name: str, user_text: str) -> Optional[Tuple[str, str]]:
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel(model_name=model_name, system_instruction=AURELIUS_SYSTEM_PROMPT)
+    resp = model.generate_content(f"Текст пользователя: {user_text}")
+    text = (resp.text or "").strip()
+    parsed = parse_llm_reply(text)
+    if parsed is None:
+        log.warning("LLM response invalid, using deterministic fallback")
+    return parsed
 
 
 # --- FastAPI Server ---
@@ -2516,11 +2577,7 @@ async def webhook(request: Request):
         if not text:
             return Response(status_code=200)
 
-        # Acknowledge receipt to prevent Telegram retries
-        # and do the heavy lifting after.
-        # Here we just send a "typing..." indicator.
-        url = f"https://api.telegram.org/bot{tg_token}/sendChatAction"
-        requests.post(url, json={"chat_id": message_chat_id, "action": "typing"})
+        log.info("Text request received: %s", text)
 
         if text.lower() == "/color":
             handle_color_command(tg_token, message_chat_id)
@@ -2546,6 +2603,14 @@ async def webhook(request: Request):
         if text.lower() == "/debug_sent":
             telegram_send(tg_token, message_chat_id, _build_debug_sent_message(message_chat_id, current_day_key()))
             return Response(status_code=200)
+        style_command = _resolve_style_command(text)
+        if style_command:
+            prefs_payload = {"style": style_command["style"]}
+            if style_command.get("custom_style"):
+                prefs_payload["custom_style"] = style_command["custom_style"]
+            upsert_user_prefs(message_chat_id, prefs_payload)
+            telegram_send(tg_token, message_chat_id, style_command["reply"])
+            return Response(status_code=200)
         backfill_days = _parse_backfill_days(text)
         if backfill_days is not None:
             if not _is_admin(message_chat_id):
@@ -2555,14 +2620,34 @@ async def webhook(request: Request):
             telegram_send(tg_token, message_chat_id, f"Backfill готов: сохранено {stored_days} дней.")
             return Response(status_code=200)
 
+        if is_image_request(text):
+            prompt_raw = extract_image_prompt(text)
+            send_generated_image(
+                prompt_raw=prompt_raw,
+                logger=log,
+                send_photo=lambda photo_url: telegram_send_photo(tg_token, message_chat_id, photo_url),
+                send_text=lambda message_text: telegram_send(tg_token, message_chat_id, message_text),
+            )
+            return Response(status_code=200)
+
         # Load unified day context from cache and use deterministic handlers first
         history_cache = load_cache()
         context = build_day_context(cache_data=history_cache)
         response_msg = _route_structured_reply(text, context, history_cache, chat_id=message_chat_id)
         if response_msg is None:
-            response_msg = generate_chat_message(
-                env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
-            )
+            thinking = telegram_send_with_result(tg_token, message_chat_id, "Марк Аврелий размышляет...")
+            llm_result = generate_aurelius_llm_reply(env("GEMINI_API_KEY"), env("GEMINI_MODEL"), text)
+            if llm_result is None:
+                verdict, explanation = analyze_idea_fallback(text)
+            else:
+                verdict, explanation = llm_result
+            final_reply = build_final_reply(verdict, explanation, style=get_user_prefs(message_chat_id).get("style", "default"), custom_style=get_user_prefs(message_chat_id).get("custom_style"))
+            message_id = int(thinking.get("message_id", 0) or 0)
+            if message_id:
+                telegram_edit_message(tg_token, message_chat_id, message_id, final_reply)
+            else:
+                telegram_send(tg_token, message_chat_id, final_reply)
+            return Response(status_code=200)
 
         telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
 
