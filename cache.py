@@ -18,6 +18,7 @@ REFRESH_STATE_KEY = "_refresh_state"
 SYNC_DEBUG_KEY = "_sync_debug"
 USER_PREFS_KEY = "_user_prefs"
 AUTH_STATE_KEY = "_auth_state"
+BOOTSTRAP_STATE_KEY = "_bootstrap_state"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
@@ -105,12 +106,71 @@ def _merge_runtime_cache(gist_cache: Dict[str, Any], local_cache: Dict[str, Any]
     return merged
 
 
+def _sorted_day_items(days_payload: Dict[str, Any], descending: bool = False) -> List[Tuple[str, Dict[str, Any]]]:
+    items: List[Tuple[str, Dict[str, Any]]] = []
+    for day_key, payload in days_payload.items():
+        if not _is_day_key(day_key) or not isinstance(payload, dict):
+            continue
+        items.append((day_key, payload))
+    return sorted(items, key=lambda item: item[0], reverse=descending)
+
+
+def get_recent_days(chat_id: str = DEFAULT_CHAT_SCOPE, days: int = 90, descending: bool = False) -> Dict[str, Dict[str, Any]]:
+    if not FIRESTORE.enabled:
+        return {}
+    safe_days = max(1, int(days))
+    remote_days = FIRESTORE.list_days(chat_id, limit=safe_days, descending=descending)
+    ordered: Dict[str, Dict[str, Any]] = {}
+    for day_key, payload in _sorted_day_items(remote_days, descending=descending):
+        ordered[day_key] = payload
+    return ordered
+
+
+def _hydrate_day_history(primary_cache: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE, history_days: int = 90) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    merged = dict(primary_cache)
+    remote_days: Dict[str, Dict[str, Any]] = {}
+    remote_error = ""
+    safe_history_days = max(1, int(history_days))
+    if FIRESTORE.enabled:
+        try:
+            remote_days = get_recent_days(chat_id=chat_id, days=safe_history_days, descending=False)
+        except Exception as exc:
+            remote_error = str(exc)
+            remote_days = {}
+
+    for day_key, remote_snapshot in remote_days.items():
+        local_snapshot = merged.get(day_key)
+        if isinstance(local_snapshot, dict):
+            remote_score = _snapshot_freshness_score(remote_snapshot)
+            local_score = _snapshot_freshness_score(local_snapshot)
+            if local_score and remote_score and local_score > remote_score:
+                merged[day_key] = _merge_trimmed_snapshot(remote_snapshot, local_snapshot)
+            else:
+                merged[day_key] = _merge_trimmed_snapshot(local_snapshot, remote_snapshot)
+        else:
+            merged[day_key] = remote_snapshot
+
+    return merged, {
+        "remote_history_days": len(remote_days),
+        "remote_error": remote_error,
+        "history_days_target": safe_history_days,
+    }
+
+
 def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     If CACHE_GIST_ID env var is set, fetches the cache from the Gist.
     Otherwise, reads the local cache.json file.
     This allows the Render server to get the latest cache from GitHub Actions.
     """
+
+    def _finalize(cache_payload: Dict[str, Any], meta_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        hydrated, hydration_meta = _hydrate_day_history(cache_payload, chat_id=DEFAULT_CHAT_SCOPE, history_days=90)
+        out_meta = dict(meta_payload)
+        out_meta.update(hydration_meta)
+        out_meta["hydrated_history_days"] = len(_history_day_keys(hydrated))
+        return hydrated, out_meta
+
     gist_id = os.getenv("CACHE_GIST_ID")
 
     if gist_id:
@@ -149,7 +209,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 )
                 local_cache, local_meta = _load_local_cache()
                 if local_meta.get("available"):
-                    return local_cache, {
+                    return _finalize(local_cache, {
                         "source": "local_fallback",
                         "available": True,
                         "error": error_code,
@@ -157,15 +217,15 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                         "token_present": token_present,
                         "token_source": token_source,
                         "fallback_reason": short_reason,
-                    }
-                return {}, {
+                    })
+                return _finalize({}, {
                     "source": "gist",
                     "available": False,
                     "error": error_code,
                     "http_status": response.status_code,
                     "token_present": token_present,
                     "token_source": token_source,
-                }
+                })
 
             gist_data = response.json()
             content = gist_data["files"]["cache.json"]["content"]
@@ -179,7 +239,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                     gist_score = _snapshot_freshness_score(cache.get(day_key))
                     local_score = _snapshot_freshness_score(local_cache.get(day_key))
                     if local_score and local_score > gist_score:
-                        return local_cache, {
+                        return _finalize(local_cache, {
                             "source": "local_fresher_than_gist",
                             "available": True,
                             "error": "",
@@ -187,46 +247,47 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                             "token_present": token_present,
                             "token_source": token_source,
                             "fallback_reason": "local_snapshot_is_newer",
-                        }
-                return cache, {
+                        })
+                return _finalize(cache, {
                     "source": "gist",
                     "available": True,
                     "error": "",
                     "http_status": response.status_code,
                     "token_present": token_present,
                     "token_source": token_source,
-                }
-            return {}, {
+                })
+            return _finalize({}, {
                 "source": "gist",
                 "available": False,
                 "error": "gist_not_dict",
                 "http_status": response.status_code,
                 "token_present": token_present,
                 "token_source": token_source,
-            }
+            })
         except (requests.RequestException, KeyError, json.JSONDecodeError) as e:
             print(
                 f"cache gist fetch exception: gist_id={gist_id} selected_token_source={token_source} token_present={token_present} error={e}"
             )
             local_cache, local_meta = _load_local_cache()
             if local_meta.get("available"):
-                return local_cache, {
+                return _finalize(local_cache, {
                     "source": "local_fallback",
                     "available": True,
                     "error": "gist_exception",
                     "detail": str(e),
                     "token_present": token_present,
                     "token_source": token_source,
-                }
-            return {}, {
+                })
+            return _finalize({}, {
                 "source": "gist",
                 "available": False,
                 "error": "gist_exception",
                 "detail": str(e),
                 "token_present": token_present,
                 "token_source": token_source,
-            }
-    return _load_local_cache()
+            })
+    local_cache, local_meta = _load_local_cache()
+    return _finalize(local_cache, local_meta)
 
 
 def load_cache() -> Dict[str, Any]:
@@ -1244,6 +1305,28 @@ def was_weekly_report_sent(chat_id: str, week_id: str) -> bool:
         return False
     key = f"weekly|{week_id}|{chat_id}"
     return key in state
+
+
+def get_bootstrap_state(chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
+    cache = load_cache()
+    state = cache.get(BOOTSTRAP_STATE_KEY, {})
+    if not isinstance(state, dict):
+        return {}
+    raw = state.get(chat_id)
+    return raw if isinstance(raw, dict) else {}
+
+
+def upsert_bootstrap_state(payload: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
+    cache, _ = _load_local_cache()
+    state = cache.get(BOOTSTRAP_STATE_KEY)
+    if not isinstance(state, dict):
+        state = {}
+        cache[BOOTSTRAP_STATE_KEY] = state
+    existing = state.get(chat_id) if isinstance(state.get(chat_id), dict) else {}
+    merged = {**existing, **payload}
+    state[chat_id] = merged
+    _write_cache(cache)
+    return merged
 
 
 def log_refresh_attempt(

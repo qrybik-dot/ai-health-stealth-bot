@@ -42,6 +42,21 @@ class FirestoreStore:
             return
         doc.set(payload, merge=True)
 
+    def list_days(self, chat_id: str, limit: int = 90, descending: bool = True) -> Dict[str, Dict[str, Any]]:
+        if not self.enabled or self._client is None:
+            return {}
+        safe_limit = max(1, int(limit))
+        direction = firestore.Query.DESCENDING if descending else firestore.Query.ASCENDING
+        days_ref = self._client.collection("users").document(chat_id).collection("days")
+        query = days_ref.order_by("__name__", direction=direction).limit(safe_limit)
+        out: Dict[str, Dict[str, Any]] = {}
+        for snap in query.stream():
+            payload = snap.to_dict() if snap.exists else None
+            if not isinstance(payload, dict):
+                continue
+            out[snap.id] = payload
+        return out
+
     def get_sent(self, chat_id: str, key: str) -> Optional[Dict[str, Any]]:
         doc = self._doc("users", chat_id, "sent", key)
         if doc is None:

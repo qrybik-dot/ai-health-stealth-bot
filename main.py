@@ -31,6 +31,7 @@ from cache import (
     current_day_key,
     get_day_snapshot,
     get_day_summary,
+    history_list,
     get_latest_sync_trace,
     load_cache,
     load_cache_with_meta,
@@ -55,6 +56,8 @@ from cache import (
     was_weekly_report_sent,
     upsert_user_prefs,
     get_garmin_auth_state,
+    get_bootstrap_state,
+    upsert_bootstrap_state,
     upsert_garmin_auth_state,
     KEY_METRICS,
     METRIC_LABELS,
@@ -1948,6 +1951,53 @@ def run_backfill(days: int = 30) -> int:
     return stored
 
 
+def ensure_history_bootstrap(target_days: int = 90, chat_id: Optional[str] = None) -> Dict[str, Any]:
+    scope_chat_id = (chat_id or os.getenv("DEFAULT_CHAT_ID", "").strip() or "default")
+    safe_target = max(1, min(int(target_days), 90))
+    history = load_cache()
+    available = len(history_list(history))
+    previous = get_bootstrap_state(chat_id=scope_chat_id)
+
+    if available >= safe_target:
+        payload = {
+            "last_checked_ts": utc_now_iso(),
+            "target_days": safe_target,
+            "history_days_seen": available,
+            "status": "ready",
+            "backfill_triggered": False,
+        }
+        upsert_bootstrap_state(payload, chat_id=scope_chat_id)
+        return payload
+
+    previous_status = str(previous.get("status", ""))
+    previous_target = int(previous.get("target_days", 0) or 0)
+    previous_seen = int(previous.get("history_days_seen", -1) or -1)
+    last_checked = str(previous.get("last_checked_ts", ""))
+    if previous_status == "backfilled" and previous_target == safe_target and previous_seen >= available and last_checked:
+        return {
+            "last_checked_ts": last_checked,
+            "target_days": safe_target,
+            "history_days_seen": available,
+            "status": "backfill_skipped_recent_state",
+            "backfill_triggered": False,
+        }
+
+    stored = run_backfill(safe_target)
+    history_after = load_cache()
+    available_after = len(history_list(history_after))
+    payload = {
+        "last_checked_ts": utc_now_iso(),
+        "target_days": safe_target,
+        "history_days_seen": available_after,
+        "history_days_seen_before": available,
+        "status": "backfilled",
+        "backfill_triggered": True,
+        "backfill_stored_days": stored,
+    }
+    upsert_bootstrap_state(payload, chat_id=scope_chat_id)
+    return payload
+
+
 def handle_stats_command(tg_token: str, chat_id: str) -> None:
     week_id = iso_week_id()
     color_stats = get_week_vote_accuracy(week_id=week_id, chat_id=chat_id)
@@ -2577,6 +2627,11 @@ async def webhook(request: Request):
 # --- CLI ---
 def run_serve() -> None:
     """Starts the Uvicorn server."""
+    try:
+        bootstrap = ensure_history_bootstrap(target_days=90)
+        log.info("history bootstrap status=%s seen=%s target=%s", bootstrap.get("status"), bootstrap.get("history_days_seen"), bootstrap.get("target_days"))
+    except Exception:
+        log.exception("History bootstrap failed")
     try:
         ensure_bot_commands(env("TELEGRAM_BOT_TOKEN"))
         log.info("Telegram commands ensured")
