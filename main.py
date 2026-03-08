@@ -2274,9 +2274,11 @@ def _metric_name_list(metric_keys: List[str]) -> str:
 
 
 def _sanitize_user_text(text: str) -> str:
-    if "**" not in text:
-        return text
-    return text.replace("**", "")
+    clean = text.replace("**", "").replace("__", "")
+    clean = clean.replace("```", "")
+    for bad in ("рад, что ты спросил", "рад что ты спросил", "рада, что ты спросил", "рада что ты спросил"):
+        clean = clean.replace(bad, "")
+    return clean.strip()
 
 
 def _format_metrics_availability(context: Dict[str, Any]) -> str:
@@ -2381,8 +2383,107 @@ def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> st
     return build_day_verdict_message(context, target_date.isoformat())
 
 
+def _snapshot_value(snapshot: Dict[str, Any], *path: str) -> Optional[Any]:
+    node: Any = snapshot
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _render_metric_answer(intent: str, context: Dict[str, Any]) -> Optional[str]:
+    snapshot = context.get("snapshot") if isinstance(context.get("snapshot"), dict) else {}
+    day_key = str(context.get("day_key", current_day_key()))
+
+    respiration = _snapshot_value(snapshot, "respiration", "avgWakingRespirationValue") or _snapshot_value(snapshot, "respiration", "latestRespirationValue")
+    spo2 = _snapshot_value(snapshot, "pulse_ox", "avgSpo2") or _snapshot_value(snapshot, "pulse_ox", "mostRecentValue")
+    stress = _snapshot_value(snapshot, "stress", "avgStressLevel") or _snapshot_value(snapshot, "stress", "overallStressLevel")
+    sleep_s = _snapshot_value(snapshot, "sleep", "sleepTimeSeconds") or _snapshot_value(snapshot, "sleep", "totalSleepSeconds")
+    steps = _snapshot_value(snapshot, "steps", "totalSteps")
+    pulse = _snapshot_value(snapshot, "rhr", "restingHeartRate")
+    hrv_status = _snapshot_value(snapshot, "hrv_status", "status")
+    bb_now = _snapshot_value(snapshot, "body_battery", "mostRecentValue")
+    bb_start = _snapshot_value(snapshot, "body_battery", "chargedValue")
+
+    if intent in ("respiration", "oxygen"):
+        parts = ["🌬 <b>Дыхание и кислород</b>"]
+        if isinstance(respiration, (int, float)):
+            parts.append(f"• Дыхание: <b>{float(respiration):.1f}</b>/мин")
+        if isinstance(spo2, (int, float)):
+            parts.append(f"• SpO₂: <b>{int(spo2)}%</b>")
+        if len(parts) == 1:
+            return "🌬 <b>Дыхание и кислород</b><br>Данных за день пока недостаточно."
+        extra = []
+        if isinstance(stress, (int, float)):
+            extra.append(f"стресс {int(stress)}")
+        if isinstance(bb_now, (int, float)):
+            extra.append(f"Body Battery {int(bb_now)}")
+        if extra:
+            parts.append("Ещё вижу: " + ", ".join(extra) + ".")
+        return "<br>".join(parts)
+
+    if intent == "stress_metric":
+        if not isinstance(stress, (int, float)):
+            return "😵 <b>Стресс</b><br>Пока нет достаточно данных по стрессу."
+        peak = _snapshot_value(snapshot, "stress", "maxStressLevel")
+        tail = f", пики до {int(peak)}" if isinstance(peak, (int, float)) else ""
+        return f"😵 <b>Стресс</b><br>• Средний: <b>{int(stress)}</b>{tail}<br>• Контекст: день {day_key}."
+
+    if intent == "sleep_metric":
+        if not isinstance(sleep_s, (int, float)):
+            return "😴 <b>Сон</b><br>Нет полного блока сна за этот день."
+        h = int(sleep_s // 3600)
+        m = int((sleep_s % 3600) // 60)
+        return f"😴 <b>Сон</b><br>• Длительность: <b>{h}ч {m:02d}м</b><br>• Влияние: это задаёт потолок ресурса на день."
+
+    if intent == "steps":
+        if not isinstance(steps, (int, float)):
+            return "🚶 <b>Шаги</b><br>Шаги за день ещё не подтянулись."
+        return f"🚶 <b>Шаги</b><br>• Сейчас: <b>{int(steps)}</b><br>• Смысл: шаги поддерживают тонус, но не заменяют восстановление."
+
+    if intent == "activity":
+        active = _snapshot_value(snapshot, "intensity_minutes", "moderateIntensityMinutes")
+        if not isinstance(active, (int, float)):
+            return "🏃 <b>Активность</b><br>Данных по интенсивности пока мало."
+        return f"🏃 <b>Активность</b><br>• Интенсивные минуты: <b>{int(active)}</b><br>• Смысл: держать ровный объём без рывков."
+
+    if intent == "pulse":
+        if not isinstance(pulse, (int, float)):
+            return "🫀 <b>Пульс</b><br>Пульс покоя за день пока не зафиксирован."
+        return f"🫀 <b>Пульс покоя</b><br>• Значение: <b>{int(pulse)}</b><br>• Контекст: используем как фон восстановления."
+
+    if intent == "hrv_metric":
+        if not hrv_status:
+            return "💓 <b>HRV</b><br>Статус HRV за день отсутствует."
+        return f"💓 <b>HRV</b><br>• Статус: <b>{hrv_status}</b><br>• Контекст: показывает устойчивость к нагрузке."
+
+    if intent == "since_morning":
+        if not (isinstance(bb_start, (int, float)) and isinstance(bb_now, (int, float))):
+            return "↕️ <b>Что изменилось с утра</b><br>Недостаточно данных для оценки динамики."
+        delta = int(bb_now - bb_start)
+        trend = "просадка" if delta < 0 else "рост"
+        return f"↕️ <b>Что изменилось с утра</b><br>• Body Battery: <b>{int(bb_start)} → {int(bb_now)}</b> ({delta:+d})<br>• Коротко: {trend} ресурса по ходу дня."
+
+    return None
+
+
+def _build_what15_message(slot: str, snapshot: Optional[Dict[str, Any]]) -> str:
+    bb = _snapshot_value(snapshot or {}, "body_battery", "mostRecentValue")
+    low = isinstance(bb, (int, float)) and bb < 35
+    if slot == "morning":
+        return "🎯 <b>Что делать за 15 минут</b><br>1) 2 мин — вода и тишина.<br>2) 10 мин — один приоритет без переключений.<br>3) 3 мин — короткая пауза и план следующего шага."
+    if slot == "midday":
+        return "🎯 <b>Что делать за 15 минут</b><br>1) 5 мин — пройтись в спокойном темпе.<br>2) 7 мин — закрыть один мелкий хвост.<br>3) 3 мин — дыхание 4-6 и возврат к главной задаче."
+    if low:
+        return "🎯 <b>Что делать за 15 минут</b><br>1) 4 мин — тишина без экрана.<br>2) 6 мин — мягкая ходьба.<br>3) 5 мин — душ/вода и завершение новых задач."
+    return "🎯 <b>Что делать за 15 минут</b><br>1) 3 мин — приглушить свет и уведомления.<br>2) 7 мин — спокойный ритуал закрытия дня.<br>3) 5 мин — подготовка ко сну без экрана."
+
+
 def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
     q = query.strip().lower()
+    if "какие данные" in q and ("сколько" in q or "за сколько" in q):
+        return build_metrics_message(context)
     intent = resolve_intent(q)
     speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":
@@ -2393,6 +2494,9 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
         return _format_history_answer(context)
     if intent == "what_data":
         return build_metrics_message(context)
+    metric_reply = _render_metric_answer(intent, context)
+    if metric_reply:
+        return metric_reply
     if intent == "day_verdict":
         return build_push_message(
             slot="day",
@@ -2428,11 +2532,14 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
 
 
 def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
-    """Builds the user prompt for conversational chat."""
+    """Builds the user prompt for conversational chat fallback."""
     return (
-        "Write in Russian.\n"
+        "Language: Russian by default unless user requested otherwise.\n"
+        "Format: max 5 short blocks, no markdown syntax, no greetings unless needed.\n"
+        "Answer concrete question first, then optional block 'Ещё вижу'.\n"
+        "Avoid gendered forms and medical/motivational tone.\n"
         f"User query: {query}\n"
-        "Here is the data history context:\n"
+        "Data history JSON:\n"
         f"{json.dumps(cache, ensure_ascii=False, indent=2)}\n"
     )
 
@@ -2552,11 +2659,12 @@ async def webhook(request: Request):
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
                     telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
             elif callback_data.startswith("what15:"):
-                telegram_send(
-                    tg_token,
-                    callback_chat_id,
-                    "🎯 15 минут: 2 минуты дыхания, 8 минут один фокус-блок, 5 минут тишины без экрана.",
-                )
+                parts = callback_data.split(":")
+                slot = parts[1].strip().lower() if len(parts) >= 2 else "day"
+                day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
+                day_summary = get_day_summary(day_key)
+                snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
+                telegram_send(tg_token, callback_chat_id, _build_what15_message(slot, snapshot), parse_mode="HTML")
             return Response(status_code=200)
 
         message = data.get("message", {})
