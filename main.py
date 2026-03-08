@@ -2259,8 +2259,11 @@ def _metric_name_list(metric_keys: List[str]) -> str:
 
 
 def _sanitize_user_text(text: str) -> str:
-    clean = text.replace("**", "").replace("__", "")
-    clean = clean.replace("```", "")
+    clean = text or ""
+    clean = clean.replace("```", "").replace("`", "")
+    clean = clean.replace("**", "").replace("__", "").replace("~~", "")
+    clean = re.sub(r"^#{1,6}\s*", "", clean, flags=re.MULTILINE)
+    clean = re.sub(r"^>\s?", "", clean, flags=re.MULTILINE)
     for bad in ("рад, что ты спросил", "рад что ты спросил", "рада, что ты спросил", "рада что ты спросил"):
         clean = clean.replace(bad, "")
     return clean.strip()
@@ -2622,7 +2625,7 @@ async def webhook(request: Request):
                 parts = callback_data.split(":")
                 day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
                 day_summary = get_day_summary(day_key)
-                telegram_send(tg_token, callback_chat_id, build_why_message(day_summary.get("snapshot")), parse_mode="HTML")
+                telegram_send(tg_token, callback_chat_id, _sanitize_user_text(build_why_message(day_summary.get("snapshot"))), parse_mode="HTML")
             elif callback_data.startswith("facts:"):
                 parts = callback_data.split(":")
                 if len(parts) >= 3:
@@ -2632,7 +2635,7 @@ async def webhook(request: Request):
                     snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
                     partial = day_summary.get("completeness_state") != "FULL"
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="facts")
-                    telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
+                    telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
             elif callback_data.startswith("roast:"):
                 parts = callback_data.split(":")
                 if len(parts) >= 3:
@@ -2642,14 +2645,14 @@ async def webhook(request: Request):
                     snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
                     partial = day_summary.get("completeness_state") != "FULL"
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
-                    telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
+                    telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
             elif callback_data.startswith("what15:"):
                 parts = callback_data.split(":")
                 slot = parts[1].strip().lower() if len(parts) >= 2 else "day"
                 day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
                 day_summary = get_day_summary(day_key)
                 snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
-                telegram_send(tg_token, callback_chat_id, _build_what15_message(slot, snapshot), parse_mode="HTML")
+                telegram_send(tg_token, callback_chat_id, _sanitize_user_text(_build_what15_message(slot, snapshot)), parse_mode="HTML")
             return Response(status_code=200)
 
         message = data.get("message", {})
