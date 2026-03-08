@@ -56,7 +56,6 @@ from cache import (
     was_weekly_report_sent,
     upsert_user_prefs,
     get_garmin_auth_state,
-    get_bootstrap_state,
     upsert_bootstrap_state,
     upsert_garmin_auth_state,
     KEY_METRICS,
@@ -1956,7 +1955,6 @@ def ensure_history_bootstrap(target_days: int = 90, chat_id: Optional[str] = Non
     safe_target = max(1, min(int(target_days), 90))
     history = load_cache()
     available = len(history_list(history))
-    previous = get_bootstrap_state(chat_id=scope_chat_id)
 
     if available >= safe_target:
         payload = {
@@ -1968,19 +1966,6 @@ def ensure_history_bootstrap(target_days: int = 90, chat_id: Optional[str] = Non
         }
         upsert_bootstrap_state(payload, chat_id=scope_chat_id)
         return payload
-
-    previous_status = str(previous.get("status", ""))
-    previous_target = int(previous.get("target_days", 0) or 0)
-    previous_seen = int(previous.get("history_days_seen", -1) or -1)
-    last_checked = str(previous.get("last_checked_ts", ""))
-    if previous_status == "backfilled" and previous_target == safe_target and previous_seen >= available and last_checked:
-        return {
-            "last_checked_ts": last_checked,
-            "target_days": safe_target,
-            "history_days_seen": available,
-            "status": "backfill_skipped_recent_state",
-            "backfill_triggered": False,
-        }
 
     stored = run_backfill(safe_target)
     history_after = load_cache()
