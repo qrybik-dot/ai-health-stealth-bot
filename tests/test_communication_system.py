@@ -39,6 +39,19 @@ class CommunicationSystemTests(unittest.TestCase):
         banned = ("рад", "рада", "спросил", "спросила")
         self.assertFalse(any(w in msg.lower() for w in banned))
 
+    def test_midday_and_evening_avoid_sleep_chip_by_default(self):
+        midday = build_push_message("midday", self.snapshot, "2026-02-28", partial=False)
+        evening = build_push_message("evening", self.snapshot, "2026-02-28", partial=False)
+        self.assertNotIn("😴 Сон", midday)
+        self.assertNotIn("😴 Сон", evening)
+
+    def test_slot_messages_use_different_metric_priorities(self):
+        morning = build_push_message("morning", self.snapshot, "2026-02-28", partial=False)
+        midday = build_push_message("midday", self.snapshot, "2026-02-28", partial=False)
+        evening = build_push_message("evening", self.snapshot, "2026-02-28", partial=False)
+        self.assertIn("😴 Сон", morning)
+        self.assertIn("↕️ С утра", midday)
+        self.assertIn("↕️ С утра", evening)
     def test_visual_trigger_blocked_at_night(self):
         now = dt.datetime(2026, 2, 28, 2, 30)
         allowed = should_send_visual_bonus(now, "2026-02-28", {"snapshot": self.snapshot, "day_status": "ready"}, 0)

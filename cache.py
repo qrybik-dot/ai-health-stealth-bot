@@ -164,10 +164,30 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     This allows the Render server to get the latest cache from GitHub Actions.
     """
 
+    def _persist_hydrated_days_to_local(hydrated_cache: Dict[str, Any]) -> Dict[str, Any]:
+        local_cache, _ = _load_local_cache()
+        changed = 0
+        for day_key in _history_day_keys(hydrated_cache):
+            incoming_snapshot = hydrated_cache.get(day_key)
+            if not isinstance(incoming_snapshot, dict):
+                continue
+            existing_snapshot = local_cache.get(day_key) if isinstance(local_cache.get(day_key), dict) else {}
+            merged_snapshot = _merge_trimmed_snapshot(existing_snapshot, incoming_snapshot)
+            if local_cache.get(day_key) != merged_snapshot:
+                local_cache[day_key] = merged_snapshot
+                changed += 1
+        if changed > 0:
+            _write_cache(local_cache)
+        return {
+            "hydrated_days_persisted": changed,
+            "hydration_persisted": changed > 0,
+        }
+
     def _finalize(cache_payload: Dict[str, Any], meta_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         hydrated, hydration_meta = _hydrate_day_history(cache_payload, chat_id=DEFAULT_CHAT_SCOPE, history_days=90)
         out_meta = dict(meta_payload)
         out_meta.update(hydration_meta)
+        out_meta.update(_persist_hydrated_days_to_local(hydrated))
         out_meta["hydrated_history_days"] = len(_history_day_keys(hydrated))
         return hydrated, out_meta
 

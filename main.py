@@ -56,7 +56,6 @@ from cache import (
     was_weekly_report_sent,
     upsert_user_prefs,
     get_garmin_auth_state,
-    get_bootstrap_state,
     upsert_bootstrap_state,
     upsert_garmin_auth_state,
     KEY_METRICS,
@@ -1956,7 +1955,6 @@ def ensure_history_bootstrap(target_days: int = 90, chat_id: Optional[str] = Non
     safe_target = max(1, min(int(target_days), 90))
     history = load_cache()
     available = len(history_list(history))
-    previous = get_bootstrap_state(chat_id=scope_chat_id)
 
     if available >= safe_target:
         payload = {
@@ -1968,19 +1966,6 @@ def ensure_history_bootstrap(target_days: int = 90, chat_id: Optional[str] = Non
         }
         upsert_bootstrap_state(payload, chat_id=scope_chat_id)
         return payload
-
-    previous_status = str(previous.get("status", ""))
-    previous_target = int(previous.get("target_days", 0) or 0)
-    previous_seen = int(previous.get("history_days_seen", -1) or -1)
-    last_checked = str(previous.get("last_checked_ts", ""))
-    if previous_status == "backfilled" and previous_target == safe_target and previous_seen >= available and last_checked:
-        return {
-            "last_checked_ts": last_checked,
-            "target_days": safe_target,
-            "history_days_seen": available,
-            "status": "backfill_skipped_recent_state",
-            "backfill_triggered": False,
-        }
 
     stored = run_backfill(safe_target)
     history_after = load_cache()
@@ -2274,8 +2259,11 @@ def _metric_name_list(metric_keys: List[str]) -> str:
 
 
 def _sanitize_user_text(text: str) -> str:
-    clean = text.replace("**", "").replace("__", "")
-    clean = clean.replace("```", "")
+    clean = text or ""
+    clean = clean.replace("```", "").replace("`", "")
+    clean = clean.replace("**", "").replace("__", "").replace("~~", "")
+    clean = re.sub(r"^#{1,6}\s*", "", clean, flags=re.MULTILINE)
+    clean = re.sub(r"^>\s?", "", clean, flags=re.MULTILINE)
     for bad in ("рад, что ты спросил", "рад что ты спросил", "рада, что ты спросил", "рада что ты спросил"):
         clean = clean.replace(bad, "")
     return clean.strip()
@@ -2637,7 +2625,7 @@ async def webhook(request: Request):
                 parts = callback_data.split(":")
                 day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
                 day_summary = get_day_summary(day_key)
-                telegram_send(tg_token, callback_chat_id, build_why_message(day_summary.get("snapshot")), parse_mode="HTML")
+                telegram_send(tg_token, callback_chat_id, _sanitize_user_text(build_why_message(day_summary.get("snapshot"))), parse_mode="HTML")
             elif callback_data.startswith("facts:"):
                 parts = callback_data.split(":")
                 if len(parts) >= 3:
@@ -2647,7 +2635,7 @@ async def webhook(request: Request):
                     snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
                     partial = day_summary.get("completeness_state") != "FULL"
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="facts")
-                    telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
+                    telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
             elif callback_data.startswith("roast:"):
                 parts = callback_data.split(":")
                 if len(parts) >= 3:
@@ -2657,14 +2645,14 @@ async def webhook(request: Request):
                     snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
                     partial = day_summary.get("completeness_state") != "FULL"
                     message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
-                    telegram_send(tg_token, callback_chat_id, message, parse_mode="HTML")
+                    telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
             elif callback_data.startswith("what15:"):
                 parts = callback_data.split(":")
                 slot = parts[1].strip().lower() if len(parts) >= 2 else "day"
                 day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
                 day_summary = get_day_summary(day_key)
                 snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
-                telegram_send(tg_token, callback_chat_id, _build_what15_message(slot, snapshot), parse_mode="HTML")
+                telegram_send(tg_token, callback_chat_id, _sanitize_user_text(_build_what15_message(slot, snapshot)), parse_mode="HTML")
             return Response(status_code=200)
 
         message = data.get("message", {})

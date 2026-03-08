@@ -59,7 +59,24 @@ def _seed(*parts: str) -> int:
 
 def resolve_intent(query: str) -> str:
     q = query.strip().lower()
+    metric_first = (
+        "respiration",
+        "oxygen",
+        "steps",
+        "activity",
+        "stress_metric",
+        "sleep_metric",
+        "pulse",
+        "hrv_metric",
+        "since_morning",
+    )
+    for intent in metric_first:
+        patterns = INTENT_PATTERNS.get(intent, ())
+        if any(p in q for p in patterns):
+            return intent
     for intent, patterns in INTENT_PATTERNS.items():
+        if intent in metric_first:
+            continue
         if any(p in q for p in patterns):
             return intent
     return "fallback"
@@ -236,8 +253,8 @@ def _select_slot_chips(snapshot: Optional[Dict[str, Any]], slot: str, max_items:
     for key, _, text in sorted(candidates, key=lambda x: x[1], reverse=True):
         if key in used:
             continue
-        # novelty penalty: midday/evening avoid overusing sleep unless strong
-        if slot in ("midday", "evening") and key == "sleep" and len(selected) >= 2:
+        # midday/evening: сон не повторяем по умолчанию, кроме сценариев почти без данных
+        if slot in ("midday", "evening") and key == "sleep" and len(selected) >= 1:
             continue
         selected.append(text)
         used.add(key)
@@ -312,11 +329,11 @@ def render_roast(day_summary: Optional[Dict[str, Any]], history_optional: Option
         history_hint = f" (история: {history_optional.get('available_days_count')} дн.)"
     return (
         "🥔 <b>Пожарь</b>\n"
-        "Без драмы: ритм понятен, запас не бесконечный.\n\n"
+        "Спокойно и по делу: ритм читается, запас не бесконечный.\n\n"
         "<b>Факты:</b>\n"
         + facts_block
         + "\n\n"
-        + f"<b>Гипотеза:</b> просадка больше от рваного темпа, чем от объёма{history_hint}.\n"
+        + f"<b>Гипотеза:</b> просадка чаще от рваного режима, чем от объёма{history_hint}.\n"
         + build_action_block(slot, _score(_extract_metrics(day_summary)))
     )
 

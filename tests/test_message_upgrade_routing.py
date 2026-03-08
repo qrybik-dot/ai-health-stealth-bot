@@ -55,6 +55,16 @@ class MessageUpgradeRoutingTests(unittest.TestCase):
         msg = main._route_structured_reply("стресс", self.context, self.history)
         self.assertNotIn("**", msg)
 
+    def test_direct_metric_question_is_answered_before_day_verdict(self):
+        msg = main._route_structured_reply("как мой день и что с пульсом?", self.context, self.history)
+        self.assertIn("Пульс", msg)
+        self.assertNotIn("Вердикт", msg)
+
+
+    def test_sanitize_user_text_removes_markdown_artifacts(self):
+        self.assertEqual(main._sanitize_user_text("**тест**"), "тест")
+        self.assertEqual(main._sanitize_user_text("```код```"), "код")
+        self.assertEqual(main._sanitize_user_text("# заголовок"), "заголовок")
 
 if __name__ == "__main__":
     unittest.main()
