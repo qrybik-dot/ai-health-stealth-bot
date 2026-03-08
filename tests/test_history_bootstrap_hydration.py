@@ -77,7 +77,7 @@ class HistoryBootstrapHydrationTests(unittest.TestCase):
         self.assertEqual(len(cache.history_list(loaded)), 3)
 
     def test_bootstrap_backfill_runs_when_history_less_than_90(self):
-        with patch.object(main, "load_cache", return_value=_make_days(3)), patch.object(main, "history_list", return_value=sorted(_make_days(3).keys())), patch.object(main, "get_bootstrap_state", return_value={}), patch.object(main, "run_backfill", return_value=90) as mocked_backfill, patch.object(main, "upsert_bootstrap_state"):
+        with patch.object(main, "load_cache", return_value=_make_days(3)), patch.object(main, "history_list", return_value=sorted(_make_days(3).keys())), patch.object(main, "run_backfill", return_value=90) as mocked_backfill, patch.object(main, "upsert_bootstrap_state"):
             result = main.ensure_history_bootstrap(target_days=90)
         self.assertTrue(result["backfill_triggered"])
         mocked_backfill.assert_called_once_with(90)
@@ -88,6 +88,12 @@ class HistoryBootstrapHydrationTests(unittest.TestCase):
             result = main.ensure_history_bootstrap(target_days=90)
         self.assertFalse(result["backfill_triggered"])
         mocked_backfill.assert_not_called()
+
+    def test_bootstrap_does_not_skip_when_available_below_target_even_if_previous_backfilled(self):
+        with patch.object(main, "load_cache", return_value={}), patch.object(main, "history_list", return_value=[]), patch.object(main, "run_backfill", return_value=90) as mocked_backfill, patch.object(main, "upsert_bootstrap_state"):
+            result = main.ensure_history_bootstrap(target_days=90)
+        self.assertTrue(result["backfill_triggered"])
+        mocked_backfill.assert_called_once_with(90)
 
     def test_refresh_after_bootstrap_does_not_reduce_history(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,11 +125,28 @@ class HistoryBootstrapHydrationTests(unittest.TestCase):
             fake_store = _FakeFirestoreStore(days=_make_days(90), enabled=True)
             with patch.object(cache, "CACHE_FILE", cache_path), patch.object(cache, "FIRESTORE", fake_store):
                 first = cache.load_cache()
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    persisted_after_first = json.load(f)
                 with open(cache_path, "w", encoding="utf-8") as f:
                     json.dump({}, f)
                 second = cache.load_cache()
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    persisted_after_second = json.load(f)
         self.assertEqual(len(cache.history_list(first)), 90)
         self.assertEqual(len(cache.history_list(second)), 90)
+        self.assertEqual(len(cache.history_list(persisted_after_first)), 90)
+        self.assertEqual(len(cache.history_list(persisted_after_second)), 90)
+
+    def test_load_cache_hydration_persists_remote_days_to_local_cache_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "cache.json")
+            fake_store = _FakeFirestoreStore(days=_make_days(90), enabled=True)
+            with patch.object(cache, "CACHE_FILE", cache_path), patch.object(cache, "FIRESTORE", fake_store):
+                loaded = cache.load_cache()
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    persisted = json.load(f)
+        self.assertEqual(len(cache.history_list(loaded)), 90)
+        self.assertEqual(len(cache.history_list(persisted)), 90)
 
 
 if __name__ == "__main__":
