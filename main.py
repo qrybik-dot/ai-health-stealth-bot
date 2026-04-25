@@ -2368,7 +2368,11 @@ def _is_date_data_query(q: str) -> bool:
 
 
 def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> str:
-    return build_day_verdict_message(context, target_date.isoformat())
+    target_day = target_date.isoformat()
+    message = build_day_verdict_message(context, target_day)
+    if context.get("day_status") in {"no_data", "partial"}:
+        return f"📅 <b>Дата:</b> {target_day}\n\n{message}"
+    return message
 
 
 def _snapshot_value(snapshot: Dict[str, Any], *path: str) -> Optional[Any]:

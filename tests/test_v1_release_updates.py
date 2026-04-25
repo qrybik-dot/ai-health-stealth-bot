@@ -31,7 +31,11 @@ class V1ReleaseUpdateTests(unittest.TestCase):
         facts = communication.build_push_message("day", snapshot, "2026-01-01", mode="facts")
         roast = communication.build_push_message("day", snapshot, "2026-01-01", mode="roast")
         self.assertIn("По фактам", facts)
-        self.assertTrue("Картоха" in roast or "Пюрешка" in roast)
+        self.assertIn("Пожарь", roast)
+        self.assertIn("Факты", roast)
+        self.assertIn("Гипотеза", roast)
+        self.assertNotIn("Картоха", roast)
+        self.assertNotIn("Пюрешка", roast)
         self.assertGreater(len(short), len(facts) - 20)
 
     def test_weekly_split_no_data_vs_partial(self):
