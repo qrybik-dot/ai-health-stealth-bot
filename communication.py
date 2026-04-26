@@ -386,9 +386,19 @@ def build_day_detail_message(context: Dict[str, Any], day_key: str) -> str:
     if context.get("day_status") == "no_data":
         return _no_data_message("day")
     chips = build_data_chips(snapshot, max_items=5, slot="day")
+    limitation = ""
+    if context.get("day_status") == "partial":
+        missing = context.get("missing_metrics", [])
+        missing_labels = [_metric_label(str(metric)) for metric in missing[:4]]
+        missing_line = ", ".join(missing_labels) if missing_labels else "часть ключевых метрик"
+        limitation = (
+            "\n\n⚠️ <b>Ограничения:</b> разбор частичный — "
+            f"не хватает: {missing_line}."
+        )
     return (
         "📌 <b>Разбор дня</b>\n\n"
         + "\n".join(f"• {c}" for c in chips)
+        + limitation
         + "\n\n<b>Вывод:</b> сначала факты, потом темп; резкие ускорения сегодня не окупаются."
     )
 

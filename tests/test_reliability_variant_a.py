@@ -8,6 +8,7 @@ import cache
 import main
 import communication
 import color_engine
+from PIL import Image, ImageChops
 
 
 class ReliabilityVariantATests(unittest.TestCase):
@@ -34,7 +35,11 @@ class ReliabilityVariantATests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = color_engine.render_cyrillic_probe("Проверка кириллицы", out_dir=tmp)
             self.assertTrue(os.path.exists(path))
-            self.assertGreater(os.path.getsize(path), 1000)
+            with Image.open(path) as image:
+                self.assertEqual(image.size, (620, 180))
+                blank = Image.new(image.mode, image.size, color=(20, 24, 30))
+                diff = ImageChops.difference(image, blank)
+                self.assertIsNotNone(diff.getbbox())
 
     def test_metric_formatting_guards(self):
         chips = communication.build_data_chips({"rhr": {"restingHeartRate": 123456789}, "sleep": {"sleepTimeSeconds": 9999999}})

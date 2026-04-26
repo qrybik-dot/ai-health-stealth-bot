@@ -1263,17 +1263,48 @@ def run_push_self_check() -> None:
         print("dry_run=true telegram_send=skipped")
 
 
-def run_cache_self_check() -> None:
+def run_cache_self_check(
+    require_today: bool = False,
+    require_usable_today: bool = False,
+    min_history_days: int = 0,
+) -> None:
     cache_data, cache_meta = load_cache_with_meta()
     today_str = _now_msk().date().isoformat()
     has_today = isinstance(cache_data, dict) and bool(cache_data.get(today_str))
     top_level_keys = sorted(list(cache_data.keys())) if isinstance(cache_data, dict) else []
+    history_days = history_list(cache_data) if isinstance(cache_data, dict) else []
+    today_context = build_day_context(day_key=today_str, cache_data=cache_data if isinstance(cache_data, dict) else {})
+    today_status = str(today_context.get("day_status", "no_data"))
+    key_present = int(today_context.get("key_metrics_present_count", 0) or 0)
 
     print(f"cache_source={cache_meta.get('source', 'unknown')}")
     print(f"cache_available={str(bool(cache_meta.get('available', False))).lower()}")
     print(f"cache_error={cache_meta.get('error', '')}")
+    print(f"cache_fallback_reason={cache_meta.get('fallback_reason', '')}")
+    print(f"cache_token_source={cache_meta.get('token_source', '')}")
+    print(f"hydrated_history_days={cache_meta.get('hydrated_history_days', '')}")
     print(f"has_today={str(has_today).lower()}")
+    print(f"today_status={today_status}")
+    print(f"today_key_metrics_present={key_present}")
+    print(f"history_days_count={len(history_days)}")
+    print(f"latest_history_day={history_days[-1] if history_days else ''}")
     print(f"top_level_keys={top_level_keys}")
+
+    failures: List[str] = []
+    if not cache_meta.get("available", False):
+        failures.append("cache_unavailable")
+    if require_today and not has_today:
+        failures.append("today_missing")
+    if require_usable_today and (not has_today or key_present < 1):
+        failures.append("today_not_usable")
+    if min_history_days and len(history_days) < min_history_days:
+        failures.append(f"history_below_min:{len(history_days)}<{min_history_days}")
+
+    if failures:
+        print("cache_self_check=failed")
+        print("failures=" + ",".join(failures))
+        sys.exit(1)
+    print("cache_self_check=ok")
 
 
 def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
@@ -2368,7 +2399,11 @@ def _is_date_data_query(q: str) -> bool:
 
 
 def _format_day_data_answer(target_date: dt.date, context: Dict[str, Any]) -> str:
-    return build_day_verdict_message(context, target_date.isoformat())
+    target_day = target_date.isoformat()
+    message = build_day_verdict_message(context, target_day)
+    if context.get("day_status") in {"no_data", "partial"}:
+        return f"📅 <b>Дата:</b> {target_day}\n\n{message}"
+    return message
 
 
 def _snapshot_value(snapshot: Dict[str, Any], *path: str) -> Optional[Any]:
@@ -2739,7 +2774,7 @@ def run_serve() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|backfill|push|push-self-check|cache-self-check|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|backfill|push|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -2791,7 +2826,37 @@ def main() -> None:
     elif mode == "push-self-check":
         run_push_self_check()
     elif mode == "cache-self-check":
-        run_cache_self_check()
+        require_today = False
+        require_usable_today = False
+        min_history_days = 0
+        args = sys.argv[2:]
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
+            if arg == "--require-today":
+                require_today = True
+                idx += 1
+                continue
+            if arg == "--require-usable-today":
+                require_today = True
+                require_usable_today = True
+                idx += 1
+                continue
+            if arg == "--min-history-days" and idx + 1 < len(args):
+                try:
+                    min_history_days = max(0, int(args[idx + 1]))
+                except ValueError:
+                    print("Error: --min-history-days requires integer")
+                    return
+                idx += 2
+                continue
+            print("Error: cache-self-check args must be [--require-today] [--require-usable-today] [--min-history-days <n>]")
+            return
+        run_cache_self_check(
+            require_today=require_today,
+            require_usable_today=require_usable_today,
+            min_history_days=min_history_days,
+        )
     elif mode == "debug-sync":
         print(build_debug_sync_message())
     elif mode == "serve":

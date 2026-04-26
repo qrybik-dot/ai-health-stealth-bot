@@ -129,3 +129,15 @@ API:
 - `python -m unittest discover -s tests`
 - `python main.py push-self-check`
 - `python main.py schedule-self-check`
+
+## Recovery после сбоя sync/cache
+
+Для ручного восстановления используйте GitHub Actions → **Recovery Controls**:
+
+1. `cache-check` — проверить, читается ли кэш/Gist.
+2. `sync` — подтянуть данные за сегодня и загрузить кэш в Gist только после проверки.
+3. `backfill 7`, затем `30`, затем `90` — догружать историю поэтапно, чтобы не упереться в Garmin rate limit.
+
+Ключевой secret для Gist read/write: `GIST_TOKEN`. `GITHUB_TOKEN` не должен считаться надёжным доступом к private Gist.
+
+Подробный runbook: `docs/RECOVERY_RUNBOOK.md`.
