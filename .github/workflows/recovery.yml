@@ -1,0 +1,118 @@
+name: Recovery Controls
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Recovery operation to run"
+        required: true
+        default: "cache-check"
+        type: choice
+        options:
+          - cache-check
+          - sync
+          - backfill
+      backfill_days:
+        description: "Days to backfill when operation=backfill"
+        required: true
+        default: "7"
+        type: choice
+        options:
+          - "7"
+          - "30"
+          - "90"
+
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Workflow context (safe)
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "operation=${{ inputs.operation }}"
+          echo "backfill_days=${{ inputs.backfill_days }}"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Preflight env check (safe)
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if [ -z "$CACHE_GIST_ID" ]; then
+            echo "CACHE_GIST_ID=missing"
+            exit 1
+          else
+            echo "CACHE_GIST_ID=present"
+          fi
+          if [ -z "$GIST_TOKEN" ]; then
+            echo "GIST_TOKEN=missing"
+            echo "warning: private Gist recovery should use GIST_TOKEN; falling back to GITHUB_TOKEN where possible."
+          else
+            echo "GIST_TOKEN=present"
+          fi
+
+      - name: Cache check
+        if: inputs.operation == 'cache-check'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py cache-self-check
+
+      - name: Sync today
+        if: inputs.operation == 'sync'
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py sync
+
+      - name: Backfill range
+        if: inputs.operation == 'backfill'
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py backfill ${{ inputs.backfill_days }}
+
+      - name: Validate recovery result
+        if: inputs.operation == 'sync'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py cache-self-check --require-today --require-usable-today
+
+      - name: Validate backfill result
+        if: inputs.operation == 'backfill'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py cache-self-check --require-today --require-usable-today --min-history-days ${{ inputs.backfill_days }}
+
+      - name: Upload cache.json to Gist
+        if: inputs.operation == 'sync' || inputs.operation == 'backfill'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/gist_upload.py
