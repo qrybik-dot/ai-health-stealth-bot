@@ -116,6 +116,16 @@ def telegram_send(token: str, chat_id: str, text: str, parse_mode: Optional[str]
     r = requests.post(url, json=payload)
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
+    response_payload = r.json()
+    if not response_payload.get("ok"):
+        raise RuntimeError(f"Telegram sendMessage rejected: {response_payload}")
+    result = response_payload.get("result", {}) if isinstance(response_payload.get("result"), dict) else {}
+    log.info(
+        "telegram_send ok method=sendMessage chat_id=%s message_id=%s text_len=%s",
+        chat_id,
+        result.get("message_id", ""),
+        len(text or ""),
+    )
 
 
 def telegram_send_with_markup(
@@ -132,6 +142,16 @@ def telegram_send_with_markup(
     r = requests.post(url, json=payload)
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
+    response_payload = r.json()
+    if not response_payload.get("ok"):
+        raise RuntimeError(f"Telegram sendMessage rejected: {response_payload}")
+    result = response_payload.get("result", {}) if isinstance(response_payload.get("result"), dict) else {}
+    log.info(
+        "telegram_send ok method=sendMessage markup=true chat_id=%s message_id=%s text_len=%s",
+        chat_id,
+        result.get("message_id", ""),
+        len(text or ""),
+    )
 
 
 
