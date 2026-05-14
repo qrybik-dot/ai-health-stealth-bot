@@ -93,6 +93,20 @@ python main.py cache-self-check --require-today --require-usable-today --min-his
 - Если scheduled sync начал падать из-за Garmin auth/rate-limit, временно disable workflow schedule и чините auth.
 - Не удаляйте Gist и Firestore paths в recovery phase: они нужны как rollback bridge.
 
-## What This Does Not Restore
+## Chat Polling Runtime
 
-Этот runbook не возвращает interactive Telegram chat после Render. Chat runtime восстановится в следующем PR через отдельный механизм. Scheduled pushes и данные восстанавливаются первыми.
+PR3 возвращает interactive Telegram chat без Render:
+
+1. Убедитесь, что secrets заданы: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `CACHE_GIST_ID`, `GIST_TOKEN`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`.
+2. Вручную вызовите Telegram `deleteWebhook` для бота. Это обязательный шаг перед `getUpdates`; workflow сам webhook не отключает.
+3. Запустите GitHub Actions -> **Chat Polling Runtime** -> **Run workflow**.
+4. Проверьте лог `python main.py poll-once`: ожидается строка вида `poll_once fetched=... processed=... errors=... next_offset=...`.
+5. После ручной проверки оставьте schedule `*/5 * * * *` включённым.
+
+Offset хранится в `cache.json` под `_telegram_poll_state` и загружается в Gist после каждого polling run. Если отдельный update падает, offset всё равно продвигается, чтобы GitHub Actions не повторял один и тот же сломанный update бесконечно.
+
+Rollback:
+
+- Disable workflow **Chat Polling Runtime**.
+- При возврате к webhook заново установите Telegram webhook на нужный runtime endpoint.
+- Не удаляйте `_telegram_poll_state`: он безвреден и нужен для повторного включения polling.

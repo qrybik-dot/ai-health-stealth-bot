@@ -70,10 +70,12 @@ class ReliabilityVariantATests(unittest.TestCase):
     def test_run_push_morning_dedups_verdict(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(cache, "CACHE_FILE", os.path.join(tmp, "cache.json")):
-                cache.upsert_day_snapshot("2026-01-01", {"source": "garmin", "date": "2026-01-01", "sleep": {"sleepTimeSeconds": 25000}, "stress": {"avgStressLevel": 30}, "body_battery": {"mostRecentValue": 70}, "rhr": {"restingHeartRate": 54}})
+                test_day = dt.date.today().isoformat()
+                now_msk = dt.datetime.combine(dt.date.today(), dt.time(9, 30), tzinfo=main.TZ_MSK_FIXED)
+                cache.upsert_day_snapshot(test_day, {"source": "garmin", "date": test_day, "sleep": {"sleepTimeSeconds": 25000}, "stress": {"avgStressLevel": 30}, "body_battery": {"mostRecentValue": 70}, "rhr": {"restingHeartRate": 54}})
                 with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c"}, clear=False):
                     with patch.object(main, "env", side_effect=lambda n: os.environ[n]), \
-                         patch.object(main, "_now_msk", return_value=dt.datetime(2026,1,1,9,30,tzinfo=main.TZ_MSK_FIXED)), \
+                         patch.object(main, "_now_msk", return_value=now_msk), \
                          patch.object(main, "telegram_send_with_markup") as send_msg, \
                          patch.object(main, "telegram_send_photo_with_markup") as send_photo, \
                          patch.object(main, "generate_color_card_image", return_value=__file__), \

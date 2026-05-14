@@ -1,0 +1,67 @@
+name: Chat Polling Runtime
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Workflow context (safe)
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Preflight env check (safe)
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if [ -z "$CACHE_GIST_ID" ]; then
+            echo "CACHE_GIST_ID=missing"
+            exit 1
+          else
+            echo "CACHE_GIST_ID=present"
+          fi
+          if [ -z "$GIST_TOKEN" ]; then
+            echo "GIST_TOKEN=missing"
+            exit 1
+          else
+            echo "GIST_TOKEN=present"
+          fi
+
+      - name: Poll Telegram once
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py poll-once
+
+      - name: Upload cache.json to Gist
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/gist_upload.py
