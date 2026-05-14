@@ -53,8 +53,10 @@ from cache import (
     get_today_sent_registry,
     get_sent_registry_for_date,
     get_user_prefs,
+    get_telegram_poll_state,
     was_weekly_report_sent,
     upsert_user_prefs,
+    upsert_telegram_poll_state,
     get_garmin_auth_state,
     upsert_bootstrap_state,
     upsert_garmin_auth_state,
@@ -2582,6 +2584,139 @@ def generate_chat_message(gemini_key: str, model_name: str, cache: Dict[str, Any
     return text
 
 
+def _send_typing_action(tg_token: str, chat_id: str) -> None:
+    url = f"https://api.telegram.org/bot{tg_token}/sendChatAction"
+    requests.post(url, json={"chat_id": chat_id, "action": "typing"}, timeout=10)
+
+
+def _handle_callback_update(tg_token: str, default_chat_id: str, callback_query: Dict[str, Any]) -> Dict[str, Any]:
+    callback_data = str(callback_query.get("data", ""))
+    callback_chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", default_chat_id))
+    if _callback_duplicate_guard(tg_token, callback_chat_id, callback_query):
+        return {"kind": "callback", "chat_id": callback_chat_id, "action": "dedupe_skip"}
+    if callback_data.startswith("color_story"):
+        handle_color_story_callback(tg_token, callback_chat_id, callback_query)
+    elif callback_data.startswith("color_vote"):
+        handle_color_vote_callback(tg_token, callback_chat_id, callback_query)
+    elif callback_data.startswith("today_vote"):
+        handle_today_vote_callback(tg_token, callback_chat_id, callback_query)
+    elif callback_data.startswith("today_story"):
+        handle_today_story_callback(tg_token, callback_chat_id, callback_query)
+    elif callback_data.startswith("weekly_pattern"):
+        handle_weekly_pattern_callback(tg_token, callback_chat_id, callback_query)
+    elif callback_data.startswith("weekly_improve"):
+        handle_weekly_improve_callback(tg_token, callback_chat_id, callback_query)
+    elif callback_data == "noop":
+        callback_id = callback_query.get("id")
+        if callback_id:
+            telegram_answer_callback(tg_token, callback_id)
+    elif callback_data.startswith("why:"):
+        parts = callback_data.split(":")
+        day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
+        day_summary = get_day_summary(day_key)
+        telegram_send(tg_token, callback_chat_id, _sanitize_user_text(build_why_message(day_summary.get("snapshot"))), parse_mode="HTML")
+    elif callback_data.startswith("facts:"):
+        parts = callback_data.split(":")
+        if len(parts) >= 3:
+            slot = parts[1].strip().lower()
+            day_key = parts[2].strip()
+            day_summary = get_day_summary(day_key)
+            snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
+            partial = day_summary.get("completeness_state") != "FULL"
+            message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="facts")
+            telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
+    elif callback_data.startswith("roast:"):
+        parts = callback_data.split(":")
+        if len(parts) >= 3:
+            slot = parts[1].strip().lower()
+            day_key = parts[2].strip()
+            day_summary = get_day_summary(day_key)
+            snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
+            partial = day_summary.get("completeness_state") != "FULL"
+            message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
+            telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
+    elif callback_data.startswith("what15:"):
+        parts = callback_data.split(":")
+        slot = parts[1].strip().lower() if len(parts) >= 2 else "day"
+        day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
+        day_summary = get_day_summary(day_key)
+        snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
+        telegram_send(tg_token, callback_chat_id, _sanitize_user_text(_build_what15_message(slot, snapshot)), parse_mode="HTML")
+    return {"kind": "callback", "chat_id": callback_chat_id, "action": callback_data.split(":", 1)[0] or "unknown"}
+
+
+def _handle_message_update(tg_token: str, default_chat_id: str, message: Dict[str, Any]) -> Dict[str, Any]:
+    text = str(message.get("text", "")).strip()
+    message_chat_id = str(message.get("chat", {}).get("id", default_chat_id))
+    if not text:
+        return {"kind": "message", "chat_id": message_chat_id, "action": "empty"}
+
+    _send_typing_action(tg_token, message_chat_id)
+    normalized = text.lower()
+
+    if normalized == "/color":
+        handle_color_command(tg_token, message_chat_id)
+        return {"kind": "message", "chat_id": message_chat_id, "action": "color"}
+    if normalized == "/today":
+        handle_today_command(tg_token, message_chat_id)
+        return {"kind": "message", "chat_id": message_chat_id, "action": "today"}
+    if normalized == "/help":
+        telegram_send(tg_token, message_chat_id, build_help_message(), parse_mode="HTML")
+        return {"kind": "message", "chat_id": message_chat_id, "action": "help"}
+    if normalized == "/week":
+        handle_week_command(tg_token, message_chat_id)
+        return {"kind": "message", "chat_id": message_chat_id, "action": "week"}
+    if normalized == "/stats":
+        handle_stats_command(tg_token, message_chat_id)
+        return {"kind": "message", "chat_id": message_chat_id, "action": "stats"}
+    if normalized == "/refresh":
+        handle_refresh_command(tg_token, message_chat_id)
+        return {"kind": "message", "chat_id": message_chat_id, "action": "refresh"}
+    if normalized == "/debug_sync":
+        telegram_send(tg_token, message_chat_id, build_debug_sync_message())
+        return {"kind": "message", "chat_id": message_chat_id, "action": "debug_sync"}
+    if normalized == "/debug_sent":
+        telegram_send(tg_token, message_chat_id, _build_debug_sent_message(message_chat_id, current_day_key()))
+        return {"kind": "message", "chat_id": message_chat_id, "action": "debug_sent"}
+
+    backfill_days = _parse_backfill_days(text)
+    if backfill_days is not None:
+        if not _is_admin(message_chat_id):
+            telegram_send(tg_token, message_chat_id, "Команда доступна только владельцу/админу.")
+            return {"kind": "message", "chat_id": message_chat_id, "action": "backfill_denied"}
+        stored_days = run_backfill(backfill_days)
+        telegram_send(tg_token, message_chat_id, f"Backfill готов: сохранено {stored_days} дней.")
+        return {"kind": "message", "chat_id": message_chat_id, "action": "backfill"}
+
+    history_cache = load_cache()
+    context = build_day_context(cache_data=history_cache)
+    response_msg = _route_structured_reply(text, context, history_cache, chat_id=message_chat_id)
+    action = "structured_reply"
+    if response_msg is None:
+        response_msg = generate_chat_message(
+            env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
+        )
+        action = "gemini_reply"
+
+    telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
+    return {"kind": "message", "chat_id": message_chat_id, "action": action}
+
+
+def process_telegram_update(update: Dict[str, Any], tg_token: str, default_chat_id: str) -> Dict[str, Any]:
+    update_id = update.get("update_id")
+    callback_query = update.get("callback_query")
+    if isinstance(callback_query, dict):
+        result = _handle_callback_update(tg_token, default_chat_id, callback_query)
+    else:
+        message = update.get("message")
+        if not isinstance(message, dict):
+            result = {"kind": "unknown", "chat_id": default_chat_id, "action": "ignored"}
+        else:
+            result = _handle_message_update(tg_token, default_chat_id, message)
+    result["update_id"] = update_id
+    return result
+
+
 # --- FastAPI Server ---
 app = FastAPI()
 
@@ -2633,119 +2768,8 @@ async def webhook(request: Request):
     try:
         data = await request.json()
         log.info("Webhook received: %s", data)
-
-        callback_query = data.get("callback_query")
-        if callback_query:
-            callback_data = callback_query.get("data", "")
-            callback_chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", chat_id))
-            if _callback_duplicate_guard(tg_token, callback_chat_id, callback_query):
-                return Response(status_code=200)
-            if callback_data.startswith("color_story"):
-                handle_color_story_callback(tg_token, callback_chat_id, callback_query)
-            elif callback_data.startswith("color_vote"):
-                handle_color_vote_callback(tg_token, callback_chat_id, callback_query)
-            elif callback_data.startswith("today_vote"):
-                handle_today_vote_callback(tg_token, callback_chat_id, callback_query)
-            elif callback_data.startswith("today_story"):
-                handle_today_story_callback(tg_token, callback_chat_id, callback_query)
-            elif callback_data.startswith("weekly_pattern"):
-                handle_weekly_pattern_callback(tg_token, callback_chat_id, callback_query)
-            elif callback_data.startswith("weekly_improve"):
-                handle_weekly_improve_callback(tg_token, callback_chat_id, callback_query)
-            elif callback_data == "noop":
-                callback_id = callback_query.get("id")
-                if callback_id:
-                    telegram_answer_callback(tg_token, callback_id)
-            elif callback_data.startswith("why:"):
-                parts = callback_data.split(":")
-                day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
-                day_summary = get_day_summary(day_key)
-                telegram_send(tg_token, callback_chat_id, _sanitize_user_text(build_why_message(day_summary.get("snapshot"))), parse_mode="HTML")
-            elif callback_data.startswith("facts:"):
-                parts = callback_data.split(":")
-                if len(parts) >= 3:
-                    slot = parts[1].strip().lower()
-                    day_key = parts[2].strip()
-                    day_summary = get_day_summary(day_key)
-                    snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
-                    partial = day_summary.get("completeness_state") != "FULL"
-                    message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="facts")
-                    telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
-            elif callback_data.startswith("roast:"):
-                parts = callback_data.split(":")
-                if len(parts) >= 3:
-                    slot = parts[1].strip().lower()
-                    day_key = parts[2].strip()
-                    day_summary = get_day_summary(day_key)
-                    snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
-                    partial = day_summary.get("completeness_state") != "FULL"
-                    message = build_push_message(slot=slot, snapshot=snapshot, day_key=day_key, partial=partial, mode="roast")
-                    telegram_send(tg_token, callback_chat_id, _sanitize_user_text(message), parse_mode="HTML")
-            elif callback_data.startswith("what15:"):
-                parts = callback_data.split(":")
-                slot = parts[1].strip().lower() if len(parts) >= 2 else "day"
-                day_key = parts[2].strip() if len(parts) >= 3 else current_day_key()
-                day_summary = get_day_summary(day_key)
-                snapshot = day_summary.get("snapshot") if isinstance(day_summary.get("snapshot"), dict) else {}
-                telegram_send(tg_token, callback_chat_id, _sanitize_user_text(_build_what15_message(slot, snapshot)), parse_mode="HTML")
-            return Response(status_code=200)
-
-        message = data.get("message", {})
-        text = message.get("text", "").strip()
-        message_chat_id = str(message.get("chat", {}).get("id", chat_id))
-
-        if not text:
-            return Response(status_code=200)
-
-        # Acknowledge receipt to prevent Telegram retries
-        # and do the heavy lifting after.
-        # Here we just send a "typing..." indicator.
-        url = f"https://api.telegram.org/bot{tg_token}/sendChatAction"
-        requests.post(url, json={"chat_id": message_chat_id, "action": "typing"})
-
-        if text.lower() == "/color":
-            handle_color_command(tg_token, message_chat_id)
-            return Response(status_code=200)
-        if text.lower() == "/today":
-            handle_today_command(tg_token, message_chat_id)
-            return Response(status_code=200)
-        if text.lower() == "/help":
-            telegram_send(tg_token, message_chat_id, build_help_message(), parse_mode="HTML")
-            return Response(status_code=200)
-        if text.lower() == "/week":
-            handle_week_command(tg_token, message_chat_id)
-            return Response(status_code=200)
-        if text.lower() == "/stats":
-            handle_stats_command(tg_token, message_chat_id)
-            return Response(status_code=200)
-        if text.lower() == "/refresh":
-            handle_refresh_command(tg_token, message_chat_id)
-            return Response(status_code=200)
-        if text.lower() == "/debug_sync":
-            telegram_send(tg_token, message_chat_id, build_debug_sync_message())
-            return Response(status_code=200)
-        if text.lower() == "/debug_sent":
-            telegram_send(tg_token, message_chat_id, _build_debug_sent_message(message_chat_id, current_day_key()))
-            return Response(status_code=200)
-        backfill_days = _parse_backfill_days(text)
-        if backfill_days is not None:
-            if not _is_admin(message_chat_id):
-                telegram_send(tg_token, message_chat_id, "Команда доступна только владельцу/админу.")
-                return Response(status_code=200)
-            stored_days = run_backfill(backfill_days)
-            telegram_send(tg_token, message_chat_id, f"Backfill готов: сохранено {stored_days} дней.")
-            return Response(status_code=200)
-
-        # Load unified day context from cache and use deterministic handlers first
-        history_cache = load_cache()
-        context = build_day_context(cache_data=history_cache)
-        response_msg = _route_structured_reply(text, context, history_cache, chat_id=message_chat_id)
-        if response_msg is None:
-            response_msg = generate_chat_message(
-                env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
-            )
-
-        telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
+        result = process_telegram_update(data, tg_token=tg_token, default_chat_id=chat_id)
+        log.info("webhook_processed result=%s", result)
 
     except Exception:
         log.exception("Webhook processing failed")
@@ -2772,9 +2796,142 @@ def run_serve() -> None:
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
 
 
+def telegram_get_updates(token: str, offset: Optional[int], limit: int = 20, timeout: int = 0) -> List[Dict[str, Any]]:
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    payload: Dict[str, Any] = {"limit": limit, "timeout": timeout}
+    if offset is not None:
+        payload["offset"] = offset
+    response = requests.post(url, json=payload, timeout=15)
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram getUpdates error {response.status_code}: {response.text}")
+    data = response.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram getUpdates rejected: {data}")
+    result = data.get("result", [])
+    return result if isinstance(result, list) else []
+
+
+def _poll_offset_from_state(state: Dict[str, Any]) -> Optional[int]:
+    raw = state.get("offset")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def run_poll_once() -> None:
+    tg_token = env("TELEGRAM_BOT_TOKEN")
+    default_chat_id = env("TELEGRAM_CHAT_ID")
+    state = get_telegram_poll_state()
+    offset = _poll_offset_from_state(state)
+    updates = telegram_get_updates(tg_token, offset=offset, limit=20, timeout=0)
+    processed_count = 0
+    error_count = 0
+    last_error = ""
+    next_offset = offset
+
+    log.info("poll_once_start offset=%s fetched=%s", offset, len(updates))
+    for update in updates:
+        update_id = update.get("update_id")
+        try:
+            result = process_telegram_update(update, tg_token=tg_token, default_chat_id=default_chat_id)
+            processed_count += 1
+            log.info("poll_update_processed update_id=%s result=%s", update_id, result)
+        except Exception as exc:
+            error_count += 1
+            last_error = str(exc)
+            log.exception("poll_update_failed update_id=%s", update_id)
+        finally:
+            if isinstance(update_id, int):
+                next_offset = update_id + 1
+                upsert_telegram_poll_state(
+                    {
+                        "offset": next_offset,
+                        "last_update_id": update_id,
+                        "last_poll_ts": utc_now_iso(),
+                        "processed_count": processed_count,
+                        "last_error": last_error,
+                    }
+                )
+
+    if not updates:
+        upsert_telegram_poll_state(
+            {
+                "offset": offset,
+                "last_poll_ts": utc_now_iso(),
+                "processed_count": 0,
+                "last_error": "",
+            }
+        )
+
+    print(f"poll_once fetched={len(updates)} processed={processed_count} errors={error_count} next_offset={next_offset}")
+
+
+def run_poll_self_check() -> None:
+    problems: List[str] = []
+    workflow_path = os.path.join(".github", "workflows", "chat_poll.yml")
+    if not callable(process_telegram_update):
+        problems.append("process_telegram_update_missing")
+    if not callable(get_telegram_poll_state) or not callable(upsert_telegram_poll_state):
+        problems.append("poll_cache_helpers_missing")
+    if not os.path.exists(workflow_path):
+        problems.append("chat_poll_workflow_missing")
+    else:
+        with open(workflow_path, "r", encoding="utf-8") as f:
+            workflow_text = f.read()
+        required_tokens = [
+            "*/5 * * * *",
+            "python main.py poll-once",
+            "python scripts/gist_upload.py",
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID",
+            "GEMINI_API_KEY",
+            "GEMINI_MODEL",
+            "CACHE_GIST_ID",
+            "GIST_TOKEN",
+            "GARMIN_EMAIL",
+            "GARMIN_PASSWORD",
+        ]
+        for token in required_tokens:
+            if token not in workflow_text:
+                problems.append(f"workflow_missing:{token}")
+
+    sent_messages: List[Tuple[str, str, Optional[str]]] = []
+
+    def fake_send(_token: str, chat_id: str, text: str, parse_mode: Optional[str] = None) -> None:
+        sent_messages.append((chat_id, text, parse_mode))
+
+    original_send = globals()["telegram_send"]
+    original_typing = globals()["_send_typing_action"]
+    try:
+        globals()["telegram_send"] = fake_send
+        globals()["_send_typing_action"] = lambda _token, _chat_id: None
+        result = process_telegram_update(
+            {"update_id": 1, "message": {"text": "/help", "chat": {"id": "self-check"}}},
+            tg_token="token",
+            default_chat_id="self-check",
+        )
+        if result.get("action") != "help":
+            problems.append("fake_update_action_not_help")
+        if not sent_messages or "/today" not in sent_messages[0][1]:
+            problems.append("fake_update_help_not_sent")
+    finally:
+        globals()["telegram_send"] = original_send
+        globals()["_send_typing_action"] = original_typing
+
+    if problems:
+        print("poll-self-check failed")
+        for problem in problems:
+            print(problem)
+        sys.exit(1)
+    print("poll-self-check ok")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|backfill|push|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|backfill|push|poll-once|poll-self-check|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -2825,6 +2982,10 @@ def main() -> None:
         run_push(push_kind, dry_run=dry_run)
     elif mode == "push-self-check":
         run_push_self_check()
+    elif mode == "poll-once":
+        run_poll_once()
+    elif mode == "poll-self-check":
+        run_poll_self_check()
     elif mode == "cache-self-check":
         require_today = False
         require_usable_today = False
@@ -2921,7 +3082,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, backfill, push, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, backfill, push, poll-once, poll-self-check, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)

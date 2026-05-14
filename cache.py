@@ -19,6 +19,7 @@ SYNC_DEBUG_KEY = "_sync_debug"
 USER_PREFS_KEY = "_user_prefs"
 AUTH_STATE_KEY = "_auth_state"
 BOOTSTRAP_STATE_KEY = "_bootstrap_state"
+TELEGRAM_POLL_STATE_KEY = "_telegram_poll_state"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = 14
@@ -1345,6 +1346,23 @@ def upsert_bootstrap_state(payload: Dict[str, Any], chat_id: str = DEFAULT_CHAT_
     existing = state.get(chat_id) if isinstance(state.get(chat_id), dict) else {}
     merged = {**existing, **payload}
     state[chat_id] = merged
+    _write_cache(cache)
+    return merged
+
+
+def get_telegram_poll_state() -> Dict[str, Any]:
+    cache = load_cache()
+    state = cache.get(TELEGRAM_POLL_STATE_KEY)
+    return state if isinstance(state, dict) else {}
+
+
+def upsert_telegram_poll_state(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cache, _ = _load_local_cache()
+    existing = cache.get(TELEGRAM_POLL_STATE_KEY)
+    if not isinstance(existing, dict):
+        existing = {}
+    merged = {**existing, **payload}
+    cache[TELEGRAM_POLL_STATE_KEY] = merged
     _write_cache(cache)
     return merged
 

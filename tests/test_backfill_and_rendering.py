@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import cache
@@ -47,9 +48,11 @@ class BackfillAndRenderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = os.path.join(tmp, "cache.json")
             with patch.object(cache, "CACHE_FILE", cache_path):
+                day_1 = (date.today() - timedelta(days=2)).isoformat()
+                day_2 = (date.today() - timedelta(days=1)).isoformat()
                 payloads = {
-                    "2026-01-01": {"source": "garmin", "date": "2026-01-01", "stress": {"avgStressLevel": 31}},
-                    "2026-01-02": {"source": "garmin", "date": "2026-01-02", "sleep": {"sleepTimeSeconds": 25200}},
+                    day_1: {"source": "garmin", "date": day_1, "stress": {"avgStressLevel": 31}},
+                    day_2: {"source": "garmin", "date": day_2, "sleep": {"sleepTimeSeconds": 25200}},
                 }
                 with patch.object(main, "fetch_range", return_value=payloads):
                     stored = main.run_backfill(90)
@@ -57,8 +60,8 @@ class BackfillAndRenderingTests(unittest.TestCase):
 
         self.assertEqual(stored, 2)
         self.assertEqual(len(cache.history_list(loaded)), 2)
-        self.assertIn("2026-01-01", loaded)
-        self.assertIn("2026-01-02", loaded)
+        self.assertIn(day_1, loaded)
+        self.assertIn(day_2, loaded)
 
     def test_restart_persistence_after_backfill_and_push_no_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,11 +111,13 @@ class BackfillAndRenderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = os.path.join(tmp, "cache.json")
             with patch.object(cache, "CACHE_FILE", cache_path):
-                payloads = {f"2026-01-{i:02d}": {"source": "garmin", "date": f"2026-01-{i:02d}", "stress": {"avgStressLevel": 31}} for i in range(1, 31)}
+                days = [(date.today() - timedelta(days=delta)).isoformat() for delta in range(29, -1, -1)]
+                payloads = {day: {"source": "garmin", "date": day, "stress": {"avgStressLevel": 31}} for day in days}
                 with patch.object(main, "fetch_range", return_value=payloads):
                     main.run_backfill(90)
                 before = len(cache.history_list(cache.load_cache()))
-                cache.upsert_day_snapshot("2026-01-30", {"source": "garmin", "date": "2026-01-30", "sleep": {"sleepTimeSeconds": 25000}})
+                latest_day = days[-1]
+                cache.upsert_day_snapshot(latest_day, {"source": "garmin", "date": latest_day, "sleep": {"sleepTimeSeconds": 25000}})
                 after = len(cache.history_list(cache.load_cache()))
         self.assertGreaterEqual(before, 30)
         self.assertGreaterEqual(after, before)

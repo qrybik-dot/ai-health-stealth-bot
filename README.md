@@ -8,6 +8,7 @@ Coach Potato отправляет короткие data-driven вердикты 
 - Утро: **сначала Color of Day**, затем **Вердикт утра**.
 - Weekly summary по воскресенью вечером (текстовый формат, без сломанной картинки).
 - Ответы на вопросы в чате: сначала компактный вердикт, детализация — только по запросу.
+- Интерактивный чат может работать без Render через Telegram polling в GitHub Actions.
 
 ## Источники данных
 
@@ -112,6 +113,17 @@ API:
 - `GET /miniapp/api/dashboard`
 - `POST /miniapp/api/prefs`
 
+## Chat polling runtime
+
+PR3 добавляет бесплатный runtime для интерактивного чата:
+
+- `python main.py poll-once` — один проход Telegram `getUpdates`.
+- Offset хранится в `cache.json` в `_telegram_poll_state`.
+- `.github/workflows/chat_poll.yml` запускается каждые 5 минут и после polling загружает обновлённый `cache.json` в Gist.
+- Перед включением scheduled polling нужно вручную вызвать Telegram `deleteWebhook`, иначе `getUpdates` может не получать события.
+
+Webhook `/webhook` остаётся совместимым fallback и использует тот же обработчик update.
+
 ### Сброс dedup для тестов
 
 - Удалить нужные ключи из `_push_state` в `cache.json`.
@@ -129,6 +141,7 @@ API:
 - `python -m unittest discover -s tests`
 - `python main.py push-self-check`
 - `python main.py schedule-self-check`
+- `python main.py poll-self-check`
 
 ## Recovery после сбоя sync/cache
 
