@@ -32,6 +32,7 @@ jobs:
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           if [ -z "$CACHE_GIST_ID" ]; then
             echo "CACHE_GIST_ID=missing"
@@ -45,6 +46,32 @@ jobs:
           else
             echo "GIST_TOKEN=present"
           fi
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN=missing"
+            exit 1
+          else
+            echo "TELEGRAM_BOT_TOKEN=present"
+          fi
+
+      - name: Ensure Telegram polling mode
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          response = requests.post(
+              f"https://api.telegram.org/bot{token}/deleteWebhook",
+              json={"drop_pending_updates": False},
+              timeout=15,
+          )
+          print(f"deleteWebhook status={response.status_code}")
+          payload = response.json()
+          if not payload.get("ok"):
+              raise SystemExit(f"deleteWebhook failed: {payload}")
+          PY
 
       - name: Poll Telegram once
         env:

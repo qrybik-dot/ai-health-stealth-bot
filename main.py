@@ -2883,6 +2883,7 @@ def run_poll_self_check() -> None:
             workflow_text = f.read()
         required_tokens = [
             "*/5 * * * *",
+            "deleteWebhook",
             "python main.py poll-once",
             "python scripts/gist_upload.py",
             "TELEGRAM_BOT_TOKEN",
