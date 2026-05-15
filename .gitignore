@@ -3,5 +3,7 @@
 *.pyc
 __pycache__/
 cache.json
+.recovery_ok_to_upload
 .venv/
 venv/
+cloudflare/.wrangler/

@@ -14,8 +14,50 @@
 - `GEMINI_MODEL`
 - `CACHE_GIST_ID`
 - `GIST_TOKEN`
+- `GARMIN_TOKENSTORE` — preferred serialized Garmin session tokenstore.
 
 `GIST_TOKEN` нужен не только для upload, но и для read path: private Gist нельзя надёжно читать через `GITHUB_TOKEN` репозитория. Если `GIST_TOKEN` отсутствует, workflow попробует fallback, но это не считается надёжной recovery-конфигурацией.
+
+`GARMIN_TOKENSTORE` нужен для token-first auth. Recovery workflow блокирует password fallback (`GARMIN_PASSWORD_FALLBACK=0`), чтобы не сжечь попытки входа и не получить Garmin 429 из-за повторных password login.
+
+### Garmin Tokenstore Prep
+
+Локально один раз:
+
+```bash
+python - <<'PY'
+import os
+from garminconnect import Garmin
+api = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"])
+api.login()
+print(api.garth.dumps())
+PY
+```
+
+Скопируйте напечатанную строку в GitHub secret `GARMIN_TOKENSTORE`.
+
+Альтернатива для локального запуска: сохранить токены в директорию и передать путь:
+
+```bash
+python - <<'PY'
+import os
+from garminconnect import Garmin
+api = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"])
+api.login()
+api.garth.dump("~/.garminconnect")
+PY
+export GARMIN_TOKENSTORE_PATH=~/.garminconnect
+```
+
+В логах recovery ищите:
+
+```text
+garmin_auth_token_source ... exists=true
+garmin_auth_token_load_attempt ...
+garmin_auth_token_load_succeeded ...
+```
+
+Если видите `garmin_auth_password_fallback_blocked`, tokenstore не найден или сломан. Если видите `garmin_auth_rate_limited_429`, не повторяйте recovery сразу.
 
 ## Manual Recovery Workflow
 
@@ -59,7 +101,7 @@ Success означает:
 - today key существует;
 - today содержит хотя бы одну ключевую метрику;
 - cache можно прочитать после merge/hydration;
-- Gist обновлён только после успешной проверки.
+- Gist обновлён только после успешной проверки и наличия `.recovery_ok_to_upload`.
 
 ### 3. Staged Backfill
 

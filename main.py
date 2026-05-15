@@ -100,6 +100,16 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+RECOVERY_UPLOAD_OK_FILE = ".recovery_ok_to_upload"
+
+
+class GarminAuthError(RuntimeError):
+    pass
+
+
+class GarminRateLimitError(RuntimeError):
+    pass
+
 
 def env(name: str) -> str:
     v = os.getenv(name)
@@ -192,23 +202,160 @@ def _garmin_last_sync(raw: Dict[str, Any]) -> str:
     return str(raw.get("fetched_at_utc", ""))
 
 
-def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
-    api = Garmin(email, password)
+def _safe_exception_text(exc: Exception) -> str:
+    return re.sub(r"\s+", " ", str(exc)).strip()[:240]
+
+
+def _exception_status_code(exc: Exception) -> Optional[int]:
+    for attr in ("status_code", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    return value if isinstance(value, int) else None
+
+
+def _is_garmin_rate_limit(exc: Exception) -> bool:
+    text = _safe_exception_text(exc).lower()
+    return _exception_status_code(exc) == 429 or "429" in text or "too many requests" in text
+
+
+def _is_garmin_auth_problem(exc: Exception) -> bool:
+    text = _safe_exception_text(exc).lower()
+    return any(token in text for token in ("login", "auth", "credential", "password", "unauthorized", "401", "403"))
+
+
+def _password_fallback_allowed() -> bool:
+    raw = os.getenv("GARMIN_PASSWORD_FALLBACK", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off", "blocked")
+
+
+def _looks_like_token_path(value: str) -> bool:
+    if value.startswith(("~/", "/", "./", "../")):
+        return True
+    expanded = os.path.expanduser(value)
+    return os.path.isdir(expanded)
+
+
+def _garmin_token_candidates() -> List[Tuple[str, str, str]]:
+    candidates: List[Tuple[str, str, str]] = []
     auth_state = get_garmin_auth_state()
     tokenstore = auth_state.get("tokenstore") if isinstance(auth_state, dict) else None
-    try:
-        if isinstance(tokenstore, str) and tokenstore.strip():
-            api.login(tokenstore=tokenstore)
-        else:
-            api.login()
-    except Exception:
-        api.login()
+    if isinstance(tokenstore, str) and tokenstore.strip():
+        candidates.append(("cache:_garmin_auth_state.tokenstore", "serialized", tokenstore.strip()))
+
+    env_tokenstore = os.getenv("GARMIN_TOKENSTORE", "").strip()
+    if env_tokenstore:
+        kind = "path" if _looks_like_token_path(env_tokenstore) else "serialized"
+        candidates.append(("env:GARMIN_TOKENSTORE", kind, env_tokenstore))
+
+    for env_name in ("GARMIN_TOKENSTORE_PATH", "GARMINTOKENS"):
+        env_value = os.getenv(env_name, "").strip()
+        if env_value:
+            candidates.append((f"env:{env_name}", "path", env_value))
+    return candidates
+
+
+def _complete_garmin_session_from_tokens(api: Garmin) -> None:
+    profile = api.garth.profile
+    api.display_name = profile["displayName"]
+    api.full_name = profile["fullName"]
+    settings = api.garth.connectapi("/userprofile-service/userprofile/user-settings")
+    api.unit_system = settings["userData"]["measurementSystem"]
+
+
+def _persist_garmin_tokenstore(api: Garmin, source: str) -> None:
     try:
         serialized = api.garth.dumps() if hasattr(api, "garth") else ""
         if serialized:
             upsert_garmin_auth_state({"tokenstore": serialized})
+            log.info("garmin_tokenstore_persisted source=%s", source)
     except Exception:
         log.warning("garmin_tokenstore_persist_failed", exc_info=True)
+
+
+def _authenticate_garmin(api: Garmin) -> Dict[str, str]:
+    candidates = _garmin_token_candidates()
+    if candidates:
+        for source, kind, _value in candidates:
+            log.info("garmin_auth_token_source source=%s kind=%s exists=true", source, kind)
+    else:
+        log.warning("garmin_auth_token_source exists=false")
+
+    last_error: Optional[Exception] = None
+    for source, kind, value in candidates:
+        log.info("garmin_auth_token_load_attempt source=%s kind=%s", source, kind)
+        try:
+            if kind == "serialized":
+                api.garth.loads(value)
+                _complete_garmin_session_from_tokens(api)
+            else:
+                api.login(tokenstore=value)
+            log.info("garmin_auth_token_load_succeeded source=%s", source)
+            _persist_garmin_tokenstore(api, source)
+            return {"method": "token", "source": source, "fallback": "false"}
+        except Exception as exc:
+            if _is_garmin_rate_limit(exc):
+                log.error("garmin_auth_rate_limited_429 source=%s error=%s", source, _safe_exception_text(exc))
+                raise GarminRateLimitError("Garmin 429 Too Many Requests during token auth; stop recovery and retry later") from exc
+            last_error = exc
+            log.warning(
+                "garmin_auth_token_load_failed source=%s kind=%s error_type=%s error=%s",
+                source,
+                kind,
+                type(exc).__name__,
+                _safe_exception_text(exc),
+            )
+
+    if not _password_fallback_allowed():
+        log.error("garmin_auth_password_fallback_blocked token_sources_attempted=%s", len(candidates))
+        raise GarminAuthError("Garmin token auth failed or missing; password fallback is blocked") from last_error
+
+    log.warning("garmin_auth_password_fallback_used token_sources_attempted=%s", len(candidates))
+    try:
+        api.login()
+    except Exception as exc:
+        if _is_garmin_rate_limit(exc):
+            log.error("garmin_auth_rate_limited_429 source=password_fallback error=%s", _safe_exception_text(exc))
+            raise GarminRateLimitError("Garmin 429 Too Many Requests during password auth; stop recovery and retry later") from exc
+        raise GarminAuthError("Garmin password auth failed") from exc
+    _persist_garmin_tokenstore(api, "password_fallback")
+    return {"method": "password", "source": "password_fallback", "fallback": "true"}
+
+
+def _fetch_garmin_metric(api: Garmin, method_name: str, day: str, metric: str) -> Any:
+    method = getattr(api, method_name, None)
+    if not callable(method):
+        return None
+    try:
+        return method(day)
+    except Exception as exc:
+        if _is_garmin_rate_limit(exc):
+            log.error("garmin_api_rate_limited_429 metric=%s error=%s", metric, _safe_exception_text(exc))
+            raise GarminRateLimitError(f"Garmin 429 Too Many Requests while fetching {metric}; stop recovery and retry later") from exc
+        raise
+
+
+def _clear_recovery_upload_guard() -> None:
+    try:
+        if os.path.exists(RECOVERY_UPLOAD_OK_FILE):
+            os.remove(RECOVERY_UPLOAD_OK_FILE)
+    except OSError:
+        log.warning("recovery_upload_guard_clear_failed", exc_info=True)
+
+
+def _mark_recovery_upload_ok(stage: str) -> None:
+    try:
+        with open(RECOVERY_UPLOAD_OK_FILE, "w", encoding="utf-8") as f:
+            json.dump({"stage": stage, "ts": utc_now_iso()}, f)
+    except OSError:
+        log.warning("recovery_upload_guard_write_failed", exc_info=True)
+
+
+def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
+    api = Garmin(email, password)
+    auth_info = _authenticate_garmin(api)
 
     today = current_day_key()
     out: Dict[str, Any] = {
@@ -216,6 +363,8 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
         "date": today,
         "fetched_at_utc": utc_now_iso(),
         "last_sync_time": utc_now_iso(),
+        "auth_method": auth_info["method"],
+        "auth_source": auth_info["source"],
         "errors": [],
     }
 
@@ -242,7 +391,9 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
         if not callable(method):
             continue
         try:
-            out[key] = method(today)
+            out[key] = _fetch_garmin_metric(api, method_name, today, key)
+        except GarminRateLimitError:
+            raise
         except Exception as e:
             out["errors"].append({"metric": key, "error": str(e)})
 
@@ -285,6 +436,7 @@ def generate_message(
 
 def run_sync() -> None:
     log.info("Sync started")
+    _clear_recovery_upload_guard()
     run_id = _new_run_id("sync")
     garmin_email = env("GARMIN_EMAIL")
     garmin_password = env("GARMIN_PASSWORD")
@@ -314,13 +466,15 @@ def run_sync() -> None:
             "gist_upload_status": "pending_external_workflow_step",
         }
         log_sync_trace(run_id, trace)
+        _mark_recovery_upload_ok("sync")
         log.info("Sync ok run_id=%s updated_blocks=%s", run_id, diff["updated_blocks"])
     except Exception as e:
-        msg = str(e).lower()
-        is_auth_problem = "login" in msg or "auth" in msg or "credential" in msg or "password" in msg
-        if is_auth_problem:
-            log.error("Sync failed: Garmin credentials rejected, cache untouched")
-            raise RuntimeError("Garmin credentials are invalid or rejected") from e
+        if isinstance(e, GarminRateLimitError):
+            log.error("Sync failed: Garmin 429 rate limit, cache untouched")
+            raise
+        if isinstance(e, GarminAuthError) or _is_garmin_auth_problem(e):
+            log.error("Sync failed: Garmin auth failed, cache untouched")
+            raise GarminAuthError("Garmin auth failed; check tokenstore or explicit password fallback") from e
         log.exception("Sync failed")
         error_data = {
             "source": "garmin",
@@ -1932,21 +2086,7 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
     garmin_email = env("GARMIN_EMAIL")
     garmin_password = env("GARMIN_PASSWORD")
     api = Garmin(garmin_email, garmin_password)
-    auth_state = get_garmin_auth_state()
-    tokenstore = auth_state.get("tokenstore") if isinstance(auth_state, dict) else None
-    try:
-        if isinstance(tokenstore, str) and tokenstore.strip():
-            api.login(tokenstore=tokenstore)
-        else:
-            api.login()
-    except Exception:
-        api.login()
-    try:
-        serialized = api.garth.dumps() if hasattr(api, "garth") else ""
-        if serialized:
-            upsert_garmin_auth_state({"tokenstore": serialized})
-    except Exception:
-        log.warning("garmin_tokenstore_persist_failed", exc_info=True)
+    auth_info = _authenticate_garmin(api)
 
     now_msk = _now_msk()
     out: Dict[str, Dict[str, Any]] = {}
@@ -1974,6 +2114,8 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
             "date": day,
             "fetched_at_utc": utc_now_iso(),
             "last_sync_time": utc_now_iso(),
+            "auth_method": auth_info["method"],
+            "auth_source": auth_info["source"],
             "errors": [],
         }
         for key, method_name in calls.items():
@@ -1981,7 +2123,9 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
             if not callable(method):
                 continue
             try:
-                payload[key] = method(day)
+                payload[key] = _fetch_garmin_metric(api, method_name, day, key)
+            except GarminRateLimitError:
+                raise
             except Exception as e:
                 payload["errors"].append({"metric": key, "error": str(e)})
         out[day] = payload
@@ -1994,12 +2138,14 @@ def fetch_range(days: int) -> Dict[str, Dict[str, Any]]:
 
 
 def run_backfill(days: int = 30) -> int:
+    _clear_recovery_upload_guard()
     day_payloads = fetch_range(days)
     stored = 0
     for day_key in sorted(day_payloads.keys()):
         upsert_day_snapshot(day_key, day_payloads[day_key])
         stored += 1
     log.info("backfill stored days=%s requested=%s", stored, days)
+    _mark_recovery_upload_ok("backfill")
     return stored
 
 
@@ -2293,6 +2439,13 @@ def handle_refresh_command(tg_token: str, chat_id: str) -> None:
     except Exception:
         log.exception("refresh command failed")
         err_text = str(sys.exc_info()[1] or "")
+        if "429" in err_text or "too many requests" in err_text.lower():
+            telegram_send(
+                tg_token,
+                chat_id,
+                "Garmin ограничил запросы. Кэш не изменял, повтори позже.",
+            )
+            return
         if "Missing env var" in err_text or "credentials" in err_text.lower():
             telegram_send(
                 tg_token,

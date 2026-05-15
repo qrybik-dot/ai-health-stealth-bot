@@ -30,6 +30,11 @@ def main() -> None:
     if not os.path.exists(cache_path):
         raise RuntimeError("cache.json not found (sync step did not produce it)")
 
+    guard_required = os.getenv("REQUIRE_RECOVERY_UPLOAD_OK", "").strip().lower() in ("1", "true", "yes")
+    guard_path = os.getenv("RECOVERY_UPLOAD_OK_FILE", ".recovery_ok_to_upload")
+    if guard_required and not os.path.exists(guard_path):
+        raise RuntimeError(f"recovery upload guard missing: {guard_path}")
+
     with open(cache_path, "r", encoding="utf-8") as f:
         content = f.read()
 
