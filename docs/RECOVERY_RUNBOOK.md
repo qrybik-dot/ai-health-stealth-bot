@@ -93,20 +93,55 @@ python main.py cache-self-check --require-today --require-usable-today --min-his
 - Если scheduled sync начал падать из-за Garmin auth/rate-limit, временно disable workflow schedule и чините auth.
 - Не удаляйте Gist и Firestore paths в recovery phase: они нужны как rollback bridge.
 
-## Chat Polling Runtime
+## Chat Runtime
 
-PR3 возвращает interactive Telegram chat без Render:
+Основной runtime для интерактивного Telegram-чата: Cloudflare Worker webhook.
+
+GitHub Actions polling оставлен только как ручной fallback. Не включайте scheduled polling вместе с Cloudflare webhook: polling вызывает `deleteWebhook` и ломает webhook-режим.
+
+### Cloudflare Webhook Setup
+
+1. Deploy Worker из каталога `cloudflare/`.
+2. Задайте Worker secrets:
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+   - `WEBHOOK_SECRET`
+   - `CACHE_GIST_ID`
+   - `GIST_TOKEN`
+   - optional: `GITHUB_DISPATCH_TOKEN`
+   - optional: `GITHUB_REPO=qrybik-dot/ai-health-stealth-bot`
+3. Проверьте health:
+
+```text
+https://<worker-url>/health
+```
+
+4. Установите Telegram webhook:
+
+```text
+https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<worker-url>/telegram/<WEBHOOK_SECRET>
+```
+
+5. Напишите боту `/help`, затем `/today`, затем нажмите `По фактам`.
+
+Rollback:
+
+- Удалите webhook через Telegram `deleteWebhook`.
+- Запустите вручную GitHub Actions -> **Chat Polling Runtime**.
+
+### Manual Polling Fallback
+
+GitHub Actions polling работает, но не гарантирует realtime-ответы. Используйте только для аварийной проверки:
 
 1. Убедитесь, что secrets заданы: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `CACHE_GIST_ID`, `GIST_TOKEN`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`.
 2. Запустите GitHub Actions -> **Chat Polling Runtime** -> **Run workflow**.
 3. Workflow сам вызовет Telegram `deleteWebhook` с `drop_pending_updates=false`, затем выполнит `getUpdates`.
 4. Проверьте лог `python main.py poll-once`: ожидается строка вида `poll_once fetched=... processed=... errors=... next_offset=...`.
-5. После ручной проверки оставьте schedule `*/5 * * * *` включённым.
 
 Offset хранится в `cache.json` под `_telegram_poll_state` и загружается в Gist после каждого polling run. Если отдельный update падает, offset всё равно продвигается, чтобы GitHub Actions не повторял один и тот же сломанный update бесконечно.
 
 Rollback:
 
 - Disable workflow **Chat Polling Runtime**.
-- При возврате к webhook заново установите Telegram webhook на нужный runtime endpoint и отключите polling workflow, иначе workflow снова удалит webhook.
+- При возврате к webhook заново установите Telegram webhook на нужный runtime endpoint.
 - Не удаляйте `_telegram_poll_state`: он безвреден и нужен для повторного включения polling.

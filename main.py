@@ -2902,8 +2902,8 @@ def run_poll_self_check() -> None:
         with open(workflow_path, "r", encoding="utf-8") as f:
             workflow_text = f.read()
         required_tokens = [
-            "*/5 * * * *",
             "deleteWebhook",
+            "workflow_dispatch",
             "python main.py poll-once",
             "python scripts/gist_upload.py",
             "TELEGRAM_BOT_TOKEN",
@@ -2918,6 +2918,8 @@ def run_poll_self_check() -> None:
         for token in required_tokens:
             if token not in workflow_text:
                 problems.append(f"workflow_missing:{token}")
+        if "schedule:" in workflow_text or "cron:" in workflow_text:
+            problems.append("workflow_must_not_schedule_polling")
 
     sent_messages: List[Tuple[str, str, Optional[str]]] = []
 

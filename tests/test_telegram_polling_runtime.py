@@ -158,7 +158,10 @@ class TelegramPollingRuntimeTests(unittest.TestCase):
     def test_chat_poll_workflow_contains_required_runtime_contract(self):
         with open(".github/workflows/chat_poll.yml", "r", encoding="utf-8") as f:
             workflow = f.read()
-        self.assertIn('cron: "*/5 * * * *"', workflow)
+        self.assertIn("workflow_dispatch", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("cron:", workflow)
+        self.assertIn("deleteWebhook", workflow)
         self.assertIn("python main.py poll-once", workflow)
         self.assertIn("python scripts/gist_upload.py", workflow)
         for secret_name in (

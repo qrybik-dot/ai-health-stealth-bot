@@ -46,7 +46,7 @@ class SnapshotMergeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = os.path.join(tmp, "cache.json")
             with patch.object(cache, "CACHE_FILE", cache_path):
-                day = "2026-01-14"
+                day = dt.date.today().isoformat()
                 cache.upsert_day_snapshot(day, {
                     "source": "garmin",
                     "date": day,

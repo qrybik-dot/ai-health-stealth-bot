@@ -8,7 +8,7 @@ Coach Potato отправляет короткие data-driven вердикты 
 - Утро: **сначала Color of Day**, затем **Вердикт утра**.
 - Weekly summary по воскресенью вечером (текстовый формат, без сломанной картинки).
 - Ответы на вопросы в чате: сначала компактный вердикт, детализация — только по запросу.
-- Интерактивный чат может работать без Render через Telegram polling в GitHub Actions.
+- Интерактивный чат работает без Render через Cloudflare Worker webhook.
 
 ## Источники данных
 
@@ -113,16 +113,21 @@ API:
 - `GET /miniapp/api/dashboard`
 - `POST /miniapp/api/prefs`
 
-## Chat polling runtime
+## Chat runtime
 
-PR3 добавляет бесплатный runtime для интерактивного чата:
+Основной runtime для интерактивного чата:
+
+- Cloudflare Worker: `cloudflare/telegram-webhook-worker.js`.
+- Telegram webhook: `/telegram/<WEBHOOK_SECRET>`.
+- Worker читает `cache.json` из private Gist и отвечает сразу на `/help`, `/today`, `/color`, `/week`, `/stats`, `/debug_sync`, `/debug_sent`.
+- `/refresh` может запускать GitHub Actions recovery sync, если задан `GITHUB_DISPATCH_TOKEN`.
+
+Ручной fallback:
 
 - `python main.py poll-once` — один проход Telegram `getUpdates`.
 - Offset хранится в `cache.json` в `_telegram_poll_state`.
-- `.github/workflows/chat_poll.yml` запускается каждые 5 минут и после polling загружает обновлённый `cache.json` в Gist.
-- Workflow сам вызывает Telegram `deleteWebhook` перед polling, чтобы старый webhook не конфликтовал с `getUpdates`.
-
-Webhook `/webhook` остаётся совместимым fallback и использует тот же обработчик update.
+- `.github/workflows/chat_poll.yml` запускается только вручную и после polling загружает обновлённый `cache.json` в Gist.
+- Polling workflow вызывает Telegram `deleteWebhook`, поэтому не включайте его как schedule вместе с Cloudflare webhook.
 
 ### Сброс dedup для тестов
 
