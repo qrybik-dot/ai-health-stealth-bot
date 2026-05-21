@@ -72,6 +72,13 @@ class GarminAuthRecoveryTests(unittest.TestCase):
 
         self.assertIn("429", str(caught.exception))
 
+    def test_ci_sync_requires_tokenstore_before_auth(self):
+        with patch.dict(os.environ, {"CI": "true"}, clear=False), \
+             patch.object(main, "get_garmin_auth_state", return_value={}):
+            with self.assertRaises(main.GarminAuthError) as caught:
+                main._guard_ci_tokenstore_requirement()
+        self.assertIn("CI tokenstore guard", str(caught.exception))
+
     def test_recovery_gist_upload_requires_success_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             cwd = os.getcwd()

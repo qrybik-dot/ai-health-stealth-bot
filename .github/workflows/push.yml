@@ -38,11 +38,17 @@ jobs:
       - name: Preflight env check (safe)
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ -z "$CACHE_GIST_ID" ]; then
             echo "CACHE_GIST_ID=missing"
           else
             echo "CACHE_GIST_ID=present"
+          fi
+          if [ "$EVENT_NAME" = "schedule" ] && [ -z "$GARMIN_TOKENSTORE" ]; then
+            echo "GARMIN_TOKENSTORE=missing (scheduled push blocked)"
+            exit 1
           fi
 
       - name: Push (decide kind in code)

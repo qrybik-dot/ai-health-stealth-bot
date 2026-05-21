@@ -59,6 +59,20 @@ garmin_auth_token_load_succeeded ...
 
 Если видите `garmin_auth_password_fallback_blocked`, tokenstore не найден или сломан. Если видите `garmin_auth_rate_limited_429`, не повторяйте recovery сразу.
 
+### После Garmin 429 (обязательно)
+
+1. Сразу выключите scheduled workflows: **Sync Garmin Cache** и **Push Daily Insights**.
+2. Проверьте очередь запусков, чтобы не осталось автоповторов:
+
+```bash
+gh run list --workflow sync.yml --limit 20
+gh run list --workflow push.yml --limit 20
+```
+
+3. Не повторяйте password login в CI/локально до окончания cooldown.
+4. После cooldown заново создайте свежий `GARMIN_TOKENSTORE` и сохраните в GitHub Secret.
+5. Включайте scheduled workflows только после успешного ручного `Recovery Controls -> sync`.
+
 ## Manual Recovery Workflow
 
 Откройте GitHub Actions -> **Recovery Controls** -> **Run workflow**.
@@ -123,6 +137,8 @@ python main.py cache-self-check --require-today --require-usable-today --min-his
 
 Обычный `.github/workflows/sync.yml` теперь:
 
+- требует `GARMIN_TOKENSTORE` до `python main.py sync` (иначе fail-fast);
+- запускает sync с `GARMIN_PASSWORD_FALLBACK=0`, чтобы не уходить в password login;
 - передаёт `GIST_TOKEN` в `Run sync`, чтобы sync мог прочитать existing Gist;
 - запускает `cache-self-check --require-today --require-usable-today`;
 - загружает `cache.json` в Gist только после успешной проверки.

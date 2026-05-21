@@ -32,11 +32,18 @@ jobs:
       - name: Preflight env check (safe)
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
         run: |
           if [ -z "$CACHE_GIST_ID" ]; then
             echo "CACHE_GIST_ID=missing"
           else
             echo "CACHE_GIST_ID=present"
+          fi
+          if [ -z "$GARMIN_TOKENSTORE" ]; then
+            echo "GARMIN_TOKENSTORE=missing"
+            exit 1
+          else
+            echo "GARMIN_TOKENSTORE=present"
           fi
 
       - name: Run sync
@@ -45,6 +52,7 @@ jobs:
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
           GARMIN_TOKENSTORE_PATH: ${{ secrets.GARMIN_TOKENSTORE_PATH }}
+          GARMIN_PASSWORD_FALLBACK: "0"
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
