@@ -231,6 +231,25 @@ def _password_fallback_allowed() -> bool:
     return raw not in ("0", "false", "no", "off", "blocked")
 
 
+def _ci_requires_tokenstore() -> bool:
+    return os.getenv("CI", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _has_any_garmin_tokenstore_source() -> bool:
+    return bool(_garmin_token_candidates())
+
+
+def _guard_ci_tokenstore_requirement() -> None:
+    if not _ci_requires_tokenstore():
+        return
+    if _has_any_garmin_tokenstore_source():
+        return
+    raise GarminAuthError(
+        "CI tokenstore guard: GARMIN_TOKENSTORE (or GARMIN_TOKENSTORE_PATH/GARMINTOKENS) is required; "
+        "password login is forbidden"
+    )
+
+
 def _looks_like_token_path(value: str) -> bool:
     if value.startswith(("~/", "/", "./", "../")):
         return True
@@ -440,6 +459,7 @@ def run_sync() -> None:
     run_id = _new_run_id("sync")
     garmin_email = env("GARMIN_EMAIL")
     garmin_password = env("GARMIN_PASSWORD")
+    _guard_ci_tokenstore_requirement()
     day_key = current_day_key()
     source_fetch_ts = utc_now_iso()
     try:
