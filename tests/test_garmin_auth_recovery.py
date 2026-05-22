@@ -64,6 +64,24 @@ class GarminAuthRecoveryTests(unittest.TestCase):
 
         self.assertEqual(api.login_calls, [])
 
+    def test_refresh_blocks_before_password_login_without_tokenstore(self):
+        with patch.object(main, "get_garmin_auth_state", return_value={}), \
+             patch.dict(os.environ, {"GARMIN_PASSWORD_FALLBACK": "0"}, clear=False), \
+             patch.object(main, "Garmin") as garmin:
+            with self.assertRaises(main.GarminAuthError):
+                main.refresh_available_data()
+
+        garmin.assert_not_called()
+
+    def test_backfill_blocks_before_password_login_without_tokenstore(self):
+        with patch.object(main, "get_garmin_auth_state", return_value={}), \
+             patch.dict(os.environ, {"GARMIN_PASSWORD_FALLBACK": "0"}, clear=False), \
+             patch.object(main, "Garmin") as garmin:
+            with self.assertRaises(main.GarminAuthError):
+                main.run_backfill(7)
+
+        garmin.assert_not_called()
+
     def test_garmin_429_becomes_actionable_rate_limit_error(self):
         api = FakeGarmin(login_error=RuntimeError("429 Too Many Requests"))
         with patch.object(main, "get_garmin_auth_state", return_value={}):

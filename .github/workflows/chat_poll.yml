@@ -77,8 +77,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_PASSWORD_FALLBACK: "0"
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

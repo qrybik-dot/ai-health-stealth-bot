@@ -171,10 +171,11 @@ class TelegramPollingRuntimeTests(unittest.TestCase):
             "GEMINI_MODEL",
             "CACHE_GIST_ID",
             "GIST_TOKEN",
-            "GARMIN_EMAIL",
-            "GARMIN_PASSWORD",
         ):
             self.assertIn(secret_name, workflow)
+        self.assertIn('GARMIN_PASSWORD_FALLBACK: "0"', workflow)
+        self.assertNotIn("GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}", workflow)
+        self.assertNotIn("GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}", workflow)
 
 
 if __name__ == "__main__":

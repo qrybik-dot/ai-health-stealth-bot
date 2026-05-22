@@ -143,10 +143,16 @@ API:
 
 ## Проверка
 
-- `python -m unittest discover -s tests`
-- `python main.py push-self-check`
-- `python main.py schedule-self-check`
-- `python main.py poll-self-check`
+Локально используйте Python 3.11, как в GitHub Actions:
+
+- `python3.11 -m venv .venv`
+- `.venv/bin/python -m pip install -r requirements.txt`
+- `.venv/bin/python -m unittest discover -s tests`
+- `.venv/bin/python main.py push-self-check`
+- `.venv/bin/python main.py schedule-self-check`
+- `.venv/bin/python main.py poll-self-check`
+
+Canonical sync workflow находится в `.github/workflows/sync.yml`; корневой `sync.yml` не используется.
 
 ## Recovery после сбоя sync/cache
 

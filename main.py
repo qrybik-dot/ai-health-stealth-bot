@@ -250,6 +250,13 @@ def _guard_ci_tokenstore_requirement() -> None:
     )
 
 
+def _block_garmin_password_login_without_tokens(source: str) -> None:
+    if _has_any_garmin_tokenstore_source() or _password_fallback_allowed():
+        return
+    log.error("garmin_password_login_blocked source=%s reason=no_tokenstore", source)
+    raise GarminAuthError("Garmin tokenstore is required; password login is blocked")
+
+
 def _looks_like_token_path(value: str) -> bool:
     if value.startswith(("~/", "/", "./", "../")):
         return True
@@ -2103,6 +2110,7 @@ def _parse_backfill_days(text: str) -> Optional[int]:
 
 
 def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
+    _block_garmin_password_login_without_tokens("backfill")
     garmin_email = env("GARMIN_EMAIL")
     garmin_password = env("GARMIN_PASSWORD")
     api = Garmin(garmin_email, garmin_password)
@@ -2265,6 +2273,7 @@ def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> Li
 
 
 def refresh_available_data() -> Dict[str, Any]:
+    _block_garmin_password_login_without_tokens("refresh")
     run_id = _new_run_id("refresh")
     day_key = current_day_key()
     source_fetch_ts = utc_now_iso()
@@ -2975,11 +2984,12 @@ async def webhook(request: Request):
 # --- CLI ---
 def run_serve() -> None:
     """Starts the Uvicorn server."""
-    try:
-        bootstrap = ensure_history_bootstrap(target_days=90)
-        log.info("history bootstrap status=%s seen=%s target=%s", bootstrap.get("status"), bootstrap.get("history_days_seen"), bootstrap.get("target_days"))
-    except Exception:
-        log.exception("History bootstrap failed")
+    if os.getenv("ENABLE_HISTORY_BOOTSTRAP", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            bootstrap = ensure_history_bootstrap(target_days=90)
+            log.info("history bootstrap status=%s seen=%s target=%s", bootstrap.get("status"), bootstrap.get("history_days_seen"), bootstrap.get("target_days"))
+        except Exception:
+            log.exception("History bootstrap failed")
     try:
         ensure_bot_commands(env("TELEGRAM_BOT_TOKEN"))
         log.info("Telegram commands ensured")
@@ -3085,12 +3095,17 @@ def run_poll_self_check() -> None:
             "GEMINI_MODEL",
             "CACHE_GIST_ID",
             "GIST_TOKEN",
-            "GARMIN_EMAIL",
-            "GARMIN_PASSWORD",
+            'GARMIN_PASSWORD_FALLBACK: "0"',
         ]
         for token in required_tokens:
             if token not in workflow_text:
                 problems.append(f"workflow_missing:{token}")
+        for token in (
+            "GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}",
+            "GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}",
+        ):
+            if token in workflow_text:
+                problems.append(f"workflow_forbidden:{token}")
         if "schedule:" in workflow_text or "cron:" in workflow_text:
             problems.append("workflow_must_not_schedule_polling")
 
