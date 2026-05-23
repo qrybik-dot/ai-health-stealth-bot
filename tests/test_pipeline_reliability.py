@@ -62,6 +62,34 @@ class PipelineReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["source"], "local_fallback")
         self.assertIn("2026-01-14", data)
 
+    def test_truncated_gist_content_fetches_raw_url(self):
+        api_resp = Mock()
+        api_resp.status_code = 200
+        api_resp.json.return_value = {
+            "files": {
+                "cache.json": {
+                    "content": '{"2026-01-14":',
+                    "truncated": True,
+                    "raw_url": "https://gist.githubusercontent.com/raw/cache.json",
+                }
+            }
+        }
+        raw_resp = Mock()
+        raw_resp.status_code = 200
+        raw_resp.text = '{"2026-01-14":{"sleep":{"sleepTimeSeconds":24000}}}'
+        raw_resp.raise_for_status.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "cache.json")
+            with patch.object(cache, "CACHE_FILE", cache_path):
+                with patch.dict(os.environ, {"CACHE_GIST_ID": "x", "GIST_TOKEN": "t"}, clear=False):
+                    with patch("cache.requests.get", side_effect=[api_resp, raw_resp]):
+                        data, meta = cache.load_cache_with_meta()
+
+        self.assertEqual(meta["source"], "gist")
+        self.assertTrue(meta["available"])
+        self.assertIn("2026-01-14", data)
+
     def test_push_timing_and_manual_not_breaking_scheduled(self):
         tz = dt.timezone(dt.timedelta(hours=3))
         now = dt.datetime(2026, 1, 14, 9, 20, tzinfo=tz)

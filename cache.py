@@ -249,7 +249,18 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 })
 
             gist_data = response.json()
-            content = gist_data["files"]["cache.json"]["content"]
+            cache_file = gist_data["files"]["cache.json"]
+            content = cache_file.get("content", "")
+            if cache_file.get("truncated"):
+                raw_url = cache_file.get("raw_url")
+                if not raw_url:
+                    raise KeyError("cache.json raw_url missing for truncated gist content")
+                raw_response = requests.get(raw_url, headers=headers, timeout=10)
+                print(
+                    f"cache gist raw fetch: gist_id={gist_id} selected_token_source={token_source} token_present={token_present} http_status={raw_response.status_code}"
+                )
+                raw_response.raise_for_status()
+                content = raw_response.text
             cache = json.loads(content)
             if isinstance(cache, dict):
                 local_cache, local_meta = _load_local_cache()
