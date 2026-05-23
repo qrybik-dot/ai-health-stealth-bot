@@ -283,17 +283,45 @@ def _garmin_token_candidates() -> List[Tuple[str, str, str]]:
     return candidates
 
 
+def _garmin_session(api: Garmin) -> Any:
+    session = getattr(api, "garth", None)
+    if session is not None:
+        return session
+    session = getattr(api, "client", None)
+    if session is not None:
+        return session
+    raise GarminAuthError("Garmin client does not expose a token session")
+
+
 def _complete_garmin_session_from_tokens(api: Garmin) -> None:
-    profile = api.garth.profile
-    api.display_name = profile["displayName"]
-    api.full_name = profile["fullName"]
-    settings = api.garth.connectapi("/userprofile-service/userprofile/user-settings")
-    api.unit_system = settings["userData"]["measurementSystem"]
+    session = _garmin_session(api)
+    profile = getattr(session, "profile", None)
+    if profile is None:
+        profile = session.connectapi("/userprofile-service/socialProfile")
+    api.display_name = profile.get("displayName", getattr(api, "username", ""))
+    api.full_name = profile.get("fullName", "")
+    settings = session.connectapi("/userprofile-service/userprofile/user-settings")
+    api.unit_system = settings.get("userData", {}).get("measurementSystem")
+
+
+def _load_garmin_tokenstore(api: Garmin, kind: str, value: str) -> None:
+    session = _garmin_session(api)
+    if kind == "serialized":
+        session.loads(value)
+    else:
+        load = getattr(session, "load", None)
+        if callable(load):
+            load(value)
+        else:
+            api.login(tokenstore=value)
+            return
+    _complete_garmin_session_from_tokens(api)
 
 
 def _persist_garmin_tokenstore(api: Garmin, source: str) -> None:
     try:
-        serialized = api.garth.dumps() if hasattr(api, "garth") else ""
+        session = _garmin_session(api)
+        serialized = session.dumps() if hasattr(session, "dumps") else ""
         if serialized:
             upsert_garmin_auth_state({"tokenstore": serialized})
             log.info("garmin_tokenstore_persisted source=%s", source)
@@ -313,11 +341,7 @@ def _authenticate_garmin(api: Garmin) -> Dict[str, str]:
     for source, kind, value in candidates:
         log.info("garmin_auth_token_load_attempt source=%s kind=%s", source, kind)
         try:
-            if kind == "serialized":
-                api.garth.loads(value)
-                _complete_garmin_session_from_tokens(api)
-            else:
-                api.login(tokenstore=value)
+            _load_garmin_tokenstore(api, kind, value)
             log.info("garmin_auth_token_load_succeeded source=%s", source)
             _persist_garmin_tokenstore(api, source)
             return {"method": "token", "source": source, "fallback": "false"}
