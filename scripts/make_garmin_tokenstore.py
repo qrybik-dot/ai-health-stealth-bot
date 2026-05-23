@@ -14,11 +14,13 @@ def _session(api: Garmin):
 
 
 def main() -> int:
-    email = input("Garmin email: ").strip()
+    print("Garmin email: ", end="", file=sys.stderr, flush=True)
+    email = input().strip()
     password = getpass("Garmin password: ")
 
     def prompt_mfa() -> str:
-        return input("Garmin MFA code: ").strip()
+        print("Garmin MFA code: ", end="", file=sys.stderr, flush=True)
+        return input().strip()
 
     try:
         api = Garmin(email, password, prompt_mfa=prompt_mfa)
