@@ -150,7 +150,29 @@ class PipelineReliabilityTests(unittest.TestCase):
         self.assertIn("2026-02-27", merged)
         self.assertIn("2026-02-28", merged)
         self.assertIn("_today_votes", merged)
+        self.assertIn("_weekly_state", merged)
         self.assertEqual(merged["_today_votes"], {"a": 1})
+        self.assertEqual(merged["_weekly_state"], {"x": 1})
+
+    def test_gist_and_local_service_state_are_merged_with_local_precedence(self):
+        gist_cache = {
+            "_push_state": {
+                "2026-02-28|chat|morning|verdict": {"run_id": "old"},
+                "weekly|2026-W09|chat": {"ts": "old"},
+            },
+            "_weekly_state": {"2026-W09": {"week_id": "2026-W09"}},
+        }
+        local_cache = {
+            "_push_state": {
+                "2026-02-28|chat|morning|verdict": {"run_id": "new"},
+                "2026-02-28|chat|midday|verdict": {"run_id": "new"},
+            }
+        }
+        merged = cache._merge_runtime_cache(gist_cache, local_cache)
+        self.assertEqual(merged["_push_state"]["2026-02-28|chat|morning|verdict"]["run_id"], "new")
+        self.assertIn("weekly|2026-W09|chat", merged["_push_state"])
+        self.assertIn("2026-02-28|chat|midday|verdict", merged["_push_state"])
+        self.assertEqual(merged["_weekly_state"], {"2026-W09": {"week_id": "2026-W09"}})
     def test_weekly_stability_fingerprint_same_without_new_source(self):
         now = dt.datetime(2026, 1, 18, 20, 0)
         history = {

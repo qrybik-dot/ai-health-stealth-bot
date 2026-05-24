@@ -80,11 +80,18 @@ def _merge_runtime_cache(gist_cache: Dict[str, Any], local_cache: Dict[str, Any]
     """
     Builds a single runtime cache source of truth:
     - daily snapshots: union by date key with freshness-aware merge
-    - service keys (_*): keep local to preserve bot interaction state
+    - service keys (_*): preserve Gist state, then overlay local runtime changes
     """
     merged: Dict[str, Any] = {}
+    for key, value in gist_cache.items():
+        if key.startswith("_"):
+            merged[key] = value
+
     for key, value in local_cache.items():
-        merged[key] = value
+        if key.startswith("_") and isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
 
     for key, gist_value in gist_cache.items():
         if key.startswith("_"):
