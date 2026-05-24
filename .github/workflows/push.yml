@@ -29,6 +29,7 @@ jobs:
         run: |
           echo "event=${{ github.event_name }}"
           echo "ref=${{ github.ref }}"
+          echo "schedule=${{ github.event.schedule }}"
 
       - name: Install deps
         run: |
@@ -60,4 +61,19 @@ jobs:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSH_SCHEDULE_CRON: ${{ github.event.schedule }}
         run: python main.py push scheduled
+
+      - name: Persist push state to Gist
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUIRE_RECOVERY_UPLOAD_OK: "1"
+          RECOVERY_UPLOAD_OK_FILE: ".push_ok_to_upload"
+        run: |
+          if [ -f ".push_ok_to_upload" ]; then
+            python scripts/gist_upload.py
+          else
+            echo "push upload skipped: no local cache mutation"
+          fi

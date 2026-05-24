@@ -332,6 +332,16 @@ def _write_cache(cache: Dict[str, Any]) -> None:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+def persist_cache_snapshot(cache_payload: Dict[str, Any]) -> None:
+    if not isinstance(cache_payload, dict):
+        return
+    local_cache, local_meta = _load_local_cache()
+    if local_meta.get("available") and isinstance(local_cache, dict):
+        _write_cache(_merge_runtime_cache(cache_payload, local_cache))
+        return
+    _write_cache(dict(cache_payload))
+
+
 def _safe_number(value: Any) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value)

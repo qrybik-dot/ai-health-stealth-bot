@@ -1,5 +1,6 @@
 import datetime as dt
 import unittest
+from unittest.mock import patch
 
 import main
 
@@ -26,6 +27,62 @@ class WeeklyAndRefreshTests(unittest.TestCase):
         }
         quest = main.generate_weekly_quest(derived, [])
         self.assertIn("синхронизац", quest.lower())
+
+    def test_weekly_payload_includes_metric_ranges_without_overload(self):
+        now = dt.datetime(2026, 3, 8, 19, 0)
+        history = {}
+        for delta in range(7):
+            day = (now.date() - dt.timedelta(days=delta)).isoformat()
+            history[day] = {
+                "body_battery": {"mostRecentValue": 40 + delta},
+                "stress": {"avgStressLevel": 30 + delta},
+                "sleep": {"sleepTimeSeconds": (6 * 3600) + delta * 900},
+                "steps": {"totalSteps": 4000 + delta * 500},
+                "rhr": {"restingHeartRate": 54 + delta},
+                "hrv": {"weeklyAvg": 45 + delta},
+            }
+
+        payload = main.build_weekly_payload(history, now, "chat")
+
+        self.assertIn("📏 <b>Диапазоны недели</b>", payload["caption"])
+        self.assertLessEqual(len(payload["range_lines"]), 5)
+        self.assertTrue(any("Body Battery" in line for line in payload["range_lines"]))
+
+    def test_weekly_metric_ranges_handle_missing_data(self):
+        now = dt.datetime(2026, 3, 8, 19, 0)
+        history = {
+            now.date().isoformat(): {"sleep": {"sleepTimeSeconds": 7 * 3600}},
+            (now.date() - dt.timedelta(days=1)).isoformat(): {},
+        }
+        weekly_days = main.collect_weekly_data(history, now)
+
+        lines = main.build_weekly_metric_range_lines(weekly_days)
+
+        self.assertEqual(lines, ["• Сон: 7.0–7.0 ч (1 дн.)"])
+
+    def test_weekly_stats_message_counts_feedback_votes(self):
+        msg = main.build_weekly_stats_message(
+            "2026-W10",
+            {"yes_count": 2, "partial_count": 1, "no_count": 1, "total": 4, "accuracy": 0.625},
+            {"yes_count": 1, "partial_count": 0, "no_count": 1, "total": 2, "accuracy": 0.5},
+        )
+
+        self.assertIn("Статистика 2026-W10", msg)
+        self.assertIn("Цвет недели", msg)
+        self.assertIn("✅ 2 · 🤷 1 · ❌ 1", msg)
+        self.assertIn("индекс 62%", msg)
+        self.assertIn("Всего откликов: 6", msg)
+
+    def test_weekly_stats_message_handles_empty_votes(self):
+        msg = main.build_weekly_stats_message(
+            "2026-W10",
+            {"yes_count": 0, "partial_count": 0, "no_count": 0, "total": 0, "accuracy": 0.0},
+            {"yes_count": 0, "partial_count": 0, "no_count": 0, "total": 0, "accuracy": 0.0},
+        )
+
+        self.assertIn("Цвет недели:</b> пока нет откликов", msg)
+        self.assertIn("Статус дня:</b> пока нет откликов", msg)
+        self.assertIn("Откликов за неделю пока нет", msg)
 
     def test_refresh_result_no_updates(self):
         msg = main.build_refresh_result_message({"updated_blocks": [], "after": {"data_completeness": 0.4}})
@@ -67,9 +124,9 @@ class WeeklyAndRefreshTests(unittest.TestCase):
         self.assertIn("ещё ждём", msg)
 
     def test_debug_sync_message_includes_cache_source(self):
-        with unittest.mock.patch.object(main, "load_cache_with_meta", return_value=({}, {"source": "local", "available": False, "error": "local_missing_or_invalid"})):
-            with unittest.mock.patch.object(main, "get_latest_sync_trace", return_value={"run_id": "r1", "stage": "refresh", "had_real_updates": False, "updated_blocks": []}):
-                with unittest.mock.patch.object(main, "current_day_key", return_value="2026-01-14"):
+        with patch.object(main, "load_cache_with_meta", return_value=({}, {"source": "local", "available": False, "error": "local_missing_or_invalid"})):
+            with patch.object(main, "get_latest_sync_trace", return_value={"run_id": "r1", "stage": "refresh", "had_real_updates": False, "updated_blocks": []}):
+                with patch.object(main, "current_day_key", return_value="2026-01-14"):
                     msg = main.build_debug_sync_message()
         self.assertIn("cache source: local", msg)
         self.assertIn("latest run id: r1", msg)

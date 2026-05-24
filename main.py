@@ -41,6 +41,7 @@ from cache import (
     mark_slot_sent,
     mark_sent_record,
     mark_weekly_report_sent,
+    persist_cache_snapshot,
     prune_cache,
     save_daily_snapshot,
     save_weekly_state,
@@ -569,6 +570,14 @@ SLOT_WINDOWS: Dict[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     "evening": ((19, 40), (20, 0), (20, 20)),
 }
 
+SCHEDULE_CRON_TO_SLOT: Dict[str, str] = {
+    "30 6 * * *": "morning",
+    "30 7 * * *": "morning",
+    "30 8 * * *": "morning",
+    "0 11 * * *": "midday",
+    "0 17 * * *": "evening",
+}
+
 
 def _minutes(hh: int, mm: int) -> int:
     return hh * 60 + mm
@@ -597,6 +606,9 @@ def _nearest_slot(now_msk: dt.datetime) -> str:
 def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] = None) -> str:
     if override in {"morning", "midday", "evening"}:
         return override
+    schedule_cron = os.getenv("PUSH_SCHEDULE_CRON", "").strip()
+    if schedule_cron in SCHEDULE_CRON_TO_SLOT:
+        return SCHEDULE_CRON_TO_SLOT[schedule_cron]
     in_window = _resolve_push_slot(now_msk)
     if in_window:
         return in_window
@@ -623,6 +635,7 @@ def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optio
         "already_sent": already_sent,
         "target_chat_id": chat_id,
         "date": today_str,
+        "schedule_cron": os.getenv("PUSH_SCHEDULE_CRON", "").strip(),
     }
 
 
@@ -730,12 +743,13 @@ def _callback_duplicate_guard(tg_token: str, chat_id: str, callback_query: Dict[
 
 def _log_schedule_decision(decision: Dict[str, Any]) -> None:
     log.info(
-        "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s",
+        "schedule_decision now_msk=%s window=%s slot_id=%s already_sent=%s target_chat_id=%s schedule_cron=%s",
         decision["now_msk"],
         decision["window_matched"],
         decision["slot_id"],
         decision["already_sent"],
         decision["target_chat_id"],
+        decision.get("schedule_cron", ""),
     )
 
 
@@ -1162,6 +1176,74 @@ def build_weekly_map_lines(day_points: List[Dict[str, Any]], weekly_days: List[D
     return lines
 
 
+def _weekly_metric_value(payload: Dict[str, Any], metric: str) -> Optional[float]:
+    if metric == "body_battery":
+        node = payload.get("body_battery") if isinstance(payload.get("body_battery"), dict) else {}
+        value = node.get("mostRecentValue") or node.get("chargedValue")
+    elif metric == "stress":
+        node = payload.get("stress") if isinstance(payload.get("stress"), dict) else {}
+        value = node.get("avgStressLevel") or node.get("overallStressLevel")
+    elif metric == "sleep":
+        node = payload.get("sleep") if isinstance(payload.get("sleep"), dict) else {}
+        value = node.get("sleepTimeSeconds") or node.get("totalSleepSeconds")
+    elif metric == "steps":
+        node = payload.get("steps") if isinstance(payload.get("steps"), dict) else {}
+        value = node.get("totalSteps")
+    elif metric == "rhr":
+        node = payload.get("rhr") if isinstance(payload.get("rhr"), dict) else {}
+        value = node.get("restingHeartRate")
+    elif metric == "hrv":
+        node = payload.get("hrv") if isinstance(payload.get("hrv"), dict) else {}
+        value = node.get("weeklyAvg") or node.get("lastNightAvg")
+    else:
+        value = None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _format_weekly_metric_range(metric: str, low: float, high: float) -> str:
+    if metric == "sleep":
+        low_h = low / 3600.0
+        high_h = high / 3600.0
+        return f"{low_h:.1f}–{high_h:.1f} ч"
+    if metric == "steps":
+        return f"{int(round(low))}–{int(round(high))}"
+    if metric == "hrv":
+        return f"{int(round(low))}–{int(round(high))}"
+    return f"{int(round(low))}–{int(round(high))}"
+
+
+def build_weekly_metric_range_lines(weekly_days: List[Dict[str, Any]], max_metrics: int = 5) -> List[str]:
+    specs = [
+        ("body_battery", "Body Battery"),
+        ("stress", "Стресс"),
+        ("sleep", "Сон"),
+        ("steps", "Шаги"),
+        ("rhr", "Пульс покоя"),
+        ("hrv", "HRV"),
+    ]
+    ranked: List[Tuple[float, str]] = []
+    for metric, label in specs:
+        values: List[float] = []
+        for row in weekly_days:
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            value = _weekly_metric_value(payload, metric)
+            if value is not None:
+                values.append(value)
+        if not values:
+            continue
+        low = min(values)
+        high = max(values)
+        spread = high - low
+        priority = len(values) * 1000 + spread
+        suffix = f" ({len(values)} дн.)" if len(values) < 7 else ""
+        ranked.append((priority, f"• {label}: {_format_weekly_metric_range(metric, low, high)}{suffix}"))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    lines = [line for _, line in ranked[:max_metrics]]
+    if lines:
+        return lines
+    return ["• Диапазоны пока не собрать: мало данных за неделю"]
+
 
 
 def build_weekly_caption(derived: Dict[str, Any], chips: List[str], quest: str) -> str:
@@ -1206,7 +1288,14 @@ def build_weekly_payload(full_history: Dict[str, Any], now_msk: dt.datetime, cha
     quest = generate_weekly_quest(derived, weekly_days)
     caption = build_weekly_caption(derived, chips, quest)
     map_lines = build_weekly_map_lines(derived.get("day_points", []), weekly_days)
-    caption = caption + "\n\n🗺 <b>Карта недели</b>\n" + "\n".join(map_lines)
+    range_lines = build_weekly_metric_range_lines(weekly_days)
+    caption = (
+        caption
+        + "\n\n📏 <b>Диапазоны недели</b>\n"
+        + "\n".join(range_lines)
+        + "\n\n🗺 <b>Карта недели</b>\n"
+        + "\n".join(map_lines)
+    )
     return {
         "week_id": week_id,
         "derived": derived,
@@ -1214,6 +1303,7 @@ def build_weekly_payload(full_history: Dict[str, Any], now_msk: dt.datetime, cha
         "quest": quest,
         "caption": caption,
         "map_lines": map_lines,
+        "range_lines": range_lines,
         "source_fingerprint": _weekly_source_fingerprint(weekly_days),
     }
 
@@ -1315,6 +1405,11 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
             log.info("dedupe_marked slot=%s date=%s chat_id=%s type=verdict run_id=%s", resolved_slot, today_str, chat_id, run_id)
         log.info("send_result=ok fallback=true reason=%s slot_id=%s cache_source=%s cache_available=%s", reason_code, resolved_slot, cache_meta.get("source", "unknown"), cache_meta.get("available", False))
         return
+
+    persist_cache_snapshot(full_history)
+    if os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true":
+        with open(".push_ok_to_upload", "w", encoding="utf-8") as f:
+            f.write(f"run_id={run_id}\nslot={resolved_slot}\ndate={today_str}\n")
 
     day_summary = get_day_summary(today_str, cache_data=full_history, chat_id=chat_id)
     day_context = build_day_context(day_key=today_str, cache_data=full_history)
@@ -2238,23 +2333,34 @@ def handle_stats_command(tg_token: str, chat_id: str) -> None:
     week_id = iso_week_id()
     color_stats = get_week_vote_accuracy(week_id=week_id, chat_id=chat_id)
     today_stats = get_today_vote_accuracy(week_id=week_id, chat_id=chat_id)
-
-    color_total = int(color_stats["total"])
-    today_total = int(today_stats["total"])
-    color_acc = round(color_stats["accuracy"] * 100) if color_total else 0
-    today_acc = round(today_stats["accuracy"] * 100) if today_total else 0
-    yes_by_rarity = today_stats.get("yes_by_rarity", {"common": 0, "rare": 0, "exotic": 0})
-
-    message = (
-        f"Статистика {week_id}\n"
-        f"Цвет недели: ✅ {int(color_stats['yes_count'])} · ➖ {int(color_stats['partial_count'])} · ❌ {int(color_stats['no_count'])} · {color_acc}%\n"
-        f"Статус дня: ✅ {int(today_stats['yes_count'])} · ➖ {int(today_stats['partial_count'])} · ❌ {int(today_stats['no_count'])} · {today_acc}%\n"
-        "Совпадения ✅ по редкости:\n"
-        f"классический: {int(yes_by_rarity.get('common', 0))}\n"
-        f"редкий: {int(yes_by_rarity.get('rare', 0))}\n"
-        f"экзотический: {int(yes_by_rarity.get('exotic', 0))}"
-    )
+    message = build_weekly_stats_message(week_id, color_stats, today_stats)
     telegram_send(tg_token, chat_id, message, parse_mode="HTML")
+
+
+def _vote_stats_line(label: str, stats: Dict[str, Any]) -> str:
+    total = int(stats.get("total", 0) or 0)
+    yes = int(stats.get("yes_count", 0) or 0)
+    partial = int(stats.get("partial_count", 0) or 0)
+    no = int(stats.get("no_count", 0) or 0)
+    if total <= 0:
+        return f"<b>{label}:</b> пока нет откликов"
+    index = round(float(stats.get("accuracy", 0.0) or 0.0) * 100)
+    return f"<b>{label}:</b> ✅ {yes} · 🤷 {partial} · ❌ {no} · индекс {index}%"
+
+
+def build_weekly_stats_message(week_id: str, color_stats: Dict[str, Any], today_stats: Dict[str, Any]) -> str:
+    total = int(color_stats.get("total", 0) or 0) + int(today_stats.get("total", 0) or 0)
+    if total <= 0:
+        summary = "Откликов за неделю пока нет."
+    else:
+        summary = f"Всего откликов: {total}."
+
+    return (
+        f"📊 <b>Статистика {html.escape(week_id)}</b>\n\n"
+        f"{_vote_stats_line('Цвет недели', color_stats)}\n"
+        f"{_vote_stats_line('Статус дня', today_stats)}\n\n"
+        f"{summary}"
+    )
 
 
 def handle_week_command(tg_token: str, chat_id: str) -> None:

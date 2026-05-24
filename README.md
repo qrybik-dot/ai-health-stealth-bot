@@ -76,6 +76,8 @@ Coach Potato отправляет короткие data-driven вердикты 
 
 Это гарантирует idempotent send: один тип сообщения на слот/дату отправляется только один раз.
 
+В GitHub Actions push после успешной отправки сохраняет обновлённый `cache.json` обратно в Gist. Scheduled runs используют `github.event.schedule`, поэтому задержанный cron не превращается в соседний слот по фактическому времени запуска.
+
 ## Sync-health
 
 В каждый вердикт встроена честная диагностика полноты данных:
@@ -97,7 +99,9 @@ Coach Potato отправляет короткие data-driven вердикты 
 
 - Разделены состояния дня: `no_data` и `partial`.
 - Если доступно <3 дней, weekly помечается как «ранний черновик» без поломанной статистики.
+- В weekly добавлен блок «Диапазоны недели»: до 5 метрик с min–max и отметкой неполных дней.
 - В weekly добавлена текстовая «Карта недели» (7 клеток) с честным `нет` при отсутствии данных.
+- `/stats` показывает недельное распределение голосов ✅ / 🤷 / ❌ отдельно для цвета недели и статуса дня.
 
 ## Mini App v1 (scaffold)
 
@@ -120,6 +124,7 @@ API:
 - Cloudflare Worker: `cloudflare/telegram-webhook-worker.js`.
 - Telegram webhook: `/telegram/<WEBHOOK_SECRET>`.
 - Worker читает `cache.json` из private Gist и отвечает сразу на `/help`, `/today`, `/color`, `/week`, `/stats`, `/debug_sync`, `/debug_sent`.
+- Worker читает truncated Gist cache через `raw_url` и сохраняет callback-голоса `color_vote` / `today_vote` обратно в `cache.json`.
 - `/refresh` может запускать GitHub Actions recovery sync, если задан `GITHUB_DISPATCH_TOKEN`.
 
 Ручной fallback:
@@ -148,6 +153,8 @@ API:
 - `python3.11 -m venv .venv`
 - `.venv/bin/python -m pip install -r requirements.txt`
 - `.venv/bin/python -m unittest discover -s tests`
+- `node --check cloudflare/telegram-webhook-worker.js`
+- `node tests/worker_helpers.test.mjs`
 - `.venv/bin/python main.py push-self-check`
 - `.venv/bin/python main.py schedule-self-check`
 - `.venv/bin/python main.py poll-self-check`

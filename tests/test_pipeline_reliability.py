@@ -100,6 +100,16 @@ class PipelineReliabilityTests(unittest.TestCase):
             with patch.object(cache, "CACHE_FILE", cache_path):
                 self.assertFalse(cache.was_slot_sent("chat", "2026-01-14", "morning"))
 
+    def test_delayed_github_schedule_uses_declared_cron_slot(self):
+        tz = dt.timezone(dt.timedelta(hours=3))
+        delayed_now = dt.datetime(2026, 5, 24, 13, 15, tzinfo=tz)
+        with patch.dict(os.environ, {"PUSH_SCHEDULE_CRON": "30 6 * * *"}, clear=False):
+            decision = main._build_schedule_decision(delayed_now, "chat")
+
+        self.assertEqual(decision["window_matched"], "none")
+        self.assertEqual(decision["slot_id"], "morning")
+        self.assertEqual(decision["schedule_cron"], "30 6 * * *")
+
     def test_delayed_data_catchup_without_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = os.path.join(tmp, "cache.json")
@@ -112,18 +122,19 @@ class PipelineReliabilityTests(unittest.TestCase):
                                     with patch.object(main, "generate_today_card_image", return_value="tests/fake.png"):
                                         with patch.object(main, "generate_color_card_image", return_value="tests/fake.png"):
                                             with patch.object(main, "telegram_send"):
-                                                with patch.object(main, "telegram_send_photo_with_markup"):
-                                                    # morning partial -> mark morning_deferred
-                                                    with patch.object(main, "_now_msk", return_value=dt.datetime(2026, 1, 14, 9, 20, tzinfo=dt.timezone(dt.timedelta(hours=3)))):
-                                                        with patch.object(main, "load_cache_with_meta", return_value=({"2026-01-14": {"sleep": {}, "stress": {}, "body_battery": {}, "rhr": {}, "missing_flags": {"sleep": True}}}, {"source": "local", "available": True, "error": ""})):
-                                                            main.run_push("scheduled")
-                                                    self.assertTrue(cache.was_slot_sent("c", "2026-01-14", "morning_deferred"))
-                                                    self.assertFalse(cache.was_slot_sent("c", "2026-01-14", "morning"))
-                                                    # midday with full data -> catch-up morning
-                                                    with patch.object(main, "_now_msk", return_value=dt.datetime(2026, 1, 14, 14, 0, tzinfo=dt.timezone(dt.timedelta(hours=3)))):
-                                                        with patch.object(main, "load_cache_with_meta", return_value=({"2026-01-14": {"sleep": {"sleepTimeSeconds": 24000}, "stress": {"avgStressLevel": 31}, "body_battery": {"mostRecentValue": 64}, "rhr": {"restingHeartRate": 55}, "missing_flags": {"sleep": False, "stress": False, "body_battery": False, "rhr": False}}}, {"source": "local", "available": True, "error": ""})):
-                                                            main.run_push("scheduled")
-                                                    self.assertTrue(cache.was_slot_sent("c", "2026-01-14", "morning"))
+                                                with patch.object(main, "telegram_send_with_markup"):
+                                                    with patch.object(main, "telegram_send_photo_with_markup"):
+                                                        # morning partial -> mark morning_deferred
+                                                        with patch.object(main, "_now_msk", return_value=dt.datetime(2026, 1, 14, 9, 20, tzinfo=dt.timezone(dt.timedelta(hours=3)))):
+                                                            with patch.object(main, "load_cache_with_meta", return_value=({"2026-01-14": {"sleep": {}, "stress": {}, "body_battery": {}, "rhr": {}, "missing_flags": {"sleep": True}}}, {"source": "local", "available": True, "error": ""})):
+                                                                main.run_push("scheduled")
+                                                        self.assertTrue(cache.was_slot_sent("c", "2026-01-14", "morning_deferred"))
+                                                        self.assertFalse(cache.was_slot_sent("c", "2026-01-14", "morning"))
+                                                        # midday with full data -> catch-up morning
+                                                        with patch.object(main, "_now_msk", return_value=dt.datetime(2026, 1, 14, 14, 0, tzinfo=dt.timezone(dt.timedelta(hours=3)))):
+                                                            with patch.object(main, "load_cache_with_meta", return_value=({"2026-01-14": {"sleep": {"sleepTimeSeconds": 24000}, "stress": {"avgStressLevel": 31}, "body_battery": {"mostRecentValue": 64}, "rhr": {"restingHeartRate": 55}, "missing_flags": {"sleep": False, "stress": False, "body_battery": False, "rhr": False}}}, {"source": "local", "available": True, "error": ""})):
+                                                                main.run_push("scheduled")
+                                                        self.assertTrue(cache.was_slot_sent("c", "2026-01-14", "morning"))
 
 
     def test_gist_and_local_history_are_merged_by_day_keys(self):

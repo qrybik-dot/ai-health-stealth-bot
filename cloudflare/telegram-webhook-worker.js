@@ -156,6 +156,26 @@ async function handleCallback(callback, env, _ctx) {
     await sendMessage(env, chatId, buildWhyMessage(snapshot, day), null);
     return { action: "why", chat_id: chatId };
   }
+  if (action === "color_vote") {
+    const weekId = parts[1] || currentIsoWeekId();
+    const vote = parts[2] || "partial";
+    const result = await storeColorVote(env, cache, chatId, weekId, vote);
+    await answerCallback(env, callback.id, result.saved ? "Голос учтён" : `Уже учтено: ${voteLabel(result.existing || vote)}`);
+    await editMessageReplyMarkup(env, chatId, callback.message?.message_id, votedKeyboard(result.existing || vote));
+    return { action: "color_vote", chat_id: chatId, saved: result.saved };
+  }
+  if (action === "today_vote") {
+    const voteDay = parts[1] || currentDayKey();
+    const vote = parts[2] || "partial";
+    const result = await storeTodayVote(env, cache, chatId, voteDay, vote);
+    await answerCallback(env, callback.id, result.saved ? "Голос учтён" : `Уже учтено: ${voteLabel(result.existing || vote)}`);
+    await editMessageReplyMarkup(env, chatId, callback.message?.message_id, votedKeyboard(result.existing || vote));
+    return { action: "today_vote", chat_id: chatId, saved: result.saved };
+  }
+  if (action === "noop") {
+    await answerCallback(env, callback.id);
+    return { action: "noop", chat_id: chatId };
+  }
 
   await answerCallback(env, callback.id, "Пока недоступно в Cloudflare runtime");
   return { action, chat_id: chatId };
@@ -205,6 +225,18 @@ async function answerCallback(env, callbackId, text = "") {
   });
 }
 
+async function editMessageReplyMarkup(env, chatId, messageId, replyMarkup) {
+  if (!messageId) return;
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: replyMarkup }),
+  });
+  if (!response.ok) {
+    console.warn(JSON.stringify({ event: "telegram_edit_markup_failed", status: response.status }));
+  }
+}
+
 async function loadCache(env) {
   const response = await fetch(`https://api.github.com/gists/${env.CACHE_GIST_ID}`, {
     headers: {
@@ -217,9 +249,44 @@ async function loadCache(env) {
     throw new Error(`Gist fetch failed ${response.status}`);
   }
   const gist = await response.json();
-  const content = gist.files?.["cache.json"]?.content;
+  const file = gist.files?.["cache.json"];
+  let content = file?.content;
+  if (file?.truncated && file?.raw_url) {
+    const rawResponse = await fetch(file.raw_url, {
+      headers: {
+        authorization: `Bearer ${env.GIST_TOKEN}`,
+        "user-agent": "coach-potato-cloudflare-worker",
+      },
+    });
+    if (!rawResponse.ok) {
+      throw new Error(`Gist raw fetch failed ${rawResponse.status}`);
+    }
+    content = await rawResponse.text();
+  }
   if (!content) return {};
   return JSON.parse(content);
+}
+
+async function saveCache(env, cache) {
+  const response = await fetch(`https://api.github.com/gists/${env.CACHE_GIST_ID}`, {
+    method: "PATCH",
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${env.GIST_TOKEN}`,
+      "content-type": "application/json",
+      "user-agent": "coach-potato-cloudflare-worker",
+    },
+    body: JSON.stringify({
+      files: {
+        "cache.json": {
+          content: JSON.stringify(cache, null, 2),
+        },
+      },
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Gist cache save failed ${response.status}`);
+  }
 }
 
 async function triggerRecoverySync(env) {
@@ -246,6 +313,22 @@ function helpMessage() {
 
 function currentDayKey() {
   return formatMskDate(new Date());
+}
+
+function currentIsoWeekId() {
+  return isoWeekIdFromDay(currentDayKey());
+}
+
+function isoWeekIdFromDay(day) {
+  const date = new Date(`${day}T12:00:00Z`);
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNr = (target.getUTCDay() + 6) % 7;
+  target.setUTCDate(target.getUTCDate() - dayNr + 3);
+  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+  const firstDayNr = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNr + 3);
+  const week = 1 + Math.round((target - firstThursday) / (7 * 24 * 60 * 60 * 1000));
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
 function formatMskDate(date) {
@@ -358,11 +441,121 @@ function buildColorMessage(cache) {
 }
 
 function buildStatsMessage(cache, chatId) {
-  const todayVotes = cache?._today_votes || {};
-  const colorVotes = cache?._daily_votes || {};
-  const todayTotal = Object.keys(todayVotes).filter((k) => k.includes(`|${chatId}`)).length;
-  const colorTotal = Object.keys(colorVotes).filter((k) => k.includes(`|${chatId}`)).length;
-  return `Статистика:\nЦветовые отклики: ${colorTotal}\nСтатус дня: ${todayTotal}`;
+  const weekId = currentIsoWeekId();
+  const colorStats = collectColorVoteStats(cache, chatId, weekId);
+  const todayStats = collectTodayVoteStats(cache, chatId, weekId);
+  const total = colorStats.total + todayStats.total;
+  const summary = total > 0 ? `Всего откликов: ${total}.` : "Откликов за неделю пока нет.";
+  return [
+    `📊 <b>Статистика ${escapeHtml(weekId)}</b>`,
+    "",
+    voteStatsLine("Цвет недели", colorStats),
+    voteStatsLine("Статус дня", todayStats),
+    "",
+    summary,
+  ].join("\n");
+}
+
+function emptyVoteStats() {
+  return { yes_count: 0, partial_count: 0, no_count: 0, total: 0, accuracy: 0 };
+}
+
+function addVote(stats, value) {
+  if (value === "yes") stats.yes_count += 1;
+  if (value === "partial") stats.partial_count += 1;
+  if (value === "no") stats.no_count += 1;
+  stats.total = stats.yes_count + stats.partial_count + stats.no_count;
+  stats.accuracy = stats.total > 0 ? (stats.yes_count + 0.5 * stats.partial_count) / stats.total : 0;
+}
+
+function collectColorVoteStats(cache, chatId, weekId) {
+  const stats = emptyVoteStats();
+  const votes = cache?._daily_votes || {};
+  for (const [key, payload] of Object.entries(votes)) {
+    if (!key.endsWith(`|${chatId}`) || !payload || typeof payload !== "object") continue;
+    if (payload.week_id !== weekId) continue;
+    addVote(stats, payload.vote_value);
+  }
+  return stats;
+}
+
+function collectTodayVoteStats(cache, chatId, weekId) {
+  const stats = emptyVoteStats();
+  const votes = cache?._today_votes || {};
+  const states = cache?._today_state || {};
+  for (const [key, payload] of Object.entries(votes)) {
+    if (!key.endsWith(`|${chatId}`) || !payload || typeof payload !== "object") continue;
+    const state = states[key];
+    if (!state || state.week_id !== weekId) continue;
+    addVote(stats, payload.vote);
+  }
+  return stats;
+}
+
+function voteStatsLine(label, stats) {
+  if (!stats.total) return `<b>${label}:</b> пока нет откликов`;
+  const index = Math.round(stats.accuracy * 100);
+  return `<b>${label}:</b> ✅ ${stats.yes_count} · 🤷 ${stats.partial_count} · ❌ ${stats.no_count} · индекс ${index}%`;
+}
+
+function utcNowIso() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function validVote(value) {
+  return ["yes", "partial", "no"].includes(value) ? value : "partial";
+}
+
+function voteLabel(value) {
+  return {
+    yes: "✅ Попало",
+    partial: "➖ Частично",
+    no: "❌ Мимо",
+  }[value] || "➖ Частично";
+}
+
+function votedKeyboard(vote) {
+  return { inline_keyboard: [[{ text: `🗳 Ваш выбор: ${voteLabel(vote)}`, callback_data: "noop" }]] };
+}
+
+async function storeColorVote(env, cache, chatId, weekId, rawVote) {
+  const vote = validVote(rawVote);
+  const today = currentDayKey();
+  const key = `${today}|${chatId}`;
+  if (!cache._daily_votes || typeof cache._daily_votes !== "object") cache._daily_votes = {};
+  const existing = cache._daily_votes[key];
+  if (existing && typeof existing === "object" && validVote(existing.vote_value) === existing.vote_value) {
+    return { saved: false, existing: existing.vote_value };
+  }
+  cache._daily_votes[key] = { vote_value: vote, ts: utcNowIso(), week_id: weekId };
+
+  if (!cache._weekly_state || typeof cache._weekly_state !== "object") cache._weekly_state = {};
+  if (!cache._weekly_state[weekId] || typeof cache._weekly_state[weekId] !== "object") cache._weekly_state[weekId] = { week_id: weekId };
+  if (!cache._weekly_state[weekId].votes_by_date_chat || typeof cache._weekly_state[weekId].votes_by_date_chat !== "object") {
+    cache._weekly_state[weekId].votes_by_date_chat = {};
+  }
+  cache._weekly_state[weekId].votes_by_date_chat[key] = vote;
+  await saveCache(env, cache);
+  return { saved: true, existing: null };
+}
+
+async function storeTodayVote(env, cache, chatId, voteDay, rawVote) {
+  const vote = validVote(rawVote);
+  const key = `${voteDay}|${chatId}`;
+  if (!cache._today_votes || typeof cache._today_votes !== "object") cache._today_votes = {};
+  const existing = cache._today_votes[key];
+  if (existing && typeof existing === "object" && validVote(existing.vote) === existing.vote) {
+    return { saved: false, existing: existing.vote };
+  }
+  cache._today_votes[key] = { vote, ts: utcNowIso() };
+  if (!cache._today_state || typeof cache._today_state !== "object") cache._today_state = {};
+  if (!cache._today_state[key] || typeof cache._today_state[key] !== "object") {
+    cache._today_state[key] = { week_id: isoWeekIdFromDay(voteDay) };
+  } else if (!cache._today_state[key].week_id) {
+    cache._today_state[key].week_id = isoWeekIdFromDay(voteDay);
+  }
+  await saveCache(env, cache);
+  return { saved: true, existing: null };
 }
 
 function buildWeekMessage(cache) {
@@ -468,6 +661,16 @@ function escapeHtml(value) {
     "'": "&#039;",
   }[char]));
 }
+
+export {
+  buildStatsMessage,
+  collectColorVoteStats,
+  collectTodayVoteStats,
+  isoWeekIdFromDay,
+  storeColorVote,
+  storeTodayVote,
+  votedKeyboard,
+};
 
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
