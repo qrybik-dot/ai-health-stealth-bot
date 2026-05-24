@@ -131,6 +131,24 @@ class WeeklyAndRefreshTests(unittest.TestCase):
         self.assertIn("cache source: local", msg)
         self.assertIn("latest run id: r1", msg)
 
+    def test_cache_self_check_prints_weekly_and_sent_counts(self):
+        cache_payload = {
+            "2026-01-14": {"sleep": {"sleepTimeSeconds": 24000}},
+            "_weekly_state": {"2026-W03": {"week_id": "2026-W03"}},
+            "_push_state": {
+                "2026-01-14|chat|morning|verdict": {"ts": "x"},
+                "2026-01-13|chat|morning|verdict": {"ts": "x"},
+            },
+        }
+        with patch.object(main, "load_cache_with_meta", return_value=(cache_payload, {"source": "gist", "available": True, "error": ""})):
+            with patch.object(main, "_now_msk", return_value=dt.datetime(2026, 1, 14, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=3)))):
+                with patch("builtins.print") as mock_print:
+                    main.run_cache_self_check()
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("weekly_state_count=1", printed)
+        self.assertIn("today_sent_registry_count=1", printed)
+
 
 if __name__ == "__main__":
     unittest.main()

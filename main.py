@@ -1598,6 +1598,14 @@ def run_cache_self_check(
     today_context = build_day_context(day_key=today_str, cache_data=cache_data if isinstance(cache_data, dict) else {})
     today_status = str(today_context.get("day_status", "no_data"))
     key_present = int(today_context.get("key_metrics_present_count", 0) or 0)
+    weekly_state = cache_data.get("_weekly_state") if isinstance(cache_data, dict) else {}
+    push_state = cache_data.get("_push_state") if isinstance(cache_data, dict) else {}
+    today_sent_prefix = f"{today_str}|"
+    today_sent_count = (
+        sum(1 for key in push_state.keys() if isinstance(key, str) and key.startswith(today_sent_prefix))
+        if isinstance(push_state, dict)
+        else 0
+    )
 
     print(f"cache_source={cache_meta.get('source', 'unknown')}")
     print(f"cache_available={str(bool(cache_meta.get('available', False))).lower()}")
@@ -1610,6 +1618,8 @@ def run_cache_self_check(
     print(f"today_key_metrics_present={key_present}")
     print(f"history_days_count={len(history_days)}")
     print(f"latest_history_day={history_days[-1] if history_days else ''}")
+    print(f"weekly_state_count={len(weekly_state) if isinstance(weekly_state, dict) else 0}")
+    print(f"today_sent_registry_count={today_sent_count}")
     print(f"top_level_keys={top_level_keys}")
 
     failures: List[str] = []
