@@ -117,6 +117,8 @@ API:
 - `GET /miniapp/api/dashboard`
 - `POST /miniapp/api/prefs`
 
+Backlog: Mini App пока не развиваем. Возвращаемся к нему после стабилизации Telegram UX: push, Q&A, color, week/month и кнопочные ответы.
+
 ## Chat runtime
 
 Основной runtime для интерактивного чата:

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 
 import {
+  buildColorMessage,
   collectColorVoteStats,
   collectTodayVoteStats,
+  buildWeekMessage,
+  buildWhat15Message,
   isoWeekIdFromDay,
+  routeTextQuestion,
   storeColorVote,
   storeTodayVote,
   votedKeyboard,
@@ -60,3 +64,55 @@ assert.deepEqual(votedKeyboard("no"), {
 });
 
 assert.equal(patchCalls, 2);
+
+const today = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Moscow",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+}).format(new Date());
+const yesterday = new Date(`${today}T12:00:00Z`);
+yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+const yesterdayKey = yesterday.toISOString().slice(0, 10);
+
+const richCache = {
+  [yesterdayKey]: {
+    body_battery: { mostRecentValue: 32, chargedValue: 48 },
+    stress: { avgStressLevel: 61 },
+    sleep: { sleepTimeSeconds: 19800 },
+    steps: { totalSteps: 3200 },
+  },
+  [today]: {
+    body_battery: { mostRecentValue: 72, chargedValue: 82 },
+    stress: { avgStressLevel: 34 },
+    sleep: { sleepTimeSeconds: 27000 },
+    rhr: { restingHeartRate: 55 },
+    steps: { totalSteps: 9100 },
+  },
+  _weekly_state: {
+    "2026-W10": { name_ru: "мягкий зелёный", hex: "#2FAE68" },
+  },
+};
+
+const colorMessage = buildColorMessage(richCache);
+assert.match(colorMessage, /Цвет дня/);
+assert.match(colorMessage, /ресурс|стресс|движения/);
+assert.doesNotMatch(colorMessage, /пока не сохран/);
+
+const weekMessage = buildWeekMessage(richCache);
+assert.match(weekMessage, /Вердикт недели/);
+assert.match(weekMessage, /Лучший день/);
+assert.match(weekMessage, /Сложный день/);
+assert.match(weekMessage, /Фокус/);
+
+const compareMessage = routeTextQuestion("сравни сегодня со вчера", richCache);
+assert.match(compareMessage, /Сравнение/);
+assert.match(compareMessage, new RegExp(today));
+assert.match(compareMessage, new RegExp(yesterdayKey));
+
+const foodMessage = routeTextQuestion("что мне лучше поесть", richCache);
+assert.match(foodMessage, /Еда сейчас/);
+assert.doesNotMatch(foodMessage, /Сравнение/);
+
+const what15 = buildWhat15Message("midday", richCache[yesterdayKey]);
+assert.match(what15, /тишина|экран|ходьба/);

@@ -6,6 +6,8 @@ const METRIC_LABELS = {
   rhr: "RHR",
   stress: "стресс",
   steps: "шаги",
+  daily_activity: "активность",
+  hrv_status: "HRV",
 };
 
 export default {
@@ -364,80 +366,197 @@ function availableMetrics(snapshot) {
   });
 }
 
+function stringMetric(snapshot, metric, keys) {
+  const node = snapshot?.[metric];
+  if (!node || typeof node !== "object") return null;
+  for (const key of keys) {
+    const value = node[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function snapshotMetrics(snapshot) {
+  const activeSeconds = metricValue(snapshot, "daily_activity", ["activeSeconds", "activeTimeSeconds"]);
+  return {
+    bb: metricValue(snapshot, "body_battery", ["mostRecentValue", "currentValue", "chargedValue"]),
+    bbCharged: metricValue(snapshot, "body_battery", ["chargedValue"]),
+    stress: metricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"]),
+    maxStress: metricValue(snapshot, "stress", ["maxStressLevel"]),
+    sleepSeconds: metricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"]),
+    rhr: metricValue(snapshot, "rhr", ["restingHeartRate"]),
+    steps: metricValue(snapshot, "steps", ["totalSteps", "steps"]),
+    activeMinutes: typeof activeSeconds === "number" ? Math.round(activeSeconds / 60) : null,
+    hrvStatus: stringMetric(snapshot, "hrv_status", ["status", "hrvStatus"]),
+  };
+}
+
+function hasUsableSnapshot(snapshot) {
+  return availableMetrics(snapshot).length > 0;
+}
+
+function dataQuality(snapshot) {
+  const available = availableMetrics(snapshot);
+  const present = KEY_METRICS.filter((metric) => available.includes(metric)).length;
+  if (present >= 4) return "высокая";
+  if (present >= 2) return "средняя";
+  if (present >= 1) return "низкая";
+  return "нет данных";
+}
+
+function metricChips(snapshot, limit = 4) {
+  const metrics = snapshotMetrics(snapshot);
+  const chips = [];
+  if (metrics.bb !== null) chips.push(`BB ${Math.round(metrics.bb)}`);
+  if (metrics.stress !== null) chips.push(`стресс ${Math.round(metrics.stress)}`);
+  if (metrics.sleepSeconds !== null) chips.push(`сон ${formatHours(metrics.sleepSeconds)}`);
+  if (metrics.rhr !== null) chips.push(`RHR ${Math.round(metrics.rhr)}`);
+  if (metrics.steps !== null) chips.push(`${Math.round(metrics.steps)} шагов`);
+  if (metrics.hrvStatus) chips.push(`HRV ${escapeHtml(metrics.hrvStatus)}`);
+  return chips.slice(0, limit);
+}
+
+function scoreSnapshot(snapshot) {
+  const metrics = snapshotMetrics(snapshot);
+  let score = 50;
+  if (typeof metrics.bb === "number") score += (metrics.bb - 50) * 0.45;
+  if (typeof metrics.stress === "number") score -= (metrics.stress - 35) * 0.35;
+  if (typeof metrics.sleepSeconds === "number") {
+    const hours = metrics.sleepSeconds / 3600;
+    score += Math.max(-12, Math.min(12, (hours - 7) * 4));
+  }
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function statusForSnapshot(snapshot) {
+  const metrics = snapshotMetrics(snapshot);
+  if (!hasUsableSnapshot(snapshot)) return "данных пока нет";
+  if (typeof metrics.bb === "number" && metrics.bb < 30) return "ресурс просит бережный режим";
+  if (typeof metrics.stress === "number" && metrics.stress >= 60) return "стресс тянет день вверх";
+  if (typeof metrics.sleepSeconds === "number" && metrics.sleepSeconds < 6 * 3600) return "сон не добрал восстановление";
+  if (typeof metrics.bb === "number" && metrics.bb >= 65 && (metrics.stress === null || metrics.stress <= 45)) return "можно держать собранный темп";
+  return "ровный день без резких добивок";
+}
+
+function actionForSnapshot(slot, snapshot) {
+  const metrics = snapshotMetrics(snapshot);
+  if (!hasUsableSnapshot(snapshot)) return "держать базовый режим и дождаться следующей синхронизации";
+  if (typeof metrics.bb === "number" && metrics.bb < 30) return "снять лишнюю нагрузку, закрывать только обязательное";
+  if (typeof metrics.stress === "number" && metrics.stress >= 60) return "сделать короткий сброс: вода, тишина, 5-7 минут без экрана";
+  if (slot === "morning") return "первым блоком взять один главный приоритет";
+  if (slot === "evening") return "не разгонять вечер, готовить спокойное завершение дня";
+  return "один фокус-блок, потом короткая пауза";
+}
+
 function buildTodayMessage(cache) {
   const day = currentDayKey();
   const snapshot = getSnapshot(cache, day);
-  const available = availableMetrics(snapshot);
-  if (available.length === 0) {
+  if (!hasUsableSnapshot(snapshot)) {
     return "🟡 <b>Сигнал дня</b>\n\nДанных за сегодня пока нет. Держим ровный режим без резких решений.";
   }
 
-  const bb = metricValue(snapshot, "body_battery", ["mostRecentValue", "chargedValue"]);
-  const stress = metricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"]);
-  const sleepSeconds = metricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"]);
-  const rhr = metricValue(snapshot, "rhr", ["restingHeartRate"]);
-  const status = statusLabel(bb, stress);
-  const chips = [];
-  if (bb !== null) chips.push(`Body Battery ${Math.round(bb)}`);
-  if (stress !== null) chips.push(`стресс ${Math.round(stress)}`);
-  if (sleepSeconds !== null) chips.push(`сон ${formatHours(sleepSeconds)}`);
-  if (rhr !== null) chips.push(`RHR ${Math.round(rhr)}`);
+  const chips = metricChips(snapshot);
 
   return [
     `🟡 <b>Сигнал дня</b>`,
     "",
-    `<i>${status}</i>`,
-    `Факты: ${chips.join(" · ") || "данные частичные"}.`,
-    "Лучшее действие: один спокойный блок и короткая пауза.",
-    `Надёжность: ${KEY_METRICS.every((m) => available.includes(m)) ? "высокая" : "средняя/низкая"}.`,
+    `<b>Вердикт:</b> ${statusForSnapshot(snapshot)}.`,
+    `<b>Факты:</b> ${chips.join(" · ") || "данные частичные"}.`,
+    `<b>Действие:</b> ${actionForSnapshot("midday", snapshot)}.`,
+    `<b>Надёжность:</b> ${dataQuality(snapshot)}.`,
   ].join("\n");
 }
 
 function buildFactsMessage(snapshot, day) {
   const available = availableMetrics(snapshot);
   if (available.length === 0) return `По фактам за ${day}: данных пока нет.`;
+  const metrics = snapshotMetrics(snapshot);
   return [
     `📌 <b>По фактам</b> ${day}`,
     `• Есть: ${available.map((m) => METRIC_LABELS[m] || m).join(", ")}`,
-    `• Body Battery: ${valueOrDash(metricValue(snapshot, "body_battery", ["mostRecentValue", "chargedValue"]))}`,
-    `• Стресс: ${valueOrDash(metricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"]))}`,
-    `• Сон: ${formatMaybeHours(metricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"]))}`,
-    "Вывод: держать ровный темп, без резких добивок.",
+    `• Body Battery: ${valueOrDash(metrics.bb)}${metrics.bbCharged !== null ? ` / заряд ${Math.round(metrics.bbCharged)}` : ""}`,
+    `• Стресс: ${valueOrDash(metrics.stress)}${metrics.maxStress !== null ? ` / пик ${Math.round(metrics.maxStress)}` : ""}`,
+    `• Сон: ${formatMaybeHours(metrics.sleepSeconds)}`,
+    `• Шаги: ${valueOrDash(metrics.steps)}`,
+    `• Надёжность: ${dataQuality(snapshot)}`,
+    `Вывод: ${statusForSnapshot(snapshot)}.`,
   ].join("\n");
 }
 
 function buildRoastMessage(snapshot, day) {
-  const facts = buildFactsMessage(snapshot, day);
-  return `🔥 <b>Пожарь</b>\n${facts}\n\nКолкость: режим просит меньше героизма, больше последовательности.`;
+  if (!hasUsableSnapshot(snapshot)) return `🔥 <b>Пожарь</b>\nПо фактам за ${day}: данных пока нет. Без данных не жарю.`;
+  const metrics = snapshotMetrics(snapshot);
+  const jab = typeof metrics.stress === "number" && metrics.stress >= 60
+    ? "стресс уже сделал презентацию без спроса"
+    : typeof metrics.bb === "number" && metrics.bb < 35
+      ? "ресурс не батарейка из рекламы, чудес не обещал"
+      : "режим просит меньше героизма, больше последовательности";
+  return [
+    "🔥 <b>Пожарь</b>",
+    `По фактам за ${day}: ${metricChips(snapshot, 3).join(" · ")}.`,
+    `Колкость: ${jab}.`,
+    `Дело: ${actionForSnapshot("midday", snapshot)}.`,
+  ].join("\n");
 }
 
 function buildWhyMessage(snapshot, day) {
-  const bb = metricValue(snapshot, "body_battery", ["mostRecentValue", "chargedValue"]);
-  const stress = metricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"]);
+  if (!hasUsableSnapshot(snapshot)) return `Почему так (${day})\nДанных за день пока нет, поэтому вывод предварительный.`;
+  const metrics = snapshotMetrics(snapshot);
+  const reasons = [];
+  if (metrics.bb !== null) reasons.push(`ресурс: BB ${Math.round(metrics.bb)}`);
+  if (metrics.stress !== null) reasons.push(`нагрузка: стресс ${Math.round(metrics.stress)}`);
+  if (metrics.sleepSeconds !== null) reasons.push(`восстановление: сон ${formatHours(metrics.sleepSeconds)}`);
+  if (metrics.steps !== null) reasons.push(`движение: ${Math.round(metrics.steps)} шагов`);
   return [
     `Почему так (${day})`,
-    `Причины: ${bb !== null ? `Body Battery ${Math.round(bb)}` : "Body Battery нет"}, ${stress !== null ? `стресс ${Math.round(stress)}` : "стресс нет"}.`,
-    "Рычаг: один фокус-блок, потом пауза.",
+    `Причины: ${reasons.join("; ")}.`,
+    `Логика: ${statusForSnapshot(snapshot)}.`,
+    `Рычаг: ${actionForSnapshot("midday", snapshot)}.`,
   ].join("\n");
 }
 
 function buildWhat15Message(slot, snapshot) {
-  const bb = metricValue(snapshot, "body_battery", ["mostRecentValue", "chargedValue"]);
-  if (typeof bb === "number" && bb < 35) {
+  const metrics = snapshotMetrics(snapshot);
+  if (!hasUsableSnapshot(snapshot)) {
+    return "🎯 <b>Что делать за 15 минут</b>\n1) 5 мин — пройтись.\n2) 5 мин — вода и тишина.\n3) 5 мин — выбрать один следующий шаг.";
+  }
+  if (typeof metrics.bb === "number" && metrics.bb < 35) {
     return "🎯 <b>Что делать за 15 минут</b>\n1) 4 мин — тишина без экрана.\n2) 6 мин — мягкая ходьба.\n3) 5 мин — вода и завершение новых задач.";
+  }
+  if (typeof metrics.stress === "number" && metrics.stress >= 60) {
+    return "🎯 <b>Что делать за 15 минут</b>\n1) 3 мин — убрать экран.\n2) 7 мин — спокойная ходьба или дыхание.\n3) 5 мин — вернуться к одной простой задаче.";
+  }
+  if (typeof metrics.sleepSeconds === "number" && metrics.sleepSeconds < 6 * 3600) {
+    return "🎯 <b>Что делать за 15 минут</b>\n1) 5 мин — свет и вода.\n2) 7 мин — лёгкое движение.\n3) 3 мин — убрать лишнее из плана.";
   }
   if (slot === "morning") {
     return "🎯 <b>Что делать за 15 минут</b>\n1) 2 мин — вода.\n2) 10 мин — один приоритет.\n3) 3 мин — пауза и следующий шаг.";
+  }
+  if (slot === "evening") {
+    return "🎯 <b>Что делать за 15 минут</b>\n1) 5 мин — закрыть бытовой хвост.\n2) 5 мин — приглушить стимулы.\n3) 5 мин — план на завтра одной строкой.";
   }
   return "🎯 <b>Что делать за 15 минут</b>\n1) 5 мин — пройтись.\n2) 7 мин — закрыть один хвост.\n3) 3 мин — вернуться к главной задаче.";
 }
 
 function buildColorMessage(cache) {
+  const snapshot = getSnapshot(cache, currentDayKey());
   const state = cache?._weekly_state || {};
   const latest = Object.keys(state).sort().pop();
   const color = latest ? state[latest] : null;
-  if (!color) return "🎨 Цвет недели пока не сохранён. После ближайшего утреннего push появится тема.";
-  return `🎨 <b>Тема недели</b>\n\n${escapeHtml(color.name_ru || "цвет")} · ${escapeHtml(color.hex || "")}\nФокус: ровный темп без дробления внимания.`;
+  if (!hasUsableSnapshot(snapshot)) {
+    if (!color) return "🎨 Цвет дня пока не считаю: данных за сегодня нет.";
+    return `🎨 <b>Тема недели</b>\n\n${escapeHtml(color.name_ru || "цвет")} · ${escapeHtml(color.hex || "")}\nСегодня данных мало, поэтому это только недельный фон.`;
+  }
+  const signal = deriveColorSignal(snapshot);
+  const weekly = color ? `\nНедельный фон: ${escapeHtml(color.name_ru || "цвет")} · ${escapeHtml(color.hex || "")}.` : "";
+  return [
+    `🎨 <b>Цвет дня: ${signal.name}</b>`,
+    "",
+    `Сигнал: ${signal.reason}.`,
+    `Фокус: ${signal.focus}.`,
+    `Факты: ${metricChips(snapshot, 3).join(" · ")}.`,
+    weekly,
+  ].filter(Boolean).join("\n");
 }
 
 function buildStatsMessage(cache, chatId) {
@@ -496,6 +615,43 @@ function voteStatsLine(label, stats) {
   if (!stats.total) return `<b>${label}:</b> пока нет откликов`;
   const index = Math.round(stats.accuracy * 100);
   return `<b>${label}:</b> ✅ ${stats.yes_count} · 🤷 ${stats.partial_count} · ❌ ${stats.no_count} · индекс ${index}%`;
+}
+
+function deriveColorSignal(snapshot) {
+  const metrics = snapshotMetrics(snapshot);
+  if (typeof metrics.bb === "number" && metrics.bb >= 65 && (metrics.stress === null || metrics.stress <= 45)) {
+    return {
+      name: "зелёный стабильный",
+      reason: "ресурс есть, стресс не давит",
+      focus: "держать темп без лишнего разгона",
+    };
+  }
+  if (typeof metrics.bb === "number" && metrics.bb < 35 && typeof metrics.stress === "number" && metrics.stress >= 55) {
+    return {
+      name: "красный перегруз",
+      reason: "ресурс низкий, стресс высокий",
+      focus: "снять добивки и оставить обязательное",
+    };
+  }
+  if (typeof metrics.sleepSeconds === "number" && metrics.sleepSeconds < 6 * 3600 && (metrics.stress === null || metrics.stress <= 45)) {
+    return {
+      name: "синий recovery",
+      reason: "сон короткий, но перегруза по стрессу не видно",
+      focus: "восстановить ритм, не доказывать продуктивность",
+    };
+  }
+  if (typeof metrics.steps === "number" && metrics.steps >= 9000 && (metrics.bb === null || metrics.bb >= 50)) {
+    return {
+      name: "яркий активный",
+      reason: "движения много, ресурс держится",
+      focus: "не превращать активность в поздний разгон",
+    };
+  }
+  return {
+    name: "янтарный смешанный",
+    reason: "сигналы неплохие, но без полного запаса",
+    focus: "один нормальный блок, потом короткая пауза",
+  };
 }
 
 function utcNowIso() {
@@ -558,30 +714,71 @@ async function storeTodayVote(env, cache, chatId, voteDay, rawVote) {
   return { saved: true, existing: null };
 }
 
-function buildWeekMessage(cache) {
+function recentDayKeys(daysBack = 7) {
   const days = [];
   const now = new Date();
-  for (let index = 6; index >= 0; index -= 1) {
+  for (let index = daysBack - 1; index >= 0; index -= 1) {
     days.push(formatMskDate(new Date(now.getTime() - index * 24 * 60 * 60 * 1000)));
   }
+  return days;
+}
 
-  const lines = days.map((day) => {
+function historyDayKeys(cache) {
+  return Object.keys(cache || {})
+    .filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key))
+    .sort();
+}
+
+function average(values) {
+  const clean = values.filter((value) => typeof value === "number");
+  if (!clean.length) return null;
+  return clean.reduce((sum, value) => sum + value, 0) / clean.length;
+}
+
+function rangeText(values, formatter = (value) => String(Math.round(value))) {
+  const clean = values.filter((value) => typeof value === "number");
+  if (!clean.length) return "нет данных";
+  return `${formatter(Math.min(...clean))}–${formatter(Math.max(...clean))}`;
+}
+
+function buildWeekMessage(cache) {
+  const days = recentDayKeys(7);
+  const rows = days.map((day) => {
     const snapshot = getSnapshot(cache, day);
-    const bb = metricValue(snapshot, "body_battery", ["mostRecentValue", "chargedValue"]);
-    const stress = metricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"]);
-    const sleepSeconds = metricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"]);
-    const parts = [];
-    if (bb !== null) parts.push(`BB ${Math.round(bb)}`);
-    if (stress !== null) parts.push(`стресс ${Math.round(stress)}`);
-    if (sleepSeconds !== null) parts.push(`сон ${formatHours(sleepSeconds)}`);
-    return `• ${day}: ${parts.join(" · ") || "данных нет"}`;
+    const metrics = snapshotMetrics(snapshot);
+    return {
+      day,
+      snapshot,
+      metrics,
+      hasData: hasUsableSnapshot(snapshot),
+      score: hasUsableSnapshot(snapshot) ? scoreSnapshot(snapshot) : null,
+    };
   });
+  const available = rows.filter((row) => row.hasData);
+  if (!available.length) return "📊 <b>Вердикт недели</b>\n\nДанных за последние 7 дней пока нет.";
+
+  const best = [...available].sort((a, b) => b.score - a.score)[0];
+  const hard = [...available].sort((a, b) => a.score - b.score)[0];
+  const sleepRange = rangeText(available.map((row) => row.metrics.sleepSeconds), formatHours);
+  const stressAvg = average(available.map((row) => row.metrics.stress));
+  const bbRange = rangeText(available.map((row) => row.metrics.bb));
+  const status = available.length < 4 ? "черновик: истории мало" : "рабочая картина";
+  const focus = hard.score < 40
+    ? "в начале недели искать перегруз и не тащить его дальше"
+    : "смотреть на повторяющийся ритм, не на один удачный день";
 
   return [
-    "Неделя:",
-    ...lines,
+    "📊 <b>Вердикт недели</b>",
     "",
-    "Вывод: смотри на ритм, не на один день.",
+    `<b>Статус:</b> ${status}. Данных: ${available.length}/7 дней.`,
+    `<b>Сон:</b> ${sleepRange}.`,
+    `<b>Стресс:</b> ${stressAvg === null ? "нет данных" : `средний около ${Math.round(stressAvg)}`}.`,
+    `<b>Ресурс:</b> ${bbRange}.`,
+    "",
+    `<b>Лучший день:</b> ${best.day} — ${metricChips(best.snapshot, 3).join(" · ")}.`,
+    `<b>Сложный день:</b> ${hard.day} — ${metricChips(hard.snapshot, 3).join(" · ")}.`,
+    "",
+    `🎯 <b>Фокус:</b> ${focus}.`,
   ].join("\n");
 }
 
@@ -614,9 +811,116 @@ function routeTextQuestion(text, cache) {
     return `Сегодня ${currentDayKey()}.`;
   }
   if (q.includes("данные") || q.includes("метрик")) {
-    return buildDebugSyncMessage(cache);
+    return buildDataAnswer(cache);
+  }
+  if (q.includes("недел")) {
+    return buildWeekMessage(cache);
+  }
+  if (q.includes("месяц") || q.includes("30")) {
+    return buildMonthAnswer(cache);
+  }
+  if (q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед")) {
+    return buildFoodAnswer(cache);
+  }
+  if (q.includes("сравни") || q.includes("вчера") || q.includes("лучше чем") || q.includes("хуже")) {
+    return buildCompareAnswer(cache);
+  }
+  if (q.includes("трен") || q.includes("нагруз") || q.includes("спорт")) {
+    return buildLoadAnswer(cache);
+  }
+  if (q.includes("режим") || q.includes("план") || q.includes("что делать") || q.includes("15")) {
+    return buildModeAnswer(cache);
   }
   return buildTodayMessage(cache);
+}
+
+function buildDataAnswer(cache) {
+  const day = currentDayKey();
+  const snapshot = getSnapshot(cache, day);
+  const keys = historyDayKeys(cache);
+  const available = availableMetrics(snapshot);
+  return [
+    "📌 <b>Что есть по данным</b>",
+    `Сегодня: ${available.length ? available.map((key) => METRIC_LABELS[key] || key).join(", ") : "пока пусто"}.`,
+    `История: ${keys.length} дней, последний ${keys[keys.length - 1] || "—"}.`,
+    `Надёжность сегодня: ${dataQuality(snapshot)}.`,
+  ].join("\n");
+}
+
+function buildCompareAnswer(cache) {
+  const keys = historyDayKeys(cache).filter((day) => hasUsableSnapshot(getSnapshot(cache, day)));
+  if (keys.length < 2) return "Сравнение пока слабое: нужно минимум два дня с данными.";
+  const current = keys[keys.length - 1];
+  const previous = keys[keys.length - 2];
+  const currentSnapshot = getSnapshot(cache, current);
+  const previousSnapshot = getSnapshot(cache, previous);
+  const currentScore = scoreSnapshot(currentSnapshot);
+  const previousScore = scoreSnapshot(previousSnapshot);
+  const delta = currentScore - previousScore;
+  const direction = delta > 4 ? "лучше" : delta < -4 ? "тяжелее" : "примерно так же";
+  return [
+    "↔️ <b>Сравнение</b>",
+    `${current} против ${previous}: ${direction}.`,
+    `Индекс режима: ${currentScore} против ${previousScore}.`,
+    `Сегодня: ${metricChips(currentSnapshot, 3).join(" · ")}.`,
+    `Вчера: ${metricChips(previousSnapshot, 3).join(" · ")}.`,
+  ].join("\n");
+}
+
+function buildMonthAnswer(cache) {
+  const keys = historyDayKeys(cache).slice(-30);
+  const available = keys.filter((day) => hasUsableSnapshot(getSnapshot(cache, day)));
+  if (!available.length) return "Месяц пока не собрать: нет дней с данными.";
+  const scores = available.map((day) => scoreSnapshot(getSnapshot(cache, day)));
+  return [
+    "🗓 <b>Месяц</b>",
+    `Данных: ${available.length}/30 дней.`,
+    `Индекс режима: ${rangeText(scores)}.`,
+    `Лучше смотреть тренд после 14+ полных дней, сейчас без лишней уверенности.`,
+  ].join("\n");
+}
+
+function buildFoodAnswer(cache) {
+  const snapshot = getSnapshot(cache, currentDayKey());
+  const metrics = snapshotMetrics(snapshot);
+  if (!hasUsableSnapshot(snapshot)) {
+    return "🍽 <b>Еда сейчас</b>\nДанных за день пока нет. Базово: простой приём еды, вода, без экспериментов на пустом баке.";
+  }
+  const stressPart = typeof metrics.stress === "number" && metrics.stress >= 60
+    ? "стресс высокий — не усложнять"
+    : "стресс не главный шум";
+  const resourcePart = typeof metrics.bb === "number" && metrics.bb < 35
+    ? "ресурс низкий — лучше ровная еда, не героизм на кофе"
+    : "ресурс терпимый";
+  return [
+    "🍽 <b>Еда сейчас</b>",
+    `По данным: ${resourcePart}, ${stressPart}.`,
+    "Практично: нормальная простая еда + вода. Без тяжёлых экспериментов и без догоняться сладким как стратегией.",
+  ].join("\n");
+}
+
+function buildLoadAnswer(cache) {
+  const snapshot = getSnapshot(cache, currentDayKey());
+  if (!hasUsableSnapshot(snapshot)) return "🏃 <b>Нагрузка</b>\nДанных нет. По режиму: только лёгкая активность, интенсивность не планировать.";
+  const metrics = snapshotMetrics(snapshot);
+  const soft = (typeof metrics.bb === "number" && metrics.bb < 40) || (typeof metrics.stress === "number" && metrics.stress >= 60);
+  return [
+    "🏃 <b>Нагрузка</b>",
+    `По режиму: ${soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок"}.`,
+    `Факты: ${metricChips(snapshot, 3).join(" · ")}.`,
+    soft ? "Лимит: без интенсивности и без добивки вечером." : "Лимит: не превращать нормальный день в тест на выживание.",
+  ].join("\n");
+}
+
+function buildModeAnswer(cache) {
+  const snapshot = getSnapshot(cache, currentDayKey());
+  return [
+    "🧭 <b>Режим сейчас</b>",
+    statusForSnapshot(snapshot),
+    `Действие: ${actionForSnapshot("midday", snapshot)}.`,
+    "",
+    buildWhat15Message("midday", snapshot),
+  ].join("\n");
 }
 
 function todayKeyboard(day) {
@@ -628,13 +932,6 @@ function todayKeyboard(day) {
       { text: "Что делать (15м)", callback_data: `what15:midday:${day}` },
     ]],
   };
-}
-
-function statusLabel(bb, stress) {
-  if (typeof bb === "number" && bb < 35) return "Бережный режим.";
-  if (typeof stress === "number" && stress > 62) return "День лучше вести мягче.";
-  if (typeof bb === "number" && bb > 70) return "Собранный темп.";
-  return "Ровный режим.";
 }
 
 function formatHours(seconds) {
@@ -663,6 +960,10 @@ function escapeHtml(value) {
 }
 
 export {
+  buildColorMessage,
+  buildWeekMessage,
+  buildWhat15Message,
+  routeTextQuestion,
   buildStatsMessage,
   collectColorVoteStats,
   collectTodayVoteStats,
