@@ -52,6 +52,13 @@ SLOT_METRIC_RELEVANCE = {
     "day": {"bb_now": 0.9, "stress_avg": 0.9, "sleep": 0.8, "steps": 0.7, "hrv_status": 0.7},
 }
 
+SLOT_FOCUS = {
+    "morning": "восстановление после сна и запас на первую половину дня",
+    "midday": "сдвиг ресурса с утра и короткая коррекция курса",
+    "evening": "закрытие дня, снижение шума и подготовка восстановления",
+    "day": "общий ритм дня без ложной точности",
+}
+
 
 def _seed(*parts: str) -> int:
     return sum(ord(ch) for ch in "|".join(parts))
@@ -264,6 +271,24 @@ def _select_slot_chips(snapshot: Optional[Dict[str, Any]], slot: str, max_items:
 
 
 def _meaning_line(slot: str, score: float) -> str:
+    if slot == "morning":
+        if score >= 0.8:
+            return "Ночь дала рабочий запас: первую половину дня можно вести собранно, без разгона."
+        if score >= -0.1:
+            return "Старт нормальный, но запас не бесконечный: темп важнее рывков."
+        return "Восстановление слабое: утро лучше вести в режиме экономии."
+    if slot == "midday":
+        if score >= 0.8:
+            return "День пока держится: задача — не растратить запас хаотичными переключениями."
+        if score >= -0.1:
+            return "Середина дня просит коррекцию: короткая пауза даст больше, чем ещё один рывок."
+        return "Ресурс просел к середине дня: пора упрощать план, не добирать темп силой."
+    if slot == "evening":
+        if score >= 0.8:
+            return "День закрывается ровно: лучший выигрыш сейчас — не разгонять вечер."
+        if score >= -0.1:
+            return "Финал рабочий, но восстановление надо защитить от позднего шума."
+        return "К вечеру запас тонкий: новые задачи лучше не открывать."
     if score >= 0.8:
         base = "Ресурс в рабочем диапазоне: ставка на ровный темп окупится."
     elif score >= -0.1:
@@ -274,22 +299,51 @@ def _meaning_line(slot: str, score: float) -> str:
     return base + irony
 
 
-def build_action_block(slot: str, score: float) -> str:
+def build_action_block(slot: str, score: float, metrics: Optional[Dict[str, Any]] = None) -> str:
+    metrics = metrics or {}
+    bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
+    stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
+    sleep_seconds = metrics.get("sleep_seconds")
+    steps = _fmt_int(metrics.get("steps"), 0, 120000)
+
     if slot == "morning":
         do = "один фокус-блок 60–90 минут до первого хаоса"
         avoid = "не стартовать день в режиме спринта"
+        if isinstance(sleep_seconds, (int, float)) and sleep_seconds < 6 * 3600:
+            do = "свет, вода и один короткий фокус-блок вместо тяжёлого старта"
+            avoid = "не компенсировать короткий сон перегазовкой"
+        elif bb_now is not None and bb_now >= 70:
+            do = "поставить главный блок на первую половину дня"
+            avoid = "не тратить хороший старт на мелкие переключения"
     elif slot == "midday":
         do = "пауза 7–10 минут без экрана и затем один приоритет"
         avoid = "не разгоняться кофеином и задачами одновременно"
+        if stress is not None and stress >= 60:
+            do = "7 минут без экрана, вода, затем одна простая задача"
+            avoid = "не добавлять шум поверх высокого стресса"
+        elif steps is not None and steps < 2500:
+            do = "10–15 минут спокойной ходьбы и возврат к одному блоку"
+            avoid = "не сидеть до вечера без сброса"
     else:
         do = "приглушить свет, закрыть новые задачи, выйти в тихий режим"
         avoid = "не делать вечерних добивок"
+        if stress is not None and stress >= 60:
+            do = "закрыть входящие, приглушить стимулы, оставить только бытовое"
+            avoid = "не тащить дневной стресс в ночь"
+        elif bb_now is not None and bb_now >= 60:
+            do = "закрыть день спокойно и сохранить запас на завтра"
+            avoid = "не превращать хороший ресурс в поздний спринт"
     if score < -0.8:
         do = "15 минут тихой ходьбы + вода + упрощение плана до базового"
     return f"🎯 <b>Действие:</b> {do}.\n🚫 <b>Лимит:</b> {avoid}."
 
 
 def _no_data_message(slot: str) -> str:
+    fallback_action = {
+        "morning": "собрать спокойный старт и не повышать нагрузку до синхронизации",
+        "midday": "сделать короткую паузу и вести вторую половину дня без рывка",
+        "evening": "закрыть день мягко, без новых задач и позднего шума",
+    }.get(slot, "один спокойный блок и пауза 5–7 минут")
     return (
         f"🟡 <b>{_slot_head(slot)}</b>\n\n"
         "<b>Вердикт:</b> данных пока мало, вывод предварительный.\n"
@@ -297,7 +351,7 @@ def _no_data_message(slot: str) -> str:
         "• Точный контекст дня пока не собран\n"
         "• Решения лучше принимать в щадящем режиме\n\n"
         "🧠 <b>Смысл:</b> пока держать ритм, не форсировать.\n"
-        "🎯 <b>Действие:</b> один спокойный блок и пауза 5–7 минут.\n"
+        f"🎯 <b>Действие:</b> {fallback_action}.\n"
         "🚫 <b>Лимит:</b> не разгонять нагрузку до следующей синхронизации."
     )
 
@@ -334,7 +388,7 @@ def render_roast(day_summary: Optional[Dict[str, Any]], history_optional: Option
         + facts_block
         + "\n\n"
         + f"<b>Гипотеза:</b> просадка чаще от рваного режима, чем от объёма{history_hint}.\n"
-        + build_action_block(slot, _score(_extract_metrics(day_summary)))
+        + build_action_block(slot, _score(_extract_metrics(day_summary)), _extract_metrics(day_summary))
     )
 
 
@@ -363,14 +417,16 @@ def build_push_message(slot: str, snapshot: Optional[Dict[str, Any]], day_key: s
     verdict = build_verdict_label(snapshot, day_key, slot)
     chips = build_data_chips(snapshot, max_items=4, slot=slot)
     chips_block = "\n".join(f"• {c}" for c in chips) if chips else "• Ключевые метрики ещё догружаются"
-    score = _score(_extract_metrics(snapshot))
+    metrics = _extract_metrics(snapshot)
+    score = _score(metrics)
 
     return (
         f"🟡 <b>{_slot_head(slot)}</b>\n\n"
         f"<b>Вердикт:</b> {verdict}.\n\n"
+        f"<b>Фокус слота:</b> {SLOT_FOCUS.get(slot, SLOT_FOCUS['day'])}.\n\n"
         f"📊 <b>Факты:</b>\n{chips_block}\n\n"
         f"🧠 <b>Смысл:</b> {_meaning_line(slot, score)}\n\n"
-        f"{build_action_block(slot, score)}"
+        f"{build_action_block(slot, score, metrics)}"
     )
 
 

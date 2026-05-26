@@ -43,6 +43,9 @@ class PushMessageTests(unittest.TestCase):
         self.assertIn("Сон", morning)
         self.assertIn("С утра", midday)
         self.assertIn("Шаги", evening)
+        self.assertIn("восстановление после сна", morning)
+        self.assertIn("короткая коррекция курса", midday)
+        self.assertIn("подготовка восстановления", evening)
         self.assertLess(midday.count("Сон"), 2)
         self.assertLess(evening.count("Сон"), 2)
 
