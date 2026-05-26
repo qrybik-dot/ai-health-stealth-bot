@@ -88,6 +88,9 @@ from communication import (
     build_day_detail_message,
     build_day_verdict_message,
     build_history_message,
+    build_food_guidance_message,
+    build_load_guidance_message,
+    build_mode_guidance_message,
     build_period_summary_message,
     build_metrics_message,
     build_push_message,
@@ -2856,6 +2859,14 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
         return build_metrics_message(context)
     if "месяц" in q or "30" in q:
         return build_period_summary_message(history_cache, days=30, title="Месяц")
+    if any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")):
+        return build_food_guidance_message(context.get("snapshot"))
+    if any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q:
+        return build_load_guidance_message(context.get("snapshot"))
+    if "15 минут" in q or "15м" in q or "что сделать сейчас" in q or "что делать сейчас" in q:
+        return _build_what15_message("midday", context.get("snapshot"))
+    if "режим" in q or "план" in q:
+        return build_mode_guidance_message(context.get("snapshot"), slot="midday")
     intent = resolve_intent(q)
     speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":

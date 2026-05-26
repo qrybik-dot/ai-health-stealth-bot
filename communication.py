@@ -22,6 +22,9 @@ INTENT_PATTERNS = {
     "compare_days": ("сравни", "сравнить", "сравнение", "vs", "против"),
     "what_data": ("какие данные есть", "что есть по данным", "какие данные доступны"),
     "weekly": ("недел", "итог недели", "weekly"),
+    "food": ("поесть", "еда", "завтрак", "обед", "ужин", "перекус"),
+    "load_advice": ("трен", "спорт", "нагруз", "можно ли", "интенсив"),
+    "what15": ("15 минут", "15м", "что сделать сейчас", "что делать сейчас"),
     "visual": ("покажи красиво", "сделай карточкой", "дай визуально"),
     "why": ("почему", "из-за чего", "причины"),
     "respiration": ("дыхани",),
@@ -575,6 +578,65 @@ def build_period_summary_message(history_cache: Dict[str, Any], days: int = 30, 
         f"<b>Лучший день:</b> {best['day']} — индекс {int(round(best['score'] * 10 + 50))}.\n"
         f"<b>Сложный день:</b> {hard['day']} — индекс {int(round(hard['score'] * 10 + 50))}.\n\n"
         f"🎯 <b>Фокус:</b> {focus}."
+    )
+
+
+def build_food_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
+    metrics = _extract_metrics(snapshot)
+    facts = build_data_chips(snapshot, max_items=3, slot="midday")
+    stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
+    bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
+    if not facts:
+        return (
+            "🍽 <b>Еда сейчас</b>\n\n"
+            "<b>По данным:</b> фактов за день мало.\n"
+            "<b>Практично:</b> простой приём еды + вода, без экспериментов на пустом баке."
+        )
+    if stress is not None and stress >= 60:
+        advice = "стресс высокий — лучше простая еда, вода и без тяжёлых экспериментов"
+    elif bb_now is not None and bb_now < 35:
+        advice = "ресурс низкий — ровная еда полезнее, чем героизм на кофе"
+    else:
+        advice = "ресурс терпимый — держать обычный простой режим, без догоняться сладким как стратегией"
+    return (
+        "🍽 <b>Еда сейчас</b>\n\n"
+        "<b>Факты:</b>\n"
+        + "\n".join(f"• {line}" for line in facts)
+        + f"\n\n<b>Практично:</b> {advice}."
+    )
+
+
+def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
+    metrics = _extract_metrics(snapshot)
+    facts = build_data_chips(snapshot, max_items=3, slot="midday")
+    stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
+    bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
+    sleep_seconds = metrics.get("sleep_seconds")
+    soft = (
+        (bb_now is not None and bb_now < 40)
+        or (stress is not None and stress >= 60)
+        or (isinstance(sleep_seconds, (int, float)) and sleep_seconds < 6 * 3600)
+    )
+    mode = "лёгкий формат" if soft else "умеренный формат выглядит ок"
+    limit = "без интенсивности и без вечерней добивки" if soft else "не превращать нормальный день в тест на выживание"
+    facts_block = "\n".join(f"• {line}" for line in facts) if facts else "• данных мало"
+    return (
+        "🏃 <b>Нагрузка</b>\n\n"
+        f"<b>По режиму:</b> {mode}.\n"
+        "<b>Факты:</b>\n"
+        + facts_block
+        + f"\n\n<b>Лимит:</b> {limit}."
+    )
+
+
+def build_mode_guidance_message(snapshot: Optional[Dict[str, Any]], slot: str = "midday") -> str:
+    metrics = _extract_metrics(snapshot)
+    score = _score(metrics)
+    return (
+        "🧭 <b>Режим сейчас</b>\n\n"
+        f"<b>Фокус:</b> {SLOT_FOCUS.get(slot, SLOT_FOCUS['midday'])}.\n"
+        f"<b>Смысл:</b> {_meaning_line(slot, score)}\n\n"
+        + build_action_block(slot, score, metrics)
     )
 
 

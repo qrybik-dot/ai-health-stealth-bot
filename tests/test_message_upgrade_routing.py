@@ -77,6 +77,23 @@ class MessageUpgradeRoutingTests(unittest.TestCase):
         self.assertIn("Сложный день", msg)
         self.assertIn("Фокус", msg)
 
+    def test_food_question_is_grounded_without_gemini(self):
+        msg = main._route_structured_reply("что мне лучше поесть?", self.context, self.history)
+        self.assertIn("Еда сейчас", msg)
+        self.assertIn("Факты", msg)
+        self.assertNotIn("Вердикт", msg)
+
+    def test_training_question_is_grounded_without_medical_claim(self):
+        msg = main._route_structured_reply("можно ли тренироваться сегодня?", self.context, self.history)
+        self.assertIn("Нагрузка", msg)
+        self.assertIn("По режиму", msg)
+        self.assertNotIn("диагноз", msg.lower())
+
+    def test_now_15m_question_is_structured(self):
+        msg = main._route_structured_reply("что сделать сейчас за 15 минут?", self.context, self.history)
+        self.assertIn("Что делать за 15 минут", msg)
+        self.assertIn("1)", msg)
+
     def test_sanitize_user_text_removes_markdown_artifacts(self):
         self.assertEqual(main._sanitize_user_text("**тест**"), "тест")
         self.assertEqual(main._sanitize_user_text("```код```"), "код")
