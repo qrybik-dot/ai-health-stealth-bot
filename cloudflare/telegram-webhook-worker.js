@@ -933,12 +933,36 @@ function buildMonthAnswer(cache) {
   const keys = historyDayKeys(cache).slice(-30);
   const available = keys.filter((day) => hasUsableSnapshot(getSnapshot(cache, day)));
   if (!available.length) return "Месяц пока не собрать: нет дней с данными.";
-  const scores = available.map((day) => scoreSnapshot(getSnapshot(cache, day)));
+  const rows = available.map((day) => {
+    const snapshot = getSnapshot(cache, day);
+    return { day, snapshot, metrics: snapshotMetrics(snapshot), score: scoreSnapshot(snapshot) };
+  });
+  const scores = rows.map((row) => row.score);
+  const best = [...rows].sort((a, b) => b.score - a.score)[0];
+  const hard = [...rows].sort((a, b) => a.score - b.score)[0];
+  const stressAvg = average(rows.map((row) => row.metrics.stress));
+  const sleepAvg = average(rows.map((row) => row.metrics.sleepSeconds));
+  const stepsAvg = average(rows.map((row) => row.metrics.steps));
+  const bbRange = rangeText(rows.map((row) => row.metrics.bb));
+  const status = rows.length >= 14 ? "рабочая картина" : "черновик: истории мало";
+  const focus = rows.length >= 14
+    ? "искать повторяющийся паттерн: сон → стресс → ресурс"
+    : "накопить хотя бы 14 дней, вывод пока без лишней уверенности";
   return [
     "🗓 <b>Месяц</b>",
-    `Данных: ${available.length}/30 дней.`,
-    `Индекс режима: ${rangeText(scores)}.`,
-    `Лучше смотреть тренд после 14+ полных дней, сейчас без лишней уверенности.`,
+    "",
+    `<b>Статус:</b> ${status}. Данных: ${available.length}/30 дней.`,
+    `<b>Диапазон:</b> ${keys[0]} — ${keys[keys.length - 1]}.`,
+    `<b>Индекс режима:</b> ${rangeText(scores)}.`,
+    `<b>Сон:</b> ${sleepAvg === null ? "нет данных" : `средний ${formatHours(sleepAvg)}`}.`,
+    `<b>Стресс:</b> ${stressAvg === null ? "нет данных" : `средний около ${Math.round(stressAvg)}`}.`,
+    `<b>Ресурс:</b> ${bbRange}.`,
+    `<b>Шаги:</b> ${stepsAvg === null ? "нет данных" : `средние ${Math.round(stepsAvg)}/день`}.`,
+    "",
+    `<b>Лучший день:</b> ${best.day} — ${metricChips(best.snapshot, 3, "day").join(" · ")}.`,
+    `<b>Сложный день:</b> ${hard.day} — ${metricChips(hard.snapshot, 3, "day").join(" · ")}.`,
+    "",
+    `🎯 <b>Фокус:</b> ${focus}.`,
   ].join("\n");
 }
 

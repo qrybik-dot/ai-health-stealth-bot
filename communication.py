@@ -504,6 +504,80 @@ def build_history_message(context: Dict[str, Any]) -> str:
     )
 
 
+def _history_day_keys(history_cache: Dict[str, Any]) -> List[str]:
+    keys: List[str] = []
+    if not isinstance(history_cache, dict):
+        return keys
+    for key, payload in history_cache.items():
+        if not isinstance(key, str) or key.startswith("_") or not isinstance(payload, dict):
+            continue
+        try:
+            dt.date.fromisoformat(key)
+        except ValueError:
+            continue
+        keys.append(key)
+    return sorted(keys)
+
+
+def _avg(values: List[float]) -> Optional[float]:
+    clean = [float(v) for v in values if isinstance(v, (int, float))]
+    if not clean:
+        return None
+    return sum(clean) / len(clean)
+
+
+def _range(values: List[float], formatter=None) -> str:
+    clean = [float(v) for v in values if isinstance(v, (int, float))]
+    if not clean:
+        return "нет данных"
+    fmt = formatter or (lambda value: str(int(round(value))))
+    return f"{fmt(min(clean))}–{fmt(max(clean))}"
+
+
+def build_period_summary_message(history_cache: Dict[str, Any], days: int = 30, title: str = "Месяц") -> str:
+    day_keys = _history_day_keys(history_cache)[-max(1, days):]
+    rows: List[Dict[str, Any]] = []
+    for day in day_keys:
+        snapshot = history_cache.get(day)
+        metrics = _extract_metrics(snapshot if isinstance(snapshot, dict) else {})
+        has_data = any(value is not None for value in metrics.values())
+        if not has_data:
+            continue
+        rows.append({"day": day, "snapshot": snapshot, "metrics": metrics, "score": _score(metrics)})
+    if not rows:
+        return f"🗓 <b>{title}</b>\n\nДанных за период пока нет."
+
+    best = max(rows, key=lambda row: row["score"])
+    hard = min(rows, key=lambda row: row["score"])
+    stress_avg = _avg([row["metrics"].get("stress_avg") for row in rows])
+    bb_range = _range([row["metrics"].get("bb_now") for row in rows])
+    sleep_avg = _avg([row["metrics"].get("sleep_seconds") for row in rows])
+    steps_avg = _avg([row["metrics"].get("steps") for row in rows])
+    enough = len(rows) >= min(14, days)
+    status = "рабочая картина" if enough else "черновик: истории мало"
+    sleep_line = "нет данных" if sleep_avg is None else _fmt_sleep_seconds(sleep_avg) or "нет данных"
+    stress_line = "нет данных" if stress_avg is None else f"средний около {int(round(stress_avg))}"
+    steps_line = "нет данных" if steps_avg is None else f"средние {int(round(steps_avg))}/день"
+    focus = (
+        "искать повторяющийся паттерн: сон → стресс → ресурс"
+        if enough
+        else "накопить хотя бы 14 дней, вывод пока без лишней уверенности"
+    )
+
+    return (
+        f"🗓 <b>{title}</b>\n\n"
+        f"<b>Статус:</b> {status}. Данных: {len(rows)}/{days} дней.\n"
+        f"<b>Диапазон:</b> {day_keys[0]} — {day_keys[-1]}.\n"
+        f"<b>Сон:</b> средний {sleep_line}.\n"
+        f"<b>Стресс:</b> {stress_line}.\n"
+        f"<b>Ресурс:</b> {bb_range}.\n"
+        f"<b>Шаги:</b> {steps_line}.\n\n"
+        f"<b>Лучший день:</b> {best['day']} — индекс {int(round(best['score'] * 10 + 50))}.\n"
+        f"<b>Сложный день:</b> {hard['day']} — индекс {int(round(hard['score'] * 10 + 50))}.\n\n"
+        f"🎯 <b>Фокус:</b> {focus}."
+    )
+
+
 def render_compare_days(day1: str, day2: str, snapshot1: Optional[Dict[str, Any]], snapshot2: Optional[Dict[str, Any]]) -> str:
     m1, m2 = _extract_metrics(snapshot1), _extract_metrics(snapshot2)
     score1, score2 = _score(m1), _score(m2)

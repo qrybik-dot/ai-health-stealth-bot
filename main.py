@@ -88,6 +88,7 @@ from communication import (
     build_day_detail_message,
     build_day_verdict_message,
     build_history_message,
+    build_period_summary_message,
     build_metrics_message,
     build_push_message,
     build_weekly_verdict_message,
@@ -2853,6 +2854,8 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
     q = query.strip().lower()
     if "какие данные" in q and ("сколько" in q or "за сколько" in q):
         return build_metrics_message(context)
+    if "месяц" in q or "30" in q:
+        return build_period_summary_message(history_cache, days=30, title="Месяц")
     intent = resolve_intent(q)
     speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":

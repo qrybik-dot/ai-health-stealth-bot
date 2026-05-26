@@ -60,6 +60,22 @@ class MessageUpgradeRoutingTests(unittest.TestCase):
         self.assertIn("Пульс", msg)
         self.assertNotIn("Вердикт", msg)
 
+    def test_month_question_gets_period_summary(self):
+        history = {}
+        for i in range(20):
+            day = f"2026-01-{i + 1:02d}"
+            history[day] = {
+                "body_battery": {"mostRecentValue": 45 + i},
+                "stress": {"avgStressLevel": 55 - (i % 10)},
+                "sleep": {"sleepTimeSeconds": (6 * 3600) + i * 300},
+                "steps": {"totalSteps": 3000 + i * 250},
+            }
+        ctx = {"available_days": sorted(history.keys()), "available_days_count": len(history), "snapshot": history["2026-01-20"], "day_key": "2026-01-20", "day_status": "ready"}
+        msg = main._route_structured_reply("как прошёл месяц", ctx, history)
+        self.assertIn("Месяц", msg)
+        self.assertIn("Лучший день", msg)
+        self.assertIn("Сложный день", msg)
+        self.assertIn("Фокус", msg)
 
     def test_sanitize_user_text_removes_markdown_artifacts(self):
         self.assertEqual(main._sanitize_user_text("**тест**"), "тест")

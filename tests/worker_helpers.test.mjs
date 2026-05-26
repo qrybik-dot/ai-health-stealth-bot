@@ -95,6 +95,18 @@ const richCache = {
   },
 };
 
+for (let index = 2; index <= 20; index += 1) {
+  const day = new Date(`${today}T12:00:00Z`);
+  day.setUTCDate(day.getUTCDate() - index);
+  const key = day.toISOString().slice(0, 10);
+  richCache[key] = {
+    body_battery: { mostRecentValue: 40 + index, chargedValue: 55 + index },
+    stress: { avgStressLevel: 60 - (index % 12) },
+    sleep: { sleepTimeSeconds: 21600 + index * 240 },
+    steps: { totalSteps: 2500 + index * 180 },
+  };
+}
+
 const colorMessage = buildColorMessage(richCache);
 assert.match(colorMessage, /Цвет дня/);
 assert.match(colorMessage, /ресурс|стресс|движения/);
@@ -114,6 +126,12 @@ assert.match(compareMessage, new RegExp(yesterdayKey));
 const foodMessage = routeTextQuestion("что мне лучше поесть", richCache);
 assert.match(foodMessage, /Еда сейчас/);
 assert.doesNotMatch(foodMessage, /Сравнение/);
+
+const monthMessage = routeTextQuestion("как прошёл месяц", richCache);
+assert.match(monthMessage, /Месяц/);
+assert.match(monthMessage, /Лучший день/);
+assert.match(monthMessage, /Сложный день/);
+assert.match(monthMessage, /Фокус/);
 
 const what15 = buildWhat15Message("midday", richCache[yesterdayKey]);
 assert.match(what15, /тишина|экран|ходьба/);
