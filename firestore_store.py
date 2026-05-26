@@ -11,6 +11,15 @@ except Exception:  # optional dependency for local dev
 log = logging.getLogger(__name__)
 
 
+def _default_list_days() -> int:
+    raw = os.getenv("FIRESTORE_HISTORY_QUERY_DAYS") or os.getenv("CACHE_RETENTION_DAYS") or "365"
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 365
+    return max(1, min(3650, value))
+
+
 class FirestoreStore:
     def __init__(self) -> None:
         self.project_id = os.getenv("FIRESTORE_PROJECT_ID", "").strip()
@@ -42,10 +51,10 @@ class FirestoreStore:
             return
         doc.set(payload, merge=True)
 
-    def list_days(self, chat_id: str, limit: int = 90, descending: bool = True) -> Dict[str, Dict[str, Any]]:
+    def list_days(self, chat_id: str, limit: Optional[int] = None, descending: bool = True) -> Dict[str, Dict[str, Any]]:
         if not self.enabled or self._client is None:
             return {}
-        safe_limit = max(1, int(limit))
+        safe_limit = max(1, int(limit if limit is not None else _default_list_days()))
         direction = firestore.Query.DESCENDING if descending else firestore.Query.ASCENDING
         days_ref = self._client.collection("users").document(chat_id).collection("days")
         query = days_ref.order_by("__name__", direction=direction).limit(safe_limit)

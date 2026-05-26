@@ -21,7 +21,7 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 MEMORY_DAYS = _env_int("CACHE_RETENTION_DAYS", 365, 30, 3650)
-HISTORY_HYDRATION_DAYS = _env_int("HISTORY_HYDRATION_DAYS", min(MEMORY_DAYS, 365), 1, MEMORY_DAYS)
+HISTORY_HYDRATION_DAYS = _env_int("HISTORY_HYDRATION_DAYS", MEMORY_DAYS, 1, MEMORY_DAYS)
 BACKFILL_MAX_DAYS = _env_int("BACKFILL_MAX_DAYS", 90, 1, MEMORY_DAYS)
 HISTORY_BOOTSTRAP_TARGET_DAYS = _env_int("HISTORY_BOOTSTRAP_TARGET_DAYS", min(BACKFILL_MAX_DAYS, 90), 1, BACKFILL_MAX_DAYS)
 WEEKLY_STATE_KEY = "_weekly_state"
@@ -139,10 +139,10 @@ def _sorted_day_items(days_payload: Dict[str, Any], descending: bool = False) ->
     return sorted(items, key=lambda item: item[0], reverse=descending)
 
 
-def get_recent_days(chat_id: str = DEFAULT_CHAT_SCOPE, days: int = 90, descending: bool = False) -> Dict[str, Dict[str, Any]]:
+def get_recent_days(chat_id: str = DEFAULT_CHAT_SCOPE, days: Optional[int] = None, descending: bool = False) -> Dict[str, Dict[str, Any]]:
     if not FIRESTORE.enabled:
         return {}
-    safe_days = max(1, int(days))
+    safe_days = max(1, int(days if days is not None else HISTORY_HYDRATION_DAYS))
     remote_days = FIRESTORE.list_days(chat_id, limit=safe_days, descending=descending)
     ordered: Dict[str, Dict[str, Any]] = {}
     for day_key, payload in _sorted_day_items(remote_days, descending=descending):
@@ -150,11 +150,11 @@ def get_recent_days(chat_id: str = DEFAULT_CHAT_SCOPE, days: int = 90, descendin
     return ordered
 
 
-def _hydrate_day_history(primary_cache: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE, history_days: int = 90) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _hydrate_day_history(primary_cache: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE, history_days: Optional[int] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     merged = dict(primary_cache)
     remote_days: Dict[str, Dict[str, Any]] = {}
     remote_error = ""
-    safe_history_days = max(1, int(history_days))
+    safe_history_days = max(1, int(history_days if history_days is not None else HISTORY_HYDRATION_DAYS))
     if FIRESTORE.enabled:
         try:
             remote_days = get_recent_days(chat_id=chat_id, days=safe_history_days, descending=False)

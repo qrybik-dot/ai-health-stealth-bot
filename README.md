@@ -15,7 +15,7 @@ Coach Potato отправляет короткие data-driven вердикты 
 - Garmin Connect (минимальный набор метрик): сон, stress, body battery, RHR, шаги и др.
 - Cloud-first store: Firestore (`users/{chat_id}/days`, `users/{chat_id}/sent`, `users/{chat_id}/auth/garmin`).
 - Локальный `cache.json` используется как dev fallback и для аварийной деградации.
-- История дней хранится с retention 365 дней по умолчанию (`CACHE_RETENTION_DAYS`), без старого жёсткого потолка 120 дней.
+- История дней хранится и гидратируется с retention 365 дней по умолчанию (`CACHE_RETENTION_DAYS`), без старого жёсткого потолка 120 дней. Firestore-запрос истории по умолчанию следует этому же лимиту; отдельно можно задать `HISTORY_HYDRATION_DAYS` или `FIRESTORE_HISTORY_QUERY_DAYS`.
 - Backfill по умолчанию ограничен 90 днями (`BACKFILL_MAX_DAYS`) как защита от Garmin rate-limit; лимит можно поднять отдельно, когда auth стабилен.
 
 ## Расписание

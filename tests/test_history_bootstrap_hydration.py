@@ -13,9 +13,12 @@ class _FakeFirestoreStore:
     def __init__(self, days=None, enabled=True):
         self.enabled = enabled
         self.days = days or {}
+        self.last_limit = None
 
-    def list_days(self, chat_id: str, limit: int = 90, descending: bool = True):
-        keys = sorted(self.days.keys(), reverse=descending)[:limit]
+    def list_days(self, chat_id: str, limit=None, descending: bool = True):
+        self.last_limit = limit
+        safe_limit = limit if limit is not None else len(self.days)
+        keys = sorted(self.days.keys(), reverse=descending)[:safe_limit]
         return {k: dict(self.days[k]) for k in keys}
 
     def get_day(self, chat_id: str, day_key: str):
@@ -55,6 +58,17 @@ class HistoryBootstrapHydrationTests(unittest.TestCase):
             with patch.object(cache, "CACHE_FILE", cache_path), patch.object(cache, "FIRESTORE", fake_store):
                 loaded = cache.load_cache()
         self.assertEqual(len(cache.history_list(loaded)), 90)
+
+    def test_default_hydration_uses_retention_not_90_day_ceiling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "cache.json")
+            fake_store = _FakeFirestoreStore(days=_make_days(365), enabled=True)
+            with patch.object(cache, "CACHE_FILE", cache_path), \
+                 patch.object(cache, "FIRESTORE", fake_store), \
+                 patch.object(cache, "HISTORY_HYDRATION_DAYS", 365):
+                loaded = cache.load_cache()
+        self.assertEqual(len(cache.history_list(loaded)), 365)
+        self.assertEqual(fake_store.last_limit, 365)
 
     def test_startup_local_3_days_and_firestore_90_days_hydrates_to_90(self):
         with tempfile.TemporaryDirectory() as tmp:
