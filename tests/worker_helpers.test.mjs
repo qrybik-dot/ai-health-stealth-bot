@@ -154,3 +154,22 @@ const stressedCache = {
 };
 assert.match(buildTodayMessage(stressedCache, "midday"), /7 минут без экрана|коррекц/);
 assert.match(buildTodayMessage(stressedCache, "evening"), /не тащить дневной стресс|приглушить/);
+
+const malformedCache = {
+  [today]: {
+    body_battery: { mostRecentValue: 79 },
+    stress: { avgStressLevel: 18 },
+    sleep: { sleepTimeSeconds: 26760 },
+    rhr: { restingHeartRate: 129221211 },
+    steps: { totalSteps: 0 },
+    daily_activity: { activeSeconds: 5940 },
+  },
+};
+const malformedToday = buildTodayMessage(malformedCache, "midday");
+assert.doesNotMatch(malformedToday, /129221211/);
+assert.doesNotMatch(malformedToday, /0 шагов/);
+
+const malformedFacts = routeTextQuestion("почему нет шагов?", malformedCache);
+assert.match(malformedFacts, /Почему нет шагов/);
+assert.match(malformedFacts, /steps=0/);
+assert.match(malformedFacts, /активность/);

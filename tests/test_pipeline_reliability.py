@@ -100,14 +100,14 @@ class PipelineReliabilityTests(unittest.TestCase):
             with patch.object(cache, "CACHE_FILE", cache_path):
                 self.assertFalse(cache.was_slot_sent("chat", "2026-01-14", "morning"))
 
-    def test_delayed_github_schedule_uses_declared_cron_slot(self):
+    def test_delayed_github_morning_schedule_does_not_send_stale_start(self):
         tz = dt.timezone(dt.timedelta(hours=3))
         delayed_now = dt.datetime(2026, 5, 24, 13, 15, tzinfo=tz)
         with patch.dict(os.environ, {"PUSH_SCHEDULE_CRON": "30 6 * * *"}, clear=False):
             decision = main._build_schedule_decision(delayed_now, "chat")
 
         self.assertEqual(decision["window_matched"], "none")
-        self.assertEqual(decision["slot_id"], "morning")
+        self.assertEqual(decision["slot_id"], "midday")
         self.assertEqual(decision["schedule_cron"], "30 6 * * *")
 
     def test_delayed_data_catchup_without_duplicates(self):

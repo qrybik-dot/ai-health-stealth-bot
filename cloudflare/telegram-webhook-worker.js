@@ -380,6 +380,13 @@ function metricValue(snapshot, metric, keys) {
   return null;
 }
 
+function boundedMetricValue(snapshot, metric, keys, minValue, maxValue) {
+  const value = metricValue(snapshot, metric, keys);
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < minValue || value > maxValue) return null;
+  return value;
+}
+
 function availableMetrics(snapshot) {
   return Object.keys(METRIC_LABELS).filter((key) => {
     const value = snapshot?.[key];
@@ -398,16 +405,21 @@ function stringMetric(snapshot, metric, keys) {
 }
 
 function snapshotMetrics(snapshot) {
-  const activeSeconds = metricValue(snapshot, "daily_activity", ["activeSeconds", "activeTimeSeconds"]);
+  const activeSeconds = boundedMetricValue(snapshot, "daily_activity", ["activeSeconds", "activeTimeSeconds"], 0, 24 * 3600);
+  const activeMinutes = typeof activeSeconds === "number" ? Math.round(activeSeconds / 60) : null;
+  const rawSteps = boundedMetricValue(snapshot, "steps", ["totalSteps", "steps"], 0, 120000);
+  const stepsReliable = !(rawSteps === 0 && typeof activeMinutes === "number" && activeMinutes >= 10);
   return {
-    bb: metricValue(snapshot, "body_battery", ["mostRecentValue", "currentValue", "chargedValue"]),
-    bbCharged: metricValue(snapshot, "body_battery", ["chargedValue"]),
-    stress: metricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"]),
-    maxStress: metricValue(snapshot, "stress", ["maxStressLevel"]),
-    sleepSeconds: metricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"]),
-    rhr: metricValue(snapshot, "rhr", ["restingHeartRate"]),
-    steps: metricValue(snapshot, "steps", ["totalSteps", "steps"]),
-    activeMinutes: typeof activeSeconds === "number" ? Math.round(activeSeconds / 60) : null,
+    bb: boundedMetricValue(snapshot, "body_battery", ["mostRecentValue", "currentValue", "chargedValue"], 0, 100),
+    bbCharged: boundedMetricValue(snapshot, "body_battery", ["chargedValue"], 0, 100),
+    stress: boundedMetricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"], 0, 100),
+    maxStress: boundedMetricValue(snapshot, "stress", ["maxStressLevel"], 0, 100),
+    sleepSeconds: boundedMetricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"], 1, 24 * 3600),
+    rhr: boundedMetricValue(snapshot, "rhr", ["restingHeartRate"], 30, 130),
+    steps: stepsReliable ? rawSteps : null,
+    stepsRaw: rawSteps,
+    stepsReliable,
+    activeMinutes,
     hrvStatus: stringMetric(snapshot, "hrv_status", ["status", "hrvStatus"]),
   };
 }
@@ -468,6 +480,14 @@ function statusForSnapshot(snapshot) {
   return "ровный день без резких добивок";
 }
 
+function slotHead(slot) {
+  return {
+    morning: "Старт дня",
+    midday: "Сверка в середине дня",
+    evening: "Финал дня",
+  }[slot] || "Сигнал дня";
+}
+
 function actionForSnapshot(slot, snapshot) {
   const metrics = snapshotMetrics(snapshot);
   if (!hasUsableSnapshot(snapshot)) return "держать базовый режим и дождаться следующей синхронизации";
@@ -510,13 +530,13 @@ function buildTodayMessage(cache, slot = "midday") {
   const day = currentDayKey();
   const snapshot = getSnapshot(cache, day);
   if (!hasUsableSnapshot(snapshot)) {
-    return "🟡 <b>Сигнал дня</b>\n\nДанных за сегодня пока нет. Держим ровный режим без резких решений.";
+    return `🟡 <b>${slotHead(slot)}</b>\n\nДанных за сегодня пока нет. Держим ровный режим без резких решений.`;
   }
 
   const chips = metricChips(snapshot, 4, slot);
 
   return [
-    `🟡 <b>Сигнал дня</b>`,
+    `🟡 <b>${slotHead(slot)}</b>`,
     "",
     `<b>Вердикт:</b> ${statusForSnapshot(snapshot)}.`,
     `<b>Фокус слота:</b> ${SLOT_FOCUS[slot] || SLOT_FOCUS.midday}.`,
@@ -531,6 +551,9 @@ function buildFactsMessage(snapshot, day, slot = "midday") {
   const available = availableMetrics(snapshot);
   if (available.length === 0) return `По фактам за ${day}: данных пока нет.`;
   const metrics = snapshotMetrics(snapshot);
+  const stepsLine = metrics.stepsReliable
+    ? valueOrDash(metrics.steps)
+    : `нет корректных данных${typeof metrics.activeMinutes === "number" ? `; активность ${metrics.activeMinutes} мин, но Garmin отдал 0 шагов` : ""}`;
   return [
     `📌 <b>По фактам</b> ${day}`,
     `• Фокус: ${SLOT_FOCUS[slot] || SLOT_FOCUS.midday}`,
@@ -538,10 +561,11 @@ function buildFactsMessage(snapshot, day, slot = "midday") {
     `• Body Battery: ${valueOrDash(metrics.bb)}${metrics.bbCharged !== null ? ` / заряд ${Math.round(metrics.bbCharged)}` : ""}`,
     `• Стресс: ${valueOrDash(metrics.stress)}${metrics.maxStress !== null ? ` / пик ${Math.round(metrics.maxStress)}` : ""}`,
     `• Сон: ${formatMaybeHours(metrics.sleepSeconds)}`,
-    `• Шаги: ${valueOrDash(metrics.steps)}`,
+    `• Шаги: ${stepsLine}`,
+    metrics.stepsReliable ? "" : "• Вывод по шагам: блок steps есть, но значение похоже на неполную синхронизацию.",
     `• Надёжность: ${dataQuality(snapshot)}`,
     `Вывод: ${statusForSnapshot(snapshot)}.`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildRoastMessage(snapshot, day, slot = "midday") {
@@ -568,6 +592,7 @@ function buildWhyMessage(snapshot, day, slot = "midday") {
   if (metrics.stress !== null) reasons.push(`нагрузка: стресс ${Math.round(metrics.stress)}`);
   if (metrics.sleepSeconds !== null) reasons.push(`восстановление: сон ${formatHours(metrics.sleepSeconds)}`);
   if (metrics.steps !== null) reasons.push(`движение: ${Math.round(metrics.steps)} шагов`);
+  if (!metrics.stepsReliable && metrics.stepsRaw === 0) reasons.push("движение: шаги не считаю, Garmin отдал 0 при признаках активности");
   return [
     `Почему так (${day})`,
     `Фокус: ${SLOT_FOCUS[slot] || SLOT_FOCUS.midday}.`,
@@ -881,6 +906,9 @@ function routeTextQuestion(text, cache) {
   if (q.includes("месяц") || q.includes("30")) {
     return buildMonthAnswer(cache);
   }
+  if (q.includes("шаг") || q.includes("ходьб")) {
+    return buildStepsAnswer(cache);
+  }
   if (q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед")) {
     return buildFoodAnswer(cache);
   }
@@ -894,6 +922,34 @@ function routeTextQuestion(text, cache) {
     return buildModeAnswer(cache);
   }
   return buildTodayMessage(cache);
+}
+
+function buildStepsAnswer(cache) {
+  const day = currentDayKey();
+  const snapshot = getSnapshot(cache, day);
+  const metrics = snapshotMetrics(snapshot);
+  if (!hasUsableSnapshot(snapshot)) return "🚶 <b>Шаги</b>\nДанных за сегодня пока нет.";
+  if (metrics.steps !== null) {
+    return [
+      "🚶 <b>Шаги</b>",
+      `Сейчас: <b>${Math.round(metrics.steps)}</b>.`,
+      typeof metrics.activeMinutes === "number" ? `Активность: ${metrics.activeMinutes} мин.` : "",
+      "Смысл: движение учитываю как контекст нагрузки, не как цель само по себе.",
+    ].filter(Boolean).join("\n");
+  }
+  if (metrics.stepsRaw === 0 && typeof metrics.activeMinutes === "number" && metrics.activeMinutes >= 10) {
+    return [
+      "🚶 <b>Почему нет шагов</b>",
+      "Garmin отдал steps=0, но активность за день уже есть.",
+      `Активность: ${metrics.activeMinutes} мин.`,
+      "Вывод: это похоже на неполную синхронизацию блока шагов. В вердикте шаги не считаю как факт.",
+    ].join("\n");
+  }
+  return [
+    "🚶 <b>Шаги</b>",
+    "Блок шагов есть, но пригодного значения сейчас нет.",
+    "Вывод: не делаю вывод по ходьбе до следующей синхронизации.",
+  ].join("\n");
 }
 
 function buildDataAnswer(cache) {

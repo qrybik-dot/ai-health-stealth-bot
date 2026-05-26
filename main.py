@@ -584,6 +584,12 @@ SCHEDULE_CRON_TO_SLOT: Dict[str, str] = {
     "0 17 * * *": "evening",
 }
 
+SLOT_STALE_AFTER: Dict[str, Tuple[int, int]] = {
+    "morning": (12, 0),
+    "midday": (18, 0),
+    "evening": (23, 59),
+}
+
 
 def _minutes(hh: int, mm: int) -> int:
     return hh * 60 + mm
@@ -609,12 +615,21 @@ def _nearest_slot(now_msk: dt.datetime) -> str:
     return best_slot
 
 
+def _is_slot_stale(now_msk: dt.datetime, slot: str) -> bool:
+    stale_after = SLOT_STALE_AFTER.get(slot)
+    if stale_after is None:
+        return False
+    return _minutes(now_msk.hour, now_msk.minute) > _minutes(*stale_after)
+
+
 def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] = None) -> str:
     if override in {"morning", "midday", "evening"}:
         return override
     schedule_cron = os.getenv("PUSH_SCHEDULE_CRON", "").strip()
     if schedule_cron in SCHEDULE_CRON_TO_SLOT:
-        return SCHEDULE_CRON_TO_SLOT[schedule_cron]
+        cron_slot = SCHEDULE_CRON_TO_SLOT[schedule_cron]
+        if not _is_slot_stale(now_msk, cron_slot):
+            return cron_slot
     in_window = _resolve_push_slot(now_msk)
     if in_window:
         return in_window
