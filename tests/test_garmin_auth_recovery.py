@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -116,6 +117,58 @@ class GarminAuthRecoveryTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         gist_upload.main()
                     patch_request.assert_not_called()
+            finally:
+                os.chdir(cwd)
+
+    def test_gist_upload_blocks_runtime_state_loss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                with open("cache.json", "w", encoding="utf-8") as f:
+                    json.dump({"2026-01-14": {"sleep": {}}}, f)
+                remote = {
+                    "files": {
+                        "cache.json": {
+                            "content": json.dumps({
+                                "2026-01-14": {"sleep": {}},
+                                "_push_state": {"2026-01-14|c|morning|verdict": {"ts": "x"}},
+                                "_weekly_state": {"2026-W03": {"week_id": "2026-W03"}},
+                            })
+                        }
+                    }
+                }
+                get_resp = type("Resp", (), {"status_code": 200, "json": lambda self: remote})()
+                with patch.dict(os.environ, {"CACHE_GIST_ID": "gist-id", "GIST_TOKEN": "token"}, clear=False), \
+                     patch.object(gist_upload.requests, "get", return_value=get_resp), \
+                     patch.object(gist_upload.requests, "patch") as patch_request:
+                    with self.assertRaises(RuntimeError) as caught:
+                        gist_upload.main()
+                    self.assertIn("state loss guard blocked gist upload", str(caught.exception))
+                    patch_request.assert_not_called()
+            finally:
+                os.chdir(cwd)
+
+    def test_gist_upload_allows_preserved_runtime_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                payload = {
+                    "2026-01-14": {"sleep": {}},
+                    "_push_state": {"2026-01-14|c|morning|verdict": {"ts": "x"}},
+                    "_weekly_state": {"2026-W03": {"week_id": "2026-W03"}},
+                }
+                with open("cache.json", "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+                remote = {"files": {"cache.json": {"content": json.dumps(payload)}}}
+                get_resp = type("Resp", (), {"status_code": 200, "json": lambda self: remote})()
+                patch_resp = type("Resp", (), {"status_code": 200, "text": "ok"})()
+                with patch.dict(os.environ, {"CACHE_GIST_ID": "gist-id", "GIST_TOKEN": "token"}, clear=False), \
+                     patch.object(gist_upload.requests, "get", return_value=get_resp), \
+                     patch.object(gist_upload.requests, "patch", return_value=patch_resp) as patch_request:
+                    gist_upload.main()
+                    patch_request.assert_called_once()
             finally:
                 os.chdir(cwd)
 
