@@ -7,7 +7,23 @@ from zoneinfo import ZoneInfo
 from firestore_store import STORE as FIRESTORE
 
 CACHE_FILE = "cache.json"
-MEMORY_DAYS = 120
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+MEMORY_DAYS = _env_int("CACHE_RETENTION_DAYS", 365, 30, 3650)
+HISTORY_HYDRATION_DAYS = _env_int("HISTORY_HYDRATION_DAYS", min(MEMORY_DAYS, 365), 1, MEMORY_DAYS)
+BACKFILL_MAX_DAYS = _env_int("BACKFILL_MAX_DAYS", 90, 1, MEMORY_DAYS)
+HISTORY_BOOTSTRAP_TARGET_DAYS = _env_int("HISTORY_BOOTSTRAP_TARGET_DAYS", min(BACKFILL_MAX_DAYS, 90), 1, BACKFILL_MAX_DAYS)
 WEEKLY_STATE_KEY = "_weekly_state"
 DAILY_VOTES_KEY = "_daily_votes"
 TODAY_VOTES_KEY = "_today_votes"
@@ -22,7 +38,7 @@ BOOTSTRAP_STATE_KEY = "_bootstrap_state"
 TELEGRAM_POLL_STATE_KEY = "_telegram_poll_state"
 RETENTION_DAYS = MEMORY_DAYS
 WEEKLY_RETENTION_WEEKS = 26
-PUSH_STATE_RETENTION_DAYS = 14
+PUSH_STATE_RETENTION_DAYS = _env_int("PUSH_STATE_RETENTION_DAYS", 14, 1, MEMORY_DAYS)
 DEFAULT_BOT_TZ = "Europe/Moscow"
 DEFAULT_CHAT_SCOPE = os.getenv("DEFAULT_CHAT_ID", "default")
 KEY_METRICS: Tuple[str, ...] = ("sleep", "body_battery", "rhr", "stress")
@@ -192,7 +208,7 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         }
 
     def _finalize(cache_payload: Dict[str, Any], meta_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        hydrated, hydration_meta = _hydrate_day_history(cache_payload, chat_id=DEFAULT_CHAT_SCOPE, history_days=90)
+        hydrated, hydration_meta = _hydrate_day_history(cache_payload, chat_id=DEFAULT_CHAT_SCOPE, history_days=HISTORY_HYDRATION_DAYS)
         out_meta = dict(meta_payload)
         out_meta.update(hydration_meta)
         out_meta.update(_persist_hydrated_days_to_local(hydrated))

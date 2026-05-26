@@ -82,6 +82,13 @@ class HistoryBootstrapHydrationTests(unittest.TestCase):
         self.assertTrue(result["backfill_triggered"])
         mocked_backfill.assert_called_once_with(90)
 
+    def test_bootstrap_target_is_configurable_above_90(self):
+        with patch.object(main, "BACKFILL_MAX_DAYS", 365), patch.object(main, "load_cache", return_value=_make_days(90)), patch.object(main, "history_list", return_value=sorted(_make_days(90).keys())), patch.object(main, "run_backfill", return_value=180) as mocked_backfill, patch.object(main, "upsert_bootstrap_state"):
+            result = main.ensure_history_bootstrap(target_days=180)
+        self.assertTrue(result["backfill_triggered"])
+        self.assertEqual(result["target_days"], 180)
+        mocked_backfill.assert_called_once_with(180)
+
     def test_bootstrap_backfill_not_rerun_when_history_is_ready(self):
         days = _make_days(90)
         with patch.object(main, "load_cache", return_value=days), patch.object(main, "history_list", return_value=sorted(days.keys())), patch.object(main, "run_backfill") as mocked_backfill, patch.object(main, "upsert_bootstrap_state"):
@@ -147,6 +154,22 @@ class HistoryBootstrapHydrationTests(unittest.TestCase):
                     persisted = json.load(f)
         self.assertEqual(len(cache.history_list(loaded)), 90)
         self.assertEqual(len(cache.history_list(persisted)), 90)
+
+    def test_prune_default_keeps_longer_than_120_days(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = os.path.join(tmp, "cache.json")
+            keep_day = (date.today() - timedelta(days=200)).isoformat()
+            remove_day = (date.today() - timedelta(days=400)).isoformat()
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    keep_day: {"source": "garmin", "date": keep_day},
+                    remove_day: {"source": "garmin", "date": remove_day},
+                }, f)
+            with patch.object(cache, "CACHE_FILE", cache_path):
+                cache.prune_cache()
+                loaded = cache.load_cache()
+        self.assertIn(keep_day, loaded)
+        self.assertNotIn(remove_day, loaded)
 
 
 if __name__ == "__main__":

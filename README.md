@@ -15,6 +15,8 @@ Coach Potato отправляет короткие data-driven вердикты 
 - Garmin Connect (минимальный набор метрик): сон, stress, body battery, RHR, шаги и др.
 - Cloud-first store: Firestore (`users/{chat_id}/days`, `users/{chat_id}/sent`, `users/{chat_id}/auth/garmin`).
 - Локальный `cache.json` используется как dev fallback и для аварийной деградации.
+- История дней хранится с retention 365 дней по умолчанию (`CACHE_RETENTION_DAYS`), без старого жёсткого потолка 120 дней.
+- Backfill по умолчанию ограничен 90 днями (`BACKFILL_MAX_DAYS`) как защита от Garmin rate-limit; лимит можно поднять отдельно, когда auth стабилен.
 
 ## Расписание
 
@@ -169,7 +171,7 @@ Canonical sync workflow находится в `.github/workflows/sync.yml`; ко
 
 1. `cache-check` — проверить, читается ли кэш/Gist.
 2. `sync` — подтянуть данные за сегодня и загрузить кэш в Gist только после проверки.
-3. `backfill 7`, затем `30`, затем `90` — догружать историю поэтапно, чтобы не упереться в Garmin rate limit.
+3. `backfill 7`, затем `30`, затем `90` — догружать историю поэтапно, чтобы не упереться в Garmin rate limit. Для более длинной истории сначала поднять `BACKFILL_MAX_DAYS`.
 
 Ключевой secret для Gist read/write: `GIST_TOKEN`. `GITHUB_TOKEN` не должен считаться надёжным доступом к private Gist.
 

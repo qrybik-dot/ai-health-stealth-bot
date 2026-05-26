@@ -61,6 +61,8 @@ from cache import (
     get_garmin_auth_state,
     upsert_bootstrap_state,
     upsert_garmin_auth_state,
+    BACKFILL_MAX_DAYS,
+    HISTORY_BOOTSTRAP_TARGET_DAYS,
     KEY_METRICS,
     METRIC_LABELS,
 )
@@ -2222,7 +2224,7 @@ def handle_weekly_improve_callback(tg_token: str, chat_id: str, callback_query: 
     if callback_id:
         telegram_answer_callback(tg_token, callback_id)
 def build_help_message() -> str:
-    return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/backfill 90\n/debug_sync\n/debug_sent\n/help"
+    return f"Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/backfill {BACKFILL_MAX_DAYS}\n/debug_sync\n/debug_sent\n/help"
 
 
 def _parse_backfill_days(text: str) -> Optional[int]:
@@ -2235,7 +2237,7 @@ def _parse_backfill_days(text: str) -> Optional[int]:
         return None
     if days <= 0:
         return None
-    return min(days, 90)
+    return min(days, BACKFILL_MAX_DAYS)
 
 
 def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
@@ -2290,7 +2292,7 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
 
 
 def fetch_range(days: int) -> Dict[str, Dict[str, Any]]:
-    safe_days = max(1, min(int(days), 90))
+    safe_days = max(1, min(int(days), BACKFILL_MAX_DAYS))
     return fetch_last_days(safe_days)
 
 
@@ -2306,9 +2308,9 @@ def run_backfill(days: int = 30) -> int:
     return stored
 
 
-def ensure_history_bootstrap(target_days: int = 90, chat_id: Optional[str] = None) -> Dict[str, Any]:
+def ensure_history_bootstrap(target_days: int = HISTORY_BOOTSTRAP_TARGET_DAYS, chat_id: Optional[str] = None) -> Dict[str, Any]:
     scope_chat_id = (chat_id or os.getenv("DEFAULT_CHAT_ID", "").strip() or "default")
-    safe_target = max(1, min(int(target_days), 90))
+    safe_target = max(1, min(int(target_days), BACKFILL_MAX_DAYS))
     history = load_cache()
     available = len(history_list(history))
 
@@ -3126,7 +3128,7 @@ def run_serve() -> None:
     """Starts the Uvicorn server."""
     if os.getenv("ENABLE_HISTORY_BOOTSTRAP", "0").strip().lower() in ("1", "true", "yes", "on"):
         try:
-            bootstrap = ensure_history_bootstrap(target_days=90)
+            bootstrap = ensure_history_bootstrap(target_days=HISTORY_BOOTSTRAP_TARGET_DAYS)
             log.info("history bootstrap status=%s seen=%s target=%s", bootstrap.get("status"), bootstrap.get("history_days_seen"), bootstrap.get("target_days"))
         except Exception:
             log.exception("History bootstrap failed")
@@ -3293,7 +3295,7 @@ def main() -> None:
         days = 30
         if len(sys.argv) >= 3:
             try:
-                days = max(1, min(90, int(sys.argv[2])))
+                days = max(1, min(BACKFILL_MAX_DAYS, int(sys.argv[2])))
             except ValueError:
                 print("Error: backfill requires integer days")
                 return
