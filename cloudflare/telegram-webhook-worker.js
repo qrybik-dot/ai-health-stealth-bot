@@ -10,6 +10,12 @@ const METRIC_LABELS = {
   hrv_status: "HRV",
 };
 
+const SLOT_FOCUS = {
+  morning: "восстановление после сна и запас на первую половину дня",
+  midday: "сдвиг ресурса с утра и короткая коррекция курса",
+  evening: "закрытие дня, снижение шума и подготовка восстановления",
+};
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -76,7 +82,8 @@ async function handleMessage(message, env, ctx) {
   }
   if (lower === "/today") {
     const cache = await loadCache(env);
-    await sendMessage(env, chatId, buildTodayMessage(cache), todayKeyboard(currentDayKey()));
+    const slot = currentSlotId();
+    await sendMessage(env, chatId, buildTodayMessage(cache, slot), todayKeyboard(currentDayKey(), slot));
     return { action: "today", chat_id: chatId };
   }
   if (lower === "/color") {
@@ -140,12 +147,12 @@ async function handleCallback(callback, env, _ctx) {
 
   if (action === "facts") {
     await answerCallback(env, callback.id);
-    await sendMessage(env, chatId, buildFactsMessage(snapshot, day), null);
+    await sendMessage(env, chatId, buildFactsMessage(snapshot, day, slot), null);
     return { action: "facts", chat_id: chatId };
   }
   if (action === "roast") {
     await answerCallback(env, callback.id);
-    await sendMessage(env, chatId, buildRoastMessage(snapshot, day), null);
+    await sendMessage(env, chatId, buildRoastMessage(snapshot, day, slot), null);
     return { action: "roast", chat_id: chatId };
   }
   if (action === "what15") {
@@ -155,7 +162,7 @@ async function handleCallback(callback, env, _ctx) {
   }
   if (action === "why") {
     await answerCallback(env, callback.id);
-    await sendMessage(env, chatId, buildWhyMessage(snapshot, day), null);
+    await sendMessage(env, chatId, buildWhyMessage(snapshot, day, slot), null);
     return { action: "why", chat_id: chatId };
   }
   if (action === "color_vote") {
@@ -321,6 +328,20 @@ function currentIsoWeekId() {
   return isoWeekIdFromDay(currentDayKey());
 }
 
+function currentSlotId(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: MSK_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const minutes = Number(values.hour || 0) * 60 + Number(values.minute || 0);
+  if (minutes < 12 * 60) return "morning";
+  if (minutes < 18 * 60) return "midday";
+  return "evening";
+}
+
 function isoWeekIdFromDay(day) {
   const date = new Date(`${day}T12:00:00Z`);
   const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -404,16 +425,25 @@ function dataQuality(snapshot) {
   return "нет данных";
 }
 
-function metricChips(snapshot, limit = 4) {
+function metricChips(snapshot, limit = 4, slot = "midday") {
   const metrics = snapshotMetrics(snapshot);
-  const chips = [];
-  if (metrics.bb !== null) chips.push(`BB ${Math.round(metrics.bb)}`);
-  if (metrics.stress !== null) chips.push(`стресс ${Math.round(metrics.stress)}`);
-  if (metrics.sleepSeconds !== null) chips.push(`сон ${formatHours(metrics.sleepSeconds)}`);
-  if (metrics.rhr !== null) chips.push(`RHR ${Math.round(metrics.rhr)}`);
-  if (metrics.steps !== null) chips.push(`${Math.round(metrics.steps)} шагов`);
-  if (metrics.hrvStatus) chips.push(`HRV ${escapeHtml(metrics.hrvStatus)}`);
-  return chips.slice(0, limit);
+  const pool = {
+    sleep: metrics.sleepSeconds !== null ? `сон ${formatHours(metrics.sleepSeconds)}` : null,
+    bbCharged: metrics.bbCharged !== null ? `стартовый BB ${Math.round(metrics.bbCharged)}` : null,
+    bb: metrics.bb !== null ? `BB ${Math.round(metrics.bb)}` : null,
+    bbDelta: metrics.bb !== null && metrics.bbCharged !== null ? `с утра ${Math.round(metrics.bbCharged)} → ${Math.round(metrics.bb)}` : null,
+    stress: metrics.stress !== null ? `стресс ${Math.round(metrics.stress)}` : null,
+    maxStress: metrics.maxStress !== null ? `пик стресса ${Math.round(metrics.maxStress)}` : null,
+    rhr: metrics.rhr !== null ? `RHR ${Math.round(metrics.rhr)}` : null,
+    steps: metrics.steps !== null ? `${Math.round(metrics.steps)} шагов` : null,
+    hrv: metrics.hrvStatus ? `HRV ${escapeHtml(metrics.hrvStatus)}` : null,
+  };
+  const order = {
+    morning: ["sleep", "bbCharged", "hrv", "rhr", "bb", "stress", "steps"],
+    midday: ["bb", "bbDelta", "stress", "maxStress", "steps", "sleep", "rhr"],
+    evening: ["bb", "bbDelta", "stress", "steps", "maxStress", "sleep", "rhr"],
+  }[slot] || ["bb", "stress", "sleep", "rhr", "steps"];
+  return order.map((key) => pool[key]).filter(Boolean).slice(0, limit);
 }
 
 function scoreSnapshot(snapshot) {
@@ -442,37 +472,68 @@ function actionForSnapshot(slot, snapshot) {
   const metrics = snapshotMetrics(snapshot);
   if (!hasUsableSnapshot(snapshot)) return "держать базовый режим и дождаться следующей синхронизации";
   if (typeof metrics.bb === "number" && metrics.bb < 30) return "снять лишнюю нагрузку, закрывать только обязательное";
-  if (typeof metrics.stress === "number" && metrics.stress >= 60) return "сделать короткий сброс: вода, тишина, 5-7 минут без экрана";
-  if (slot === "morning") return "первым блоком взять один главный приоритет";
-  if (slot === "evening") return "не разгонять вечер, готовить спокойное завершение дня";
+  if (slot === "morning") {
+    if (typeof metrics.sleepSeconds === "number" && metrics.sleepSeconds < 6 * 3600) return "свет, вода и короткий фокус-блок вместо тяжёлого старта";
+    return "первым блоком взять один главный приоритет";
+  }
+  if (slot === "midday") {
+    if (typeof metrics.stress === "number" && metrics.stress >= 60) return "7 минут без экрана, вода, затем одна простая задача";
+    if (typeof metrics.steps === "number" && metrics.steps < 2500) return "10-15 минут спокойной ходьбы и возврат к одному блоку";
+    return "один фокус-блок, потом короткая пауза";
+  }
+  if (slot === "evening") {
+    if (typeof metrics.stress === "number" && metrics.stress >= 60) return "закрыть входящие, приглушить стимулы, оставить только бытовое";
+    return "не разгонять вечер, готовить спокойное завершение дня";
+  }
   return "один фокус-блок, потом короткая пауза";
 }
 
-function buildTodayMessage(cache) {
+function meaningForSlot(slot, snapshot) {
+  const metrics = snapshotMetrics(snapshot);
+  if (!hasUsableSnapshot(snapshot)) return "вывод предварительный, фактов мало";
+  if (slot === "morning") {
+    if (typeof metrics.sleepSeconds === "number" && metrics.sleepSeconds < 6 * 3600) return "восстановление слабое, утро лучше вести в экономии";
+    return "смотрим сон и стартовый ресурс, не общий шум дня";
+  }
+  if (slot === "midday") {
+    if (typeof metrics.stress === "number" && metrics.stress >= 60) return "середина дня просит коррекцию, не ещё один рывок";
+    return "смотрим, как просел ресурс с утра и нужен ли reset";
+  }
+  if (slot === "evening") {
+    if (typeof metrics.stress === "number" && metrics.stress >= 60) return "главное не тащить дневной стресс в ночь";
+    return "закрываем день и защищаем восстановление завтра";
+  }
+  return statusForSnapshot(snapshot);
+}
+
+function buildTodayMessage(cache, slot = "midday") {
   const day = currentDayKey();
   const snapshot = getSnapshot(cache, day);
   if (!hasUsableSnapshot(snapshot)) {
     return "🟡 <b>Сигнал дня</b>\n\nДанных за сегодня пока нет. Держим ровный режим без резких решений.";
   }
 
-  const chips = metricChips(snapshot);
+  const chips = metricChips(snapshot, 4, slot);
 
   return [
     `🟡 <b>Сигнал дня</b>`,
     "",
     `<b>Вердикт:</b> ${statusForSnapshot(snapshot)}.`,
+    `<b>Фокус слота:</b> ${SLOT_FOCUS[slot] || SLOT_FOCUS.midday}.`,
     `<b>Факты:</b> ${chips.join(" · ") || "данные частичные"}.`,
-    `<b>Действие:</b> ${actionForSnapshot("midday", snapshot)}.`,
+    `<b>Смысл:</b> ${meaningForSlot(slot, snapshot)}.`,
+    `<b>Действие:</b> ${actionForSnapshot(slot, snapshot)}.`,
     `<b>Надёжность:</b> ${dataQuality(snapshot)}.`,
   ].join("\n");
 }
 
-function buildFactsMessage(snapshot, day) {
+function buildFactsMessage(snapshot, day, slot = "midday") {
   const available = availableMetrics(snapshot);
   if (available.length === 0) return `По фактам за ${day}: данных пока нет.`;
   const metrics = snapshotMetrics(snapshot);
   return [
     `📌 <b>По фактам</b> ${day}`,
+    `• Фокус: ${SLOT_FOCUS[slot] || SLOT_FOCUS.midday}`,
     `• Есть: ${available.map((m) => METRIC_LABELS[m] || m).join(", ")}`,
     `• Body Battery: ${valueOrDash(metrics.bb)}${metrics.bbCharged !== null ? ` / заряд ${Math.round(metrics.bbCharged)}` : ""}`,
     `• Стресс: ${valueOrDash(metrics.stress)}${metrics.maxStress !== null ? ` / пик ${Math.round(metrics.maxStress)}` : ""}`,
@@ -483,7 +544,7 @@ function buildFactsMessage(snapshot, day) {
   ].join("\n");
 }
 
-function buildRoastMessage(snapshot, day) {
+function buildRoastMessage(snapshot, day, slot = "midday") {
   if (!hasUsableSnapshot(snapshot)) return `🔥 <b>Пожарь</b>\nПо фактам за ${day}: данных пока нет. Без данных не жарю.`;
   const metrics = snapshotMetrics(snapshot);
   const jab = typeof metrics.stress === "number" && metrics.stress >= 60
@@ -493,13 +554,13 @@ function buildRoastMessage(snapshot, day) {
       : "режим просит меньше героизма, больше последовательности";
   return [
     "🔥 <b>Пожарь</b>",
-    `По фактам за ${day}: ${metricChips(snapshot, 3).join(" · ")}.`,
+    `По фактам за ${day}: ${metricChips(snapshot, 3, slot).join(" · ")}.`,
     `Колкость: ${jab}.`,
-    `Дело: ${actionForSnapshot("midday", snapshot)}.`,
+    `Дело: ${actionForSnapshot(slot, snapshot)}.`,
   ].join("\n");
 }
 
-function buildWhyMessage(snapshot, day) {
+function buildWhyMessage(snapshot, day, slot = "midday") {
   if (!hasUsableSnapshot(snapshot)) return `Почему так (${day})\nДанных за день пока нет, поэтому вывод предварительный.`;
   const metrics = snapshotMetrics(snapshot);
   const reasons = [];
@@ -509,9 +570,10 @@ function buildWhyMessage(snapshot, day) {
   if (metrics.steps !== null) reasons.push(`движение: ${Math.round(metrics.steps)} шагов`);
   return [
     `Почему так (${day})`,
+    `Фокус: ${SLOT_FOCUS[slot] || SLOT_FOCUS.midday}.`,
     `Причины: ${reasons.join("; ")}.`,
-    `Логика: ${statusForSnapshot(snapshot)}.`,
-    `Рычаг: ${actionForSnapshot("midday", snapshot)}.`,
+    `Логика: ${meaningForSlot(slot, snapshot)}.`,
+    `Рычаг: ${actionForSnapshot(slot, snapshot)}.`,
   ].join("\n");
 }
 
@@ -554,7 +616,7 @@ function buildColorMessage(cache) {
     "",
     `Сигнал: ${signal.reason}.`,
     `Фокус: ${signal.focus}.`,
-    `Факты: ${metricChips(snapshot, 3).join(" · ")}.`,
+    `Факты: ${metricChips(snapshot, 3, "midday").join(" · ")}.`,
     weekly,
   ].filter(Boolean).join("\n");
 }
@@ -775,8 +837,8 @@ function buildWeekMessage(cache) {
     `<b>Стресс:</b> ${stressAvg === null ? "нет данных" : `средний около ${Math.round(stressAvg)}`}.`,
     `<b>Ресурс:</b> ${bbRange}.`,
     "",
-    `<b>Лучший день:</b> ${best.day} — ${metricChips(best.snapshot, 3).join(" · ")}.`,
-    `<b>Сложный день:</b> ${hard.day} — ${metricChips(hard.snapshot, 3).join(" · ")}.`,
+    `<b>Лучший день:</b> ${best.day} — ${metricChips(best.snapshot, 3, "day").join(" · ")}.`,
+    `<b>Сложный день:</b> ${hard.day} — ${metricChips(hard.snapshot, 3, "day").join(" · ")}.`,
     "",
     `🎯 <b>Фокус:</b> ${focus}.`,
   ].join("\n");
@@ -862,8 +924,8 @@ function buildCompareAnswer(cache) {
     "↔️ <b>Сравнение</b>",
     `${current} против ${previous}: ${direction}.`,
     `Индекс режима: ${currentScore} против ${previousScore}.`,
-    `Сегодня: ${metricChips(currentSnapshot, 3).join(" · ")}.`,
-    `Вчера: ${metricChips(previousSnapshot, 3).join(" · ")}.`,
+    `Сегодня: ${metricChips(currentSnapshot, 3, "day").join(" · ")}.`,
+    `Вчера: ${metricChips(previousSnapshot, 3, "day").join(" · ")}.`,
   ].join("\n");
 }
 
@@ -907,7 +969,7 @@ function buildLoadAnswer(cache) {
   return [
     "🏃 <b>Нагрузка</b>",
     `По режиму: ${soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок"}.`,
-    `Факты: ${metricChips(snapshot, 3).join(" · ")}.`,
+    `Факты: ${metricChips(snapshot, 3, "midday").join(" · ")}.`,
     soft ? "Лимит: без интенсивности и без добивки вечером." : "Лимит: не превращать нормальный день в тест на выживание.",
   ].join("\n");
 }
@@ -917,19 +979,20 @@ function buildModeAnswer(cache) {
   return [
     "🧭 <b>Режим сейчас</b>",
     statusForSnapshot(snapshot),
+    `Фокус: ${SLOT_FOCUS.midday}.`,
     `Действие: ${actionForSnapshot("midday", snapshot)}.`,
     "",
     buildWhat15Message("midday", snapshot),
   ].join("\n");
 }
 
-function todayKeyboard(day) {
+function todayKeyboard(day, slot = "midday") {
   return {
     inline_keyboard: [[
-      { text: "Почему?", callback_data: `why:midday:${day}` },
-      { text: "По фактам", callback_data: `facts:midday:${day}` },
-      { text: "Пожарь", callback_data: `roast:midday:${day}` },
-      { text: "Что делать (15м)", callback_data: `what15:midday:${day}` },
+      { text: "Почему?", callback_data: `why:${slot}:${day}` },
+      { text: "По фактам", callback_data: `facts:${slot}:${day}` },
+      { text: "Пожарь", callback_data: `roast:${slot}:${day}` },
+      { text: "Что делать (15м)", callback_data: `what15:${slot}:${day}` },
     ]],
   };
 }
@@ -960,6 +1023,7 @@ function escapeHtml(value) {
 }
 
 export {
+  buildTodayMessage,
   buildColorMessage,
   buildWeekMessage,
   buildWhat15Message,

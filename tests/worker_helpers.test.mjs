@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   buildColorMessage,
+  buildTodayMessage,
   collectColorVoteStats,
   collectTodayVoteStats,
   buildWeekMessage,
@@ -116,3 +117,22 @@ assert.doesNotMatch(foodMessage, /Сравнение/);
 
 const what15 = buildWhat15Message("midday", richCache[yesterdayKey]);
 assert.match(what15, /тишина|экран|ходьба/);
+
+const morningToday = buildTodayMessage(richCache, "morning");
+const middayToday = buildTodayMessage(richCache, "midday");
+const eveningToday = buildTodayMessage(richCache, "evening");
+assert.match(morningToday, /восстановление после сна/);
+assert.match(morningToday, /стартовый BB|сон/);
+assert.match(middayToday, /короткая коррекция курса/);
+assert.match(middayToday, /с утра|стресс|шагов/);
+assert.match(eveningToday, /подготовка восстановления/);
+
+const stressedCache = {
+  [today]: {
+    body_battery: { mostRecentValue: 48, chargedValue: 78 },
+    stress: { avgStressLevel: 68, maxStressLevel: 92 },
+    steps: { totalSteps: 1400 },
+  },
+};
+assert.match(buildTodayMessage(stressedCache, "midday"), /7 минут без экрана|коррекц/);
+assert.match(buildTodayMessage(stressedCache, "evening"), /не тащить дневной стресс|приглушить/);
