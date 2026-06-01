@@ -40,7 +40,7 @@ jobs:
           mode = os.environ["MODE"]
           command = os.environ["COMMAND"]
           token = os.environ["TELEGRAM_BOT_TOKEN"]
-          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"].split(",", 1)[0].strip()
 
           if not token:
               raise SystemExit("TELEGRAM_BOT_TOKEN=missing")
@@ -114,9 +114,16 @@ jobs:
               headers={"content-type": "application/json"},
               method="POST",
           )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              payload = json.loads(response.read().decode("utf-8"))
-              print(f"synthetic_status={response.status}")
-              print(f"synthetic_ok={payload.get('ok')}")
-              print(f"synthetic_action={(payload.get('result') or {}).get('action')}")
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.loads(response.read().decode("utf-8"))
+                  print(f"synthetic_status={response.status}")
+                  print(f"synthetic_ok={payload.get('ok')}")
+                  print(f"synthetic_action={(payload.get('result') or {}).get('action')}")
+                  swallowed_error = payload.get("swallowed_error")
+                  if swallowed_error:
+                      raise SystemExit(f"synthetic_swallowed_error={swallowed_error}")
+          except urllib.error.HTTPError as err:
+              body = err.read().decode("utf-8", errors="replace")
+              raise SystemExit(f"synthetic_http_error status={err.code} body={body[:500]}")
           PY
