@@ -1,0 +1,122 @@
+name: Telegram Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Diagnostic operation"
+        required: true
+        default: "webhook-info"
+        type: choice
+        options:
+          - webhook-info
+          - synthetic-command
+          - synthetic-facts-callback
+      command:
+        description: "Command for synthetic-command"
+        required: true
+        default: "/debug_sync"
+
+jobs:
+  telegram-diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Run Telegram diagnostic
+        env:
+          MODE: ${{ inputs.mode }}
+          COMMAND: ${{ inputs.command }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          mode = os.environ["MODE"]
+          command = os.environ["COMMAND"]
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
+          if not token:
+              raise SystemExit("TELEGRAM_BOT_TOKEN=missing")
+          if not chat_id:
+              raise SystemExit("TELEGRAM_CHAT_ID=missing")
+
+          def telegram(method, payload=None):
+              url = f"https://api.telegram.org/bot{token}/{method}"
+              body = None
+              headers = {}
+              if payload is not None:
+                  body = json.dumps(payload).encode("utf-8")
+                  headers["content-type"] = "application/json"
+              request = urllib.request.Request(url, data=body, headers=headers, method="POST" if payload is not None else "GET")
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return response.status, json.loads(response.read().decode("utf-8"))
+
+          status, info = telegram("getWebhookInfo")
+          if not info.get("ok"):
+              raise SystemExit(f"getWebhookInfo failed: status={status} body={info}")
+
+          result = info.get("result") or {}
+          webhook_url = result.get("url") or ""
+          parsed = urllib.parse.urlparse(webhook_url)
+          print(f"webhook_status={status}")
+          print(f"webhook_configured={bool(webhook_url)}")
+          print(f"webhook_host={parsed.netloc}")
+          print(f"webhook_path_prefix={parsed.path.rsplit('/', 1)[0] if parsed.path else ''}")
+          print(f"pending_update_count={result.get('pending_update_count', 0)}")
+          print(f"last_error_date={result.get('last_error_date', '')}")
+          print(f"last_error_message={result.get('last_error_message', '')}")
+
+          if mode == "webhook-info":
+              raise SystemExit(0)
+          if not webhook_url:
+              raise SystemExit("webhook_url=missing")
+
+          update_id = int(time.time())
+          if mode == "synthetic-command":
+              update = {
+                  "update_id": update_id,
+                  "message": {
+                      "message_id": update_id,
+                      "date": update_id,
+                      "chat": {"id": int(chat_id), "type": "private"},
+                      "text": command,
+                  },
+              }
+          elif mode == "synthetic-facts-callback":
+              today = time.strftime("%Y-%m-%d", time.gmtime())
+              update = {
+                  "update_id": update_id,
+                  "callback_query": {
+                      "id": f"diag-{update_id}",
+                      "from": {"id": int(chat_id), "is_bot": False, "first_name": "diag"},
+                      "message": {
+                          "message_id": update_id,
+                          "date": update_id,
+                          "chat": {"id": int(chat_id), "type": "private"},
+                      },
+                      "data": f"facts:evening:{today}",
+                  },
+              }
+          else:
+              raise SystemExit(f"unknown mode={mode}")
+
+          body = json.dumps(update).encode("utf-8")
+          request = urllib.request.Request(
+              webhook_url,
+              data=body,
+              headers={"content-type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.loads(response.read().decode("utf-8"))
+              print(f"synthetic_status={response.status}")
+              print(f"synthetic_ok={payload.get('ok')}")
+              print(f"synthetic_action={(payload.get('result') or {}).get('action')}")
+          PY
