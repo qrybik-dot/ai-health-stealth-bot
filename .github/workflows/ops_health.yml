@@ -1,0 +1,94 @@
+name: Ops Health Summary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ops-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Workflow context (safe)
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Secrets preflight (safe)
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          for name in CACHE_GIST_ID GIST_TOKEN GARMIN_TOKENSTORE TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "${name}=missing"
+            else
+              echo "${name}=present"
+            fi
+          done
+
+      - name: Cache and today summary
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py cache-self-check --require-today --require-usable-today
+
+      - name: Push registry summary
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: "1"
+        run: python main.py push-self-check
+
+      - name: Schedule summary
+        run: python main.py schedule-self-check
+
+      - name: Telegram webhook summary
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+          if not token:
+              raise SystemExit("TELEGRAM_BOT_TOKEN=missing")
+
+          url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
+          with urllib.request.urlopen(url, timeout=20) as response:
+              payload = json.loads(response.read().decode("utf-8"))
+
+          if not payload.get("ok"):
+              raise SystemExit(f"getWebhookInfo failed: status={response.status} body={payload}")
+
+          result = payload.get("result") or {}
+          webhook_url = result.get("url") or ""
+          parsed = urllib.parse.urlparse(webhook_url)
+          print(f"webhook_status={response.status}")
+          print(f"webhook_configured={bool(webhook_url)}")
+          print(f"webhook_host={parsed.netloc}")
+          print(f"webhook_path_prefix={parsed.path.rsplit('/', 1)[0] if parsed.path else ''}")
+          print(f"pending_update_count={result.get('pending_update_count', 0)}")
+          print(f"last_error_date={result.get('last_error_date', '')}")
+          print(f"last_error_message={result.get('last_error_message', '')}")
+          PY
