@@ -213,6 +213,20 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<worker-
 
 5. Напишите боту `/help`, затем `/debug_health`, затем `/today`, затем нажмите `По фактам`.
 
+### Cloudflare Deploy Workflow
+
+Для deploy через GitHub Actions задайте secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+Затем запустите GitHub Actions -> **Cloudflare Worker Deploy**:
+
+1. `operation=dry-run` — проверить сборку Worker без публикации.
+2. `operation=deploy` — опубликовать Worker.
+
+Если `deploy` пишет `Cloudflare secrets missing`, добавьте secrets. Если Wrangler пишет `Authentication error [code: 10000]`, токен Cloudflare не имеет прав на Workers для нужного account.
+
 Rollback:
 
 - Удалите webhook через Telegram `deleteWebhook`.
