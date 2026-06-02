@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 
 import {
   buildColorMessage,
+  buildDebugHealthMessage,
+  buildNoDataTodayMessage,
   buildTodayMessage,
   collectColorVoteStats,
   collectTodayVoteStats,
@@ -173,3 +175,33 @@ const malformedFacts = routeTextQuestion("почему нет шагов?", malf
 assert.match(malformedFacts, /Почему нет шагов/);
 assert.match(malformedFacts, /steps=0/);
 assert.match(malformedFacts, /активность/);
+
+const noDataToday = buildTodayMessage({}, "midday");
+assert.match(noDataToday, /Данные за сегодня ещё не приехали/);
+assert.match(noDataToday, /Надёжность:<\/b> нет данных/);
+assert.doesNotMatch(noDataToday, /Пожар|шут|ха-ха|кофе/);
+assert.equal(noDataToday, buildNoDataTodayMessage("midday"));
+
+const healthCache = {
+  [today]: {
+    body_battery: { mostRecentValue: 70 },
+    stress: { avgStressLevel: 31 },
+    sleep: { sleepTimeSeconds: 27000 },
+    rhr: { restingHeartRate: 55 },
+    fetched_at_utc: "2026-06-02T06:00:00Z",
+  },
+  "2026-06-01": { sleep: { sleepTimeSeconds: 24000 } },
+  _push_state: {
+    [`${today}|chat-1|morning|verdict`]: { ts: "x" },
+    "2026-06-01|chat-1|morning|verdict": { ts: "x" },
+  },
+  _weekly_state: { "2026-W23": { week_id: "2026-W23" } },
+  _daily_votes: { [`${today}|chat-1`]: { vote_value: "yes" } },
+  _today_votes: { [`${today}|chat-1`]: { vote: "partial" } },
+};
+const healthMessage = buildDebugHealthMessage(healthCache);
+assert.match(healthMessage, /Ops health/);
+assert.match(healthMessage, /today status: ready/);
+assert.match(healthMessage, /today key metrics: 4\/4/);
+assert.match(healthMessage, /history days: 2/);
+assert.match(healthMessage, /today sent registry: 1/);

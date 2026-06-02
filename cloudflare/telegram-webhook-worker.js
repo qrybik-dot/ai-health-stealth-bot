@@ -106,6 +106,11 @@ async function handleMessage(message, env, ctx) {
     await sendMessage(env, chatId, buildDebugSyncMessage(cache));
     return { action: "debug_sync", chat_id: chatId };
   }
+  if (lower === "/debug_health") {
+    const cache = await loadCache(env);
+    await sendMessage(env, chatId, buildDebugHealthMessage(cache));
+    return { action: "debug_health", chat_id: chatId };
+  }
   if (lower === "/debug_sent") {
     const cache = await loadCache(env);
     await sendMessage(env, chatId, buildDebugSentMessage(cache, chatId));
@@ -317,7 +322,7 @@ async function triggerRecoverySync(env) {
 }
 
 function helpMessage() {
-  return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/debug_sent\n/help";
+  return "Команды:\n/today\n/color\n/week\n/stats\n/refresh\n/debug_sync\n/debug_health\n/debug_sent\n/help";
 }
 
 function currentDayKey() {
@@ -428,6 +433,16 @@ function hasUsableSnapshot(snapshot) {
   return availableMetrics(snapshot).length > 0;
 }
 
+function keyMetricsPresentCount(snapshot) {
+  const available = availableMetrics(snapshot);
+  return KEY_METRICS.filter((metric) => available.includes(metric)).length;
+}
+
+function dayStatus(snapshot) {
+  if (!snapshot || Object.keys(snapshot).length === 0) return "no_data";
+  return keyMetricsPresentCount(snapshot) >= 4 ? "ready" : "partial";
+}
+
 function dataQuality(snapshot) {
   const available = availableMetrics(snapshot);
   const present = KEY_METRICS.filter((metric) => available.includes(metric)).length;
@@ -530,7 +545,7 @@ function buildTodayMessage(cache, slot = "midday") {
   const day = currentDayKey();
   const snapshot = getSnapshot(cache, day);
   if (!hasUsableSnapshot(snapshot)) {
-    return `🟡 <b>${slotHead(slot)}</b>\n\nДанных за сегодня пока нет. Держим ровный режим без резких решений.`;
+    return buildNoDataTodayMessage(slot);
   }
 
   const chips = metricChips(snapshot, 4, slot);
@@ -544,6 +559,17 @@ function buildTodayMessage(cache, slot = "midday") {
     `<b>Смысл:</b> ${meaningForSlot(slot, snapshot)}.`,
     `<b>Действие:</b> ${actionForSnapshot(slot, snapshot)}.`,
     `<b>Надёжность:</b> ${dataQuality(snapshot)}.`,
+  ].join("\n");
+}
+
+function buildNoDataTodayMessage(slot = "midday") {
+  return [
+    `🟡 <b>${slotHead(slot)}</b>`,
+    "",
+    "Данные за сегодня ещё не приехали.",
+    "Пока держим ровный режим без резких решений.",
+    "<b>Действие:</b> один спокойный блок и короткая пауза.",
+    "<b>Надёжность:</b> нет данных.",
   ].join("\n");
 }
 
@@ -883,6 +909,31 @@ function buildDebugSyncMessage(cache) {
   ].join("\n");
 }
 
+function buildDebugHealthMessage(cache) {
+  const day = currentDayKey();
+  const snapshot = getSnapshot(cache, day);
+  const historyKeys = historyDayKeys(cache);
+  const pushState = cache?._push_state && typeof cache._push_state === "object" ? cache._push_state : {};
+  const weeklyState = cache?._weekly_state && typeof cache._weekly_state === "object" ? cache._weekly_state : {};
+  const dailyVotes = cache?._daily_votes && typeof cache._daily_votes === "object" ? cache._daily_votes : {};
+  const todayVotes = cache?._today_votes && typeof cache._today_votes === "object" ? cache._today_votes : {};
+  const todaySentPrefix = `${day}|`;
+  const todaySentCount = Object.keys(pushState).filter((key) => key.startsWith(todaySentPrefix)).length;
+  return [
+    "Ops health:",
+    "• runtime: cloudflare-worker",
+    `• date key: ${day}`,
+    `• today status: ${dayStatus(snapshot)}`,
+    `• today key metrics: ${keyMetricsPresentCount(snapshot)}/${KEY_METRICS.length}`,
+    `• history days: ${historyKeys.length}`,
+    `• latest history day: ${historyKeys[historyKeys.length - 1] || "-"}`,
+    `• today sent registry: ${todaySentCount}`,
+    `• weekly state: ${Object.keys(weeklyState).length}`,
+    `• votes: color=${Object.keys(dailyVotes).length} today=${Object.keys(todayVotes).length}`,
+    `• last sync: ${snapshot.last_sync_time || snapshot.fetched_at_utc || "-"}`,
+  ].join("\n");
+}
+
 function buildDebugSentMessage(cache, chatId) {
   const day = currentDayKey();
   const pushState = cache?._push_state || {};
@@ -1109,6 +1160,8 @@ export {
   buildWhat15Message,
   routeTextQuestion,
   buildStatsMessage,
+  buildDebugHealthMessage,
+  buildNoDataTodayMessage,
   collectColorVoteStats,
   collectTodayVoteStats,
   isoWeekIdFromDay,

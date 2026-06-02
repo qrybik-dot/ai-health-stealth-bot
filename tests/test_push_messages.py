@@ -19,6 +19,15 @@ class PushMessageTests(unittest.TestCase):
             "hrv_status": {"status": "balanced"},
         }
 
+    def test_fallback_message_no_data_plain_no_humor(self):
+        msg = main._build_fallback_message("midday")
+
+        self.assertIn("Данные за сегодня ещё не приехали", msg)
+        self.assertIn("Надёжность:</b> нет данных", msg)
+        self.assertNotIn("Пожар", msg)
+        self.assertNotIn("ха-ха", msg.lower())
+        self.assertNotIn("резкую нагрузку", msg)
+
     def test_morning_message_structure_full_data(self):
         msg = main._build_scheduled_message(
             slot="morning",

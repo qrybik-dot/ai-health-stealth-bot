@@ -57,6 +57,7 @@ Coach Potato отправляет короткие data-driven вердикты 
 - `/refresh` — ручной sync
 - `/backfill 30` — догрузить до 30 последних дней
 - `/debug_sync` — состояние sync/кэша
+- `/debug_health` — краткое live-состояние cache/today/history/votes
 - `/debug_sent` — что отправлено сегодня и почему
 
 ## Dedup registry (надёжность отправок)
@@ -141,6 +142,7 @@ Backlog: Mini App пока не развиваем. Возвращаемся к 
 - Cloudflare Worker: `cloudflare/telegram-webhook-worker.js`.
 - Telegram webhook: `/telegram/<WEBHOOK_SECRET>`.
 - Worker читает `cache.json` из private Gist и отвечает сразу на `/help`, `/today`, `/color`, `/week`, `/stats`, `/debug_sync`, `/debug_sent`.
+- `/debug_health` показывает короткое live-состояние cache/today/history/push/votes из Gist без synthetic POST.
 - Worker читает truncated Gist cache через `raw_url` и сохраняет callback-голоса `color_vote` / `today_vote` обратно в `cache.json`.
 - `/refresh` может запускать GitHub Actions recovery sync, если задан `GITHUB_DISPATCH_TOKEN`.
 

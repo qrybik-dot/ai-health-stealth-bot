@@ -211,7 +211,7 @@ https://<worker-url>/health
 https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<worker-url>/telegram/<WEBHOOK_SECRET>
 ```
 
-5. Напишите боту `/help`, затем `/today`, затем нажмите `По фактам`.
+5. Напишите боту `/help`, затем `/debug_health`, затем `/today`, затем нажмите `По фактам`.
 
 Rollback:
 
