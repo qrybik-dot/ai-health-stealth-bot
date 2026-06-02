@@ -34,11 +34,18 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          {
+            echo "## Ops Health Summary"
+            echo ""
+            echo "### Secrets preflight"
+          } >> "$GITHUB_STEP_SUMMARY"
           for name in CACHE_GIST_ID GIST_TOKEN GARMIN_TOKENSTORE TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
             if [ -z "${!name}" ]; then
               echo "${name}=missing"
+              echo "- ${name}=missing" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "${name}=present"
+              echo "- ${name}=present" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
@@ -47,7 +54,11 @@ jobs:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python main.py cache-self-check --require-today --require-usable-today
+        run: |
+          set -o pipefail
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Cache and today" >> "$GITHUB_STEP_SUMMARY"
+          python main.py cache-self-check --require-today --require-usable-today | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Push registry summary
         env:
@@ -55,16 +66,27 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: "1"
-        run: python main.py push-self-check
+        run: |
+          set -o pipefail
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Push registry" >> "$GITHUB_STEP_SUMMARY"
+          python main.py push-self-check | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Schedule summary
-        run: python main.py schedule-self-check
+        run: |
+          set -o pipefail
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Schedule" >> "$GITHUB_STEP_SUMMARY"
+          python main.py schedule-self-check | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Telegram webhook summary
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          python - <<'PY'
+          set -o pipefail
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Telegram webhook" >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
           import os
           import urllib.parse

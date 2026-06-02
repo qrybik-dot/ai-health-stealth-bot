@@ -145,6 +145,37 @@ python main.py cache-self-check --require-today --require-usable-today --min-his
 
 Это должно предотвращать “зелёный sync”, который на самом деле не восстановил usable today data.
 
+## Ops Health Summary
+
+Для штатной проверки без recovery запускайте GitHub Actions -> **Ops Health Summary**.
+
+Ожидаемые блоки:
+
+```text
+Secrets preflight
+Cache and today
+Push registry
+Schedule
+Telegram webhook
+```
+
+Нормальное состояние:
+
+```text
+cache_available=true
+has_today=true
+today_status=ready
+today_key_metrics_present>=1
+cache_self_check=ok
+dry_run=true telegram_send=skipped
+schedule-self-check ok
+webhook_configured=True
+pending_update_count=0
+last_error_message=
+```
+
+Workflow намеренно не отправляет synthetic update в Cloudflare Worker. GitHub Actions origin может получать Cloudflare `1010`, хотя реальные Telegram updates проходят нормально. Для проверки реальных кнопок используйте `/today` в Telegram и нажмите `По фактам`, затем повторите **Ops Health Summary**.
+
 ## Rollback
 
 - Если recovery upload испортил Gist, восстановите предыдущую Gist revision вручную.

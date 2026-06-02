@@ -89,6 +89,19 @@ Coach Potato отправляет короткие data-driven вердикты 
 
 `/debug_sync` теперь показывает и sent-registry статус по слотам (`morning/midday/evening`) и типам (`color/verdict/weekly`).
 
+### Ops Health Summary
+
+Для быстрой ручной проверки используйте GitHub Actions → **Ops Health Summary**.
+
+Workflow показывает одним экраном:
+- наличие нужных secrets без раскрытия значений;
+- состояние Gist/cache и готовность today;
+- dry-run статус push registry;
+- проверку расписания;
+- Telegram webhook queue/errors через `getWebhookInfo`.
+
+Workflow не делает synthetic POST в Cloudflare Worker, чтобы не ловить известный Cloudflare `1010` на GitHub Actions origin.
+
 ## Режимы речи
 
 - `short` (Коротко): компактная карточка.
