@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "coach-potato-telegram-webhook",
   "main": "telegram-webhook-worker.js",
+  "account_id": "0c6d1b47eb7fa09887d0ecb17ccaf7e1",
   "compatibility_date": "2026-05-15",
   "observability": {
     "enabled": true,
