@@ -1119,12 +1119,19 @@ function buildModeAnswer(cache) {
 
 function todayKeyboard(day, slot = "midday") {
   return {
-    inline_keyboard: [[
-      { text: "Почему?", callback_data: `why:${slot}:${day}` },
-      { text: "По фактам", callback_data: `facts:${slot}:${day}` },
-      { text: "Пожарь", callback_data: `roast:${slot}:${day}` },
-      { text: "Что делать (15м)", callback_data: `what15:${slot}:${day}` },
-    ]],
+    inline_keyboard: [
+      [
+        { text: "Почему?", callback_data: `why:${slot}:${day}` },
+        { text: "По фактам", callback_data: `facts:${slot}:${day}` },
+        { text: "Пожарь", callback_data: `roast:${slot}:${day}` },
+        { text: "Что делать (15м)", callback_data: `what15:${slot}:${day}` },
+      ],
+      [
+        { text: "✅ Попало", callback_data: `today_vote:${day}:yes` },
+        { text: "➖ Частично", callback_data: `today_vote:${day}:partial` },
+        { text: "❌ Мимо", callback_data: `today_vote:${day}:no` },
+      ],
+    ],
   };
 }
 
@@ -1167,6 +1174,7 @@ export {
   isoWeekIdFromDay,
   storeColorVote,
   storeTodayVote,
+  todayKeyboard,
   votedKeyboard,
 };
 

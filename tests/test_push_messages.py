@@ -28,6 +28,21 @@ class PushMessageTests(unittest.TestCase):
         self.assertNotIn("ха-ха", msg.lower())
         self.assertNotIn("резкую нагрузку", msg)
 
+    def test_verdict_keyboard_includes_feedback_votes(self):
+        keyboard = main._build_verdict_keyboard("midday", "2026-06-02")
+
+        rows = keyboard["inline_keyboard"]
+        self.assertEqual(len(rows), 2)
+        self.assertIn({"text": "По фактам", "callback_data": "facts:midday:2026-06-02"}, rows[0])
+        self.assertEqual(
+            rows[1],
+            [
+                {"text": "✅ Попало", "callback_data": "today_vote:2026-06-02:yes"},
+                {"text": "➖ Частично", "callback_data": "today_vote:2026-06-02:partial"},
+                {"text": "❌ Мимо", "callback_data": "today_vote:2026-06-02:no"},
+            ],
+        )
+
     def test_morning_message_structure_full_data(self):
         msg = main._build_scheduled_message(
             slot="morning",

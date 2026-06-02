@@ -706,8 +706,16 @@ def _slot_button_row(slot: str, day_key: str) -> List[Dict[str, str]]:
     ]
 
 
+def _today_vote_button_row(day_key: str) -> List[Dict[str, str]]:
+    return [
+        {"text": "✅ Попало", "callback_data": f"today_vote:{day_key}:yes"},
+        {"text": "➖ Частично", "callback_data": f"today_vote:{day_key}:partial"},
+        {"text": "❌ Мимо", "callback_data": f"today_vote:{day_key}:no"},
+    ]
+
+
 def _build_verdict_keyboard(slot: str, day_key: str) -> Dict[str, Any]:
-    return {"inline_keyboard": [_slot_button_row(slot, day_key)]}
+    return {"inline_keyboard": [_slot_button_row(slot, day_key), _today_vote_button_row(day_key)]}
 
 
 def _send_once(

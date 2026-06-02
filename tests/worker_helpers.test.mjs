@@ -13,6 +13,7 @@ import {
   routeTextQuestion,
   storeColorVote,
   storeTodayVote,
+  todayKeyboard,
   votedKeyboard,
 } from "../cloudflare/telegram-webhook-worker.js";
 
@@ -65,6 +66,12 @@ assert.equal(todayStats.total, 1);
 assert.deepEqual(votedKeyboard("no"), {
   inline_keyboard: [[{ text: "🗳 Ваш выбор: ❌ Мимо", callback_data: "noop" }]],
 });
+
+assert.deepEqual(todayKeyboard("2026-06-02", "midday").inline_keyboard[1], [
+  { text: "✅ Попало", callback_data: "today_vote:2026-06-02:yes" },
+  { text: "➖ Частично", callback_data: "today_vote:2026-06-02:partial" },
+  { text: "❌ Мимо", callback_data: "today_vote:2026-06-02:no" },
+]);
 
 assert.equal(patchCalls, 2);
 
