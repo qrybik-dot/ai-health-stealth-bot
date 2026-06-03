@@ -188,6 +188,19 @@ assert.match(malformedFacts, /Почему нет шагов/);
 assert.match(malformedFacts, /steps=0/);
 assert.match(malformedFacts, /активность/);
 
+const fallbackStepsCache = {
+  [today]: {
+    body_battery: { mostRecentValue: 55, chargedValue: 70 },
+    stress: { avgStressLevel: 23 },
+    sleep: { sleepTimeSeconds: 27000 },
+    steps: { totalSteps: 0 },
+    daily_activity: { totalSteps: 1406, activeSeconds: 720 },
+  },
+};
+const fallbackStepsFacts = routeTextQuestion("почему нет шагов?", fallbackStepsCache);
+assert.match(fallbackStepsFacts, /1406/);
+assert.doesNotMatch(fallbackStepsFacts, /Почему нет шагов|steps=0|неполную синхронизацию/);
+
 const noDataToday = buildTodayMessage({}, "midday");
 assert.match(noDataToday, /Данные за сегодня ещё не приехали/);
 assert.match(noDataToday, /Надёжность:<\/b> нет данных/);

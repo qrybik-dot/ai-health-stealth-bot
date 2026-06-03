@@ -469,24 +469,55 @@ def _first_number_from_any(node: Any) -> Optional[float]:
     return None
 
 
-def _normalize_steps(raw_steps: Any) -> Optional[Dict[str, float]]:
-    if isinstance(raw_steps, dict):
-        for key in ("totalSteps", "steps", "stepCount", "value"):
-            value = _safe_number(raw_steps.get(key))
+STEP_VALUE_KEYS = (
+    "totalSteps",
+    "steps",
+    "stepCount",
+    "dailyStepCount",
+    "allDayStepCount",
+    "totalStepCount",
+    "value",
+)
+
+
+def _step_candidates(node: Any) -> List[float]:
+    candidates: List[float] = []
+    if isinstance(node, dict):
+        for key in STEP_VALUE_KEYS:
+            value = _safe_number(node.get(key))
             if value is not None:
-                return {"totalSteps": value}
-        nested = _first_number_from_any(raw_steps)
-        if nested is not None:
-            return {"totalSteps": nested}
-    if isinstance(raw_steps, list):
-        for item in raw_steps:
-            normalized = _normalize_steps(item)
-            if normalized:
-                return normalized
-    value = _safe_number(raw_steps)
-    if value is not None:
-        return {"totalSteps": value}
+                candidates.append(value)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                candidates.extend(_step_candidates(value))
+    elif isinstance(node, list):
+        for item in node:
+            candidates.extend(_step_candidates(item))
+    else:
+        value = _safe_number(node)
+        if value is not None:
+            candidates.append(value)
+    return candidates
+
+
+def _normalize_steps(raw_steps: Any) -> Optional[Dict[str, float]]:
+    candidates = [value for value in _step_candidates(raw_steps) if 0 <= value <= 120000]
+    if candidates:
+        return {"totalSteps": max(candidates)}
     return None
+
+
+def _best_steps_value(*sources: Any) -> Optional[Dict[str, float]]:
+    candidates: List[float] = []
+    for source in sources:
+        normalized = _normalize_steps(source)
+        if normalized:
+            value = _safe_number(normalized.get("totalSteps"))
+            if value is not None:
+                candidates.append(value)
+    if not candidates:
+        return None
+    return {"totalSteps": max(candidates)}
 
 
 def _normalize_rhr(raw_rhr: Any) -> Optional[Dict[str, float]]:
@@ -751,7 +782,11 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
     if normalized_rhr:
         out["rhr"] = normalized_rhr
 
-    normalized_steps = _normalize_steps(raw_steps)
+    normalized_steps = _best_steps_value(
+        raw_steps,
+        snapshot_data.get("daily_activity"),
+        snapshot_data.get("activity_summary"),
+    )
     if normalized_steps:
         out["steps"] = normalized_steps
 

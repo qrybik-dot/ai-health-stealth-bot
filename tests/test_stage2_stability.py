@@ -42,6 +42,18 @@ class Stage2StabilityTests(unittest.TestCase):
         self.assertTrue(diagnostics["sleep"]["normalized_present"])
         self.assertEqual(diagnostics["sleep"]["reason"], "date_mismatch")
 
+    def test_steps_fallback_prefers_daily_activity_total(self):
+        raw = {
+            "source": "garmin",
+            "date": "2026-06-03",
+            "steps": {"totalSteps": 0},
+            "daily_activity": {"totalSteps": 1406, "activeSeconds": 720},
+        }
+        trimmed = cache._trim_daily_snapshot(raw, "2026-06-03")
+
+        self.assertEqual(trimmed["steps"]["totalSteps"], 1406)
+        self.assertFalse(trimmed["missing_flags"]["steps"])
+
     def test_noop_refresh_merge_stability(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = os.path.join(tmp, "cache.json")

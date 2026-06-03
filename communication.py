@@ -101,6 +101,19 @@ def _safe(snapshot: Dict[str, Any], *path: str) -> Optional[Any]:
     return node
 
 
+def _best_steps(snapshot: Dict[str, Any]) -> Optional[Any]:
+    candidates = (
+        _safe(snapshot, "steps", "totalSteps"),
+        _safe(snapshot, "steps", "steps"),
+        _safe(snapshot, "daily_activity", "totalSteps"),
+        _safe(snapshot, "daily_activity", "steps"),
+        _safe(snapshot, "activity_summary", "totalSteps"),
+        _safe(snapshot, "activity_summary", "steps"),
+    )
+    numeric = [value for value in candidates if isinstance(value, (int, float)) and 0 <= value <= 120000]
+    return max(numeric) if numeric else None
+
+
 def _extract_metrics(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(snapshot, dict):
         return {}
@@ -112,7 +125,7 @@ def _extract_metrics(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "sleep_seconds": _safe(snapshot, "sleep", "sleepTimeSeconds") or _safe(snapshot, "sleep", "totalSleepSeconds"),
         "hrv_status": _safe(snapshot, "hrv_status", "status"),
         "hrv_weekly_avg": _safe(snapshot, "hrv", "weeklyAvg"),
-        "steps": _safe(snapshot, "steps", "totalSteps"),
+        "steps": _best_steps(snapshot),
         "rhr": _safe(snapshot, "rhr", "restingHeartRate"),
         "respiration_avg": _safe(snapshot, "respiration", "avgWakingRespirationValue") or _safe(snapshot, "respiration", "latestRespirationValue"),
         "spo2_avg": _safe(snapshot, "pulse_ox", "avgSpo2") or _safe(snapshot, "pulse_ox", "mostRecentValue"),

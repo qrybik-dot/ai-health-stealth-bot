@@ -409,11 +409,22 @@ function stringMetric(snapshot, metric, keys) {
   return null;
 }
 
+function bestStepValue(snapshot) {
+  const values = [
+    boundedMetricValue(snapshot, "steps", ["totalSteps", "steps", "stepCount", "value"], 0, 120000),
+    boundedMetricValue(snapshot, "daily_activity", ["totalSteps", "steps", "stepCount", "dailyStepCount"], 0, 120000),
+    boundedMetricValue(snapshot, "activity_summary", ["totalSteps", "steps", "stepCount", "dailyStepCount"], 0, 120000),
+  ].filter((value) => typeof value === "number");
+  if (!values.length) return null;
+  return Math.max(...values);
+}
+
 function snapshotMetrics(snapshot) {
   const activeSeconds = boundedMetricValue(snapshot, "daily_activity", ["activeSeconds", "activeTimeSeconds"], 0, 24 * 3600);
   const activeMinutes = typeof activeSeconds === "number" ? Math.round(activeSeconds / 60) : null;
   const rawSteps = boundedMetricValue(snapshot, "steps", ["totalSteps", "steps"], 0, 120000);
-  const stepsReliable = !(rawSteps === 0 && typeof activeMinutes === "number" && activeMinutes >= 10);
+  const bestSteps = bestStepValue(snapshot);
+  const stepsReliable = !(bestSteps === 0 && typeof activeMinutes === "number" && activeMinutes >= 10);
   return {
     bb: boundedMetricValue(snapshot, "body_battery", ["mostRecentValue", "currentValue", "chargedValue"], 0, 100),
     bbCharged: boundedMetricValue(snapshot, "body_battery", ["chargedValue"], 0, 100),
@@ -421,7 +432,7 @@ function snapshotMetrics(snapshot) {
     maxStress: boundedMetricValue(snapshot, "stress", ["maxStressLevel"], 0, 100),
     sleepSeconds: boundedMetricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"], 1, 24 * 3600),
     rhr: boundedMetricValue(snapshot, "rhr", ["restingHeartRate"], 30, 130),
-    steps: stepsReliable ? rawSteps : null,
+    steps: stepsReliable ? bestSteps : null,
     stepsRaw: rawSteps,
     stepsReliable,
     activeMinutes,
@@ -960,8 +971,11 @@ function routeTextQuestion(text, cache) {
   if (q.includes("какое число") || q.includes("какая дата")) {
     return `Сегодня ${currentDayKey()}.`;
   }
-  if (q.includes("данные") || q.includes("метрик")) {
+  if (q.includes("данные") || q.includes("метрик") || q.includes("что видишь")) {
     return buildDataAnswer(cache);
+  }
+  if (q.includes("как день") || q.includes("как мой день") || q.includes("что по дню") || q.includes("как я") || q.includes("мой статус")) {
+    return buildTodayMessage(cache);
   }
   if (q.includes("недел")) {
     return buildWeekMessage(cache);
@@ -972,16 +986,16 @@ function routeTextQuestion(text, cache) {
   if (q.includes("шаг") || q.includes("ходьб")) {
     return buildStepsAnswer(cache);
   }
-  if (q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед")) {
+  if (q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед") || q.includes("ужин") || q.includes("перекус")) {
     return buildFoodAnswer(cache);
   }
   if (q.includes("сравни") || q.includes("вчера") || q.includes("лучше чем") || q.includes("хуже")) {
     return buildCompareAnswer(cache);
   }
-  if (q.includes("трен") || q.includes("нагруз") || q.includes("спорт")) {
+  if (q.includes("трен") || q.includes("нагруз") || q.includes("спорт") || q.includes("размяться")) {
     return buildLoadAnswer(cache);
   }
-  if (q.includes("режим") || q.includes("план") || q.includes("что делать") || q.includes("15")) {
+  if (q.includes("режим") || q.includes("план") || q.includes("что делать") || q.includes("15") || q.includes("курс")) {
     return buildModeAnswer(cache);
   }
   return buildTodayMessage(cache);
@@ -1097,10 +1111,15 @@ function buildFoodAnswer(cache) {
   const resourcePart = typeof metrics.bb === "number" && metrics.bb < 35
     ? "ресурс низкий — лучше ровная еда, не героизм на кофе"
     : "ресурс терпимый";
+  const movementPart = typeof metrics.steps === "number" && metrics.steps < 2000
+    ? "движения мало — после еды лучше короткая спокойная ходьба"
+    : typeof metrics.steps === "number" && metrics.steps >= 7000
+      ? "движения уже достаточно — без тяжёлой добивки"
+      : "движение обычным фоном";
   return [
     "🍽 <b>Еда сейчас</b>",
-    `По данным: ${resourcePart}, ${stressPart}.`,
-    "Практично: нормальная простая еда + вода. Без тяжёлых экспериментов и без догоняться сладким как стратегией.",
+    `По данным: ${resourcePart}, ${stressPart}, ${movementPart}.`,
+    "Практично: нормальная простая еда + вода. Белок/крупа или овощи, без тяжёлых экспериментов и без догоняться сладким как стратегией.",
   ].join("\n");
 }
 
@@ -1109,12 +1128,18 @@ function buildLoadAnswer(cache) {
   if (!hasUsableSnapshot(snapshot)) return "🏃 <b>Нагрузка</b>\nДанных нет. По режиму: только лёгкая активность, интенсивность не планировать.";
   const metrics = snapshotMetrics(snapshot);
   const soft = (typeof metrics.bb === "number" && metrics.bb < 40) || (typeof metrics.stress === "number" && metrics.stress >= 60);
+  const movement = typeof metrics.steps === "number"
+    ? `Движение: ${Math.round(metrics.steps)} шагов${typeof metrics.activeMinutes === "number" ? `, активность ${metrics.activeMinutes} мин` : ""}.`
+    : typeof metrics.activeMinutes === "number"
+      ? `Движение: шаги неясны, активность ${metrics.activeMinutes} мин.`
+      : "";
   return [
     "🏃 <b>Нагрузка</b>",
     `По режиму: ${soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок"}.`,
     `Факты: ${metricChips(snapshot, 3, "midday").join(" · ")}.`,
+    movement,
     soft ? "Лимит: без интенсивности и без добивки вечером." : "Лимит: не превращать нормальный день в тест на выживание.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildModeAnswer(cache) {
