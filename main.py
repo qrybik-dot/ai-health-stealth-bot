@@ -2387,18 +2387,34 @@ def _vote_stats_line(label: str, stats: Dict[str, Any]) -> str:
     return f"<b>{label}:</b> ✅ {yes} · 🤷 {partial} · ❌ {no} · индекс {index}%"
 
 
+def build_feedback_signal_line(total: int, color_stats: Dict[str, Any], today_stats: Dict[str, Any]) -> str:
+    if total <= 0:
+        return "Сигнал: пока нечего менять, ждём первые отклики."
+    if total < 3:
+        return "Сигнал: откликов мало, копим неделю без выводов."
+    no_total = int(color_stats.get("no_count", 0) or 0) + int(today_stats.get("no_count", 0) or 0)
+    partial_total = int(color_stats.get("partial_count", 0) or 0) + int(today_stats.get("partial_count", 0) or 0)
+    if no_total >= 2:
+        return "Сигнал: формулировки надо упростить, промахов многовато."
+    if partial_total >= no_total + 2:
+        return "Сигнал: направление близко, но выводы стоит делать осторожнее."
+    return "Сигнал: формат можно держать, без резких правок."
+
+
 def build_weekly_stats_message(week_id: str, color_stats: Dict[str, Any], today_stats: Dict[str, Any]) -> str:
     total = int(color_stats.get("total", 0) or 0) + int(today_stats.get("total", 0) or 0)
     if total <= 0:
         summary = "Откликов за неделю пока нет."
     else:
         summary = f"Всего откликов: {total}."
+    signal = build_feedback_signal_line(total, color_stats, today_stats)
 
     return (
         f"📊 <b>Статистика {html.escape(week_id)}</b>\n\n"
         f"{_vote_stats_line('Цвет недели', color_stats)}\n"
         f"{_vote_stats_line('Статус дня', today_stats)}\n\n"
-        f"{summary}"
+        f"{summary}\n"
+        f"{signal}"
     )
 
 

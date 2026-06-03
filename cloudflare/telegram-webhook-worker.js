@@ -678,6 +678,7 @@ function buildStatsMessage(cache, chatId) {
   const todayStats = collectTodayVoteStats(cache, chatId, weekId);
   const total = colorStats.total + todayStats.total;
   const summary = total > 0 ? `Всего откликов: ${total}.` : "Откликов за неделю пока нет.";
+  const signal = feedbackSignalLine(total, colorStats, todayStats);
   return [
     `📊 <b>Статистика ${escapeHtml(weekId)}</b>`,
     "",
@@ -685,6 +686,7 @@ function buildStatsMessage(cache, chatId) {
     voteStatsLine("Статус дня", todayStats),
     "",
     summary,
+    signal,
   ].join("\n");
 }
 
@@ -728,6 +730,16 @@ function voteStatsLine(label, stats) {
   if (!stats.total) return `<b>${label}:</b> пока нет откликов`;
   const index = Math.round(stats.accuracy * 100);
   return `<b>${label}:</b> ✅ ${stats.yes_count} · 🤷 ${stats.partial_count} · ❌ ${stats.no_count} · индекс ${index}%`;
+}
+
+function feedbackSignalLine(total, colorStats, todayStats) {
+  if (total <= 0) return "Сигнал: пока нечего менять, ждём первые отклики.";
+  if (total < 3) return "Сигнал: откликов мало, копим неделю без выводов.";
+  const noTotal = colorStats.no_count + todayStats.no_count;
+  const partialTotal = colorStats.partial_count + todayStats.partial_count;
+  if (noTotal >= 2) return "Сигнал: формулировки надо упростить, промахов многовато.";
+  if (partialTotal >= noTotal + 2) return "Сигнал: направление близко, но выводы стоит делать осторожнее.";
+  return "Сигнал: формат можно держать, без резких правок.";
 }
 
 function deriveColorSignal(snapshot) {

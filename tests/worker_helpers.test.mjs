@@ -4,6 +4,7 @@ import {
   buildColorMessage,
   buildDebugHealthMessage,
   buildNoDataTodayMessage,
+  buildStatsMessage,
   buildTodayMessage,
   collectColorVoteStats,
   collectTodayVoteStats,
@@ -62,6 +63,10 @@ assert.equal(cache._today_state["2026-03-08|chat-1"]?.week_id, "2026-W10");
 const todayStats = collectTodayVoteStats(cache, "chat-1", "2026-W10");
 assert.equal(todayStats.partial_count, 1);
 assert.equal(todayStats.total, 1);
+
+const statsMessage = buildStatsMessage(cache, "chat-1");
+assert.match(statsMessage, /Статистика/);
+assert.match(statsMessage, /Сигнал:/);
 
 assert.deepEqual(votedKeyboard("no"), {
   inline_keyboard: [[{ text: "🗳 Ваш выбор: ❌ Мимо", callback_data: "noop" }]],

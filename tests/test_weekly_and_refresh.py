@@ -72,6 +72,7 @@ class WeeklyAndRefreshTests(unittest.TestCase):
         self.assertIn("✅ 2 · 🤷 1 · ❌ 1", msg)
         self.assertIn("индекс 62%", msg)
         self.assertIn("Всего откликов: 6", msg)
+        self.assertIn("Сигнал: формулировки надо упростить", msg)
 
     def test_weekly_stats_message_handles_empty_votes(self):
         msg = main.build_weekly_stats_message(
@@ -83,6 +84,25 @@ class WeeklyAndRefreshTests(unittest.TestCase):
         self.assertIn("Цвет недели:</b> пока нет откликов", msg)
         self.assertIn("Статус дня:</b> пока нет откликов", msg)
         self.assertIn("Откликов за неделю пока нет", msg)
+        self.assertIn("Сигнал: пока нечего менять", msg)
+
+    def test_weekly_stats_message_flags_too_many_misses(self):
+        msg = main.build_weekly_stats_message(
+            "2026-W10",
+            {"yes_count": 0, "partial_count": 0, "no_count": 2, "total": 2, "accuracy": 0.0},
+            {"yes_count": 0, "partial_count": 1, "no_count": 1, "total": 2, "accuracy": 0.125},
+        )
+
+        self.assertIn("Сигнал: формулировки надо упростить", msg)
+
+    def test_weekly_stats_message_keeps_format_when_signal_ok(self):
+        msg = main.build_weekly_stats_message(
+            "2026-W10",
+            {"yes_count": 3, "partial_count": 1, "no_count": 0, "total": 4, "accuracy": 0.875},
+            {"yes_count": 2, "partial_count": 0, "no_count": 0, "total": 2, "accuracy": 1.0},
+        )
+
+        self.assertIn("Сигнал: формат можно держать", msg)
 
     def test_refresh_result_no_updates(self):
         msg = main.build_refresh_result_message({"updated_blocks": [], "after": {"data_completeness": 0.4}})
