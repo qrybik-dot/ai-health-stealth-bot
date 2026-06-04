@@ -228,6 +228,26 @@ def _is_garmin_rate_limit(exc: Exception) -> bool:
     return _exception_status_code(exc) == 429 or "429" in text or "too many requests" in text
 
 
+GARMIN_CALLS: Dict[str, str] = {
+    "body_battery": "get_body_battery",
+    "stress": "get_stress_data",
+    "sleep": "get_sleep_data",
+    "rhr": "get_rhr_day",
+    "steps": "get_steps_data",
+    "daily_steps": "get_daily_steps",
+    "heart_rate": "get_heart_rates",
+    "daily_activity": "get_user_summary",
+    "intensity_minutes": "get_intensity_minutes_data",
+    "calories": "get_calories_data",
+    "floors": "get_floors",
+    "respiration": "get_respiration_data",
+    "pulse_ox": "get_pulse_ox_data",
+    "hrv": "get_hrv_data",
+    "hrv_status": "get_hrv_status_data",
+    "activity_summary": "get_activities_by_date",
+}
+
+
 def _is_garmin_auth_problem(exc: Exception) -> bool:
     text = _safe_exception_text(exc).lower()
     return any(token in text for token in ("login", "auth", "credential", "password", "unauthorized", "401", "403"))
@@ -386,6 +406,8 @@ def _fetch_garmin_metric(api: Garmin, method_name: str, day: str, metric: str) -
     if not callable(method):
         return None
     try:
+        if metric == "daily_steps":
+            return method(day, day)
         return method(day)
     except Exception as exc:
         if _is_garmin_rate_limit(exc):
@@ -425,25 +447,7 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
         "errors": [],
     }
 
-    calls = {
-        "body_battery": "get_body_battery",
-        "stress": "get_stress_data",
-        "sleep": "get_sleep_data",
-        "rhr": "get_rhr_day",
-        "steps": "get_steps_data",
-        "heart_rate": "get_heart_rates",
-        "daily_activity": "get_user_summary",
-        "intensity_minutes": "get_intensity_minutes_data",
-        "calories": "get_calories_data",
-        "floors": "get_floors",
-        "respiration": "get_respiration_data",
-        "pulse_ox": "get_pulse_ox_data",
-        "hrv": "get_hrv_data",
-        "hrv_status": "get_hrv_status_data",
-        "activity_summary": "get_activities_by_date",
-    }
-
-    for key, method_name in calls.items():
+    for key, method_name in GARMIN_CALLS.items():
         method = getattr(api, method_name, None)
         if not callable(method):
             continue
@@ -2276,23 +2280,6 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
 
     now_msk = _now_msk()
     out: Dict[str, Dict[str, Any]] = {}
-    calls = {
-        "body_battery": "get_body_battery",
-        "stress": "get_stress_data",
-        "sleep": "get_sleep_data",
-        "rhr": "get_rhr_day",
-        "steps": "get_steps_data",
-        "heart_rate": "get_heart_rates",
-        "daily_activity": "get_user_summary",
-        "intensity_minutes": "get_intensity_minutes_data",
-        "calories": "get_calories_data",
-        "floors": "get_floors",
-        "respiration": "get_respiration_data",
-        "pulse_ox": "get_pulse_ox_data",
-        "hrv": "get_hrv_data",
-        "hrv_status": "get_hrv_status_data",
-        "activity_summary": "get_activities_by_date",
-    }
     for delta in range(days):
         day = (now_msk.date() - dt.timedelta(days=delta)).isoformat()
         payload: Dict[str, Any] = {
@@ -2304,7 +2291,7 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
             "auth_source": auth_info["source"],
             "errors": [],
         }
-        for key, method_name in calls.items():
+        for key, method_name in GARMIN_CALLS.items():
             method = getattr(api, method_name, None)
             if not callable(method):
                 continue
@@ -2321,6 +2308,72 @@ def fetch_last_days(days: int = 30) -> Dict[str, Dict[str, Any]]:
 def fetch_range(days: int) -> Dict[str, Dict[str, Any]]:
     safe_days = max(1, min(int(days), BACKFILL_MAX_DAYS))
     return fetch_last_days(safe_days)
+
+
+def _raw_shape(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            "type": "dict",
+            "keys": sorted(str(key) for key in value.keys())[:16],
+            "key_count": len(value),
+        }
+    if isinstance(value, list):
+        first = value[0] if value else None
+        shape: Dict[str, Any] = {"type": "list", "len": len(value)}
+        if isinstance(first, dict):
+            shape["first_keys"] = sorted(str(key) for key in first.keys())[:16]
+        else:
+            shape["first_type"] = type(first).__name__ if first is not None else "none"
+        return shape
+    return {"type": type(value).__name__, "present": value is not None}
+
+
+def _audit_numbers_by_key(node: Any, key_tokens: Tuple[str, ...]) -> List[float]:
+    found: List[float] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            key_lower = str(key).lower()
+            if any(token in key_lower for token in key_tokens) and isinstance(value, (int, float)):
+                found.append(float(value))
+            elif isinstance(value, (dict, list)):
+                found.extend(_audit_numbers_by_key(value, key_tokens))
+    elif isinstance(node, list):
+        for item in node[:50]:
+            found.extend(_audit_numbers_by_key(item, key_tokens))
+    return found
+
+
+def build_garmin_audit(day: Optional[str] = None) -> str:
+    _block_garmin_password_login_without_tokens("garmin-audit")
+    target_day = day or current_day_key()
+    garmin_email = env("GARMIN_EMAIL")
+    garmin_password = env("GARMIN_PASSWORD")
+    api = Garmin(garmin_email, garmin_password)
+    auth_info = _authenticate_garmin(api)
+
+    lines = [
+        "Garmin audit:",
+        f"• day: {target_day}",
+        f"• auth: {auth_info.get('method', '-')}/{auth_info.get('source', '-')}",
+    ]
+    for metric, method_name in GARMIN_CALLS.items():
+        method = getattr(api, method_name, None)
+        if not callable(method):
+            lines.append(f"• {metric}: method={method_name} status=missing")
+            continue
+        try:
+            value = _fetch_garmin_metric(api, method_name, target_day, metric)
+        except GarminRateLimitError:
+            raise
+        except Exception as exc:
+            lines.append(f"• {metric}: method={method_name} status=error error={_safe_exception_text(exc)}")
+            continue
+        shape = _raw_shape(value)
+        step_values = _audit_numbers_by_key(value, ("step",)) if "step" in metric else []
+        valid_steps = sorted(set(int(v) for v in step_values if 0 <= v <= 120000))[:10]
+        suffix = f" step_values={valid_steps}" if valid_steps else ""
+        lines.append(f"• {metric}: method={method_name} status=ok shape={json.dumps(shape, ensure_ascii=False)}{suffix}")
+    return "\n".join(lines)
 
 
 def run_backfill(days: int = 30) -> int:
@@ -2431,6 +2484,7 @@ def _collect_updated_blocks(before: Dict[str, Any], after: Dict[str, Any]) -> Li
         "body_battery",
         "stress",
         "steps",
+        "daily_steps",
         "heart_rate",
         "rhr",
         "daily_activity",
@@ -3337,7 +3391,7 @@ def run_poll_self_check() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|backfill|push|poll-once|poll-self-check|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|backfill|garmin-audit [YYYY-MM-DD]|push|poll-once|poll-self-check|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -3354,6 +3408,14 @@ def main() -> None:
                 return
         stored = run_backfill(days)
         print(f"backfill done: requested={days} stored={stored}")
+    elif mode == "garmin-audit":
+        day = sys.argv[2].strip() if len(sys.argv) >= 3 else current_day_key()
+        try:
+            dt.date.fromisoformat(day)
+        except ValueError:
+            print("Error: garmin-audit day must be YYYY-MM-DD")
+            return
+        print(build_garmin_audit(day))
     elif mode == "push":
         push_kind = "scheduled"
         explicit_slot = None
@@ -3488,7 +3550,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, backfill, push, poll-once, poll-self-check, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, backfill, garmin-audit, push, poll-once, poll-self-check, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)

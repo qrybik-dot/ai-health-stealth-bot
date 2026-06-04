@@ -12,6 +12,7 @@ on:
           - cache-check
           - sync
           - backfill
+          - garmin-audit
       backfill_days:
         description: "Days to backfill when operation=backfill"
         required: true
@@ -52,11 +53,15 @@ jobs:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
-          if [ -z "$CACHE_GIST_ID" ]; then
+          if [ "${{ inputs.operation }}" != "garmin-audit" ] && [ -z "$CACHE_GIST_ID" ]; then
             echo "CACHE_GIST_ID=missing"
             exit 1
           else
-            echo "CACHE_GIST_ID=present"
+            if [ -z "$CACHE_GIST_ID" ]; then
+              echo "CACHE_GIST_ID=not_required"
+            else
+              echo "CACHE_GIST_ID=present"
+            fi
           fi
           if [ -z "$GIST_TOKEN" ]; then
             echo "GIST_TOKEN=missing"
@@ -98,6 +103,16 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python main.py backfill ${{ inputs.backfill_days }}
+
+      - name: Garmin audit
+        if: inputs.operation == 'garmin-audit'
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
+          GARMIN_TOKENSTORE_PATH: ${{ secrets.GARMIN_TOKENSTORE_PATH }}
+          GARMIN_PASSWORD_FALLBACK: "0"
+        run: python main.py garmin-audit
 
       - name: Validate recovery result
         if: inputs.operation == 'sync'

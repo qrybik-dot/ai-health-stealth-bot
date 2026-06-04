@@ -48,6 +48,7 @@ METRIC_LABELS: Dict[str, str] = {
     "rhr": "RHR",
     "stress": "стресс",
     "steps": "шаги",
+    "daily_steps": "шаги за день",
     "heart_rate": "пульс",
     "daily_activity": "активность",
     "respiration": "дыхание",
@@ -744,6 +745,7 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
 
     extra_metrics = {
         "heart_rate": snapshot_data.get("heart_rate"),
+        "daily_steps": snapshot_data.get("daily_steps"),
         "daily_activity": snapshot_data.get("daily_activity"),
         "intensity_minutes": snapshot_data.get("intensity_minutes"),
         "calories": snapshot_data.get("calories"),
@@ -784,6 +786,7 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
 
     normalized_steps = _best_steps_value(
         raw_steps,
+        snapshot_data.get("daily_steps"),
         snapshot_data.get("daily_activity"),
         snapshot_data.get("activity_summary"),
     )
@@ -791,7 +794,7 @@ def _trim_daily_snapshot(snapshot_data: Dict[str, Any], day: str) -> Dict[str, A
         out["steps"] = normalized_steps
 
     for metric_name, metric_value in extra_metrics.items():
-        if isinstance(metric_value, dict) and metric_value:
+        if isinstance(metric_value, (dict, list)) and metric_value:
             out[metric_name] = metric_value
 
     diagnostics: Dict[str, Any] = {
@@ -927,6 +930,7 @@ def build_snapshot_merge_diff(before: Dict[str, Any], after: Dict[str, Any]) -> 
         "body_battery",
         "stress",
         "steps",
+        "daily_steps",
         "heart_rate",
         "rhr",
         "daily_activity",

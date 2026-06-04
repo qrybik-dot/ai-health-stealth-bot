@@ -105,6 +105,8 @@ def _best_steps(snapshot: Dict[str, Any]) -> Optional[Any]:
     candidates = (
         _safe(snapshot, "steps", "totalSteps"),
         _safe(snapshot, "steps", "steps"),
+        _safe(snapshot, "daily_steps", "totalSteps"),
+        _safe(snapshot, "daily_steps", "steps"),
         _safe(snapshot, "daily_activity", "totalSteps"),
         _safe(snapshot, "daily_activity", "steps"),
         _safe(snapshot, "activity_summary", "totalSteps"),

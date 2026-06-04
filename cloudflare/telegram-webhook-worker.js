@@ -6,6 +6,7 @@ const METRIC_LABELS = {
   rhr: "RHR",
   stress: "стресс",
   steps: "шаги",
+  daily_steps: "шаги за день",
   daily_activity: "активность",
   hrv_status: "HRV",
 };
@@ -412,6 +413,7 @@ function stringMetric(snapshot, metric, keys) {
 function bestStepValue(snapshot) {
   const values = [
     boundedMetricValue(snapshot, "steps", ["totalSteps", "steps", "stepCount", "value"], 0, 120000),
+    boundedMetricValue(snapshot, "daily_steps", ["totalSteps", "steps", "stepCount", "value"], 0, 120000),
     boundedMetricValue(snapshot, "daily_activity", ["totalSteps", "steps", "stepCount", "dailyStepCount"], 0, 120000),
     boundedMetricValue(snapshot, "activity_summary", ["totalSteps", "steps", "stepCount", "dailyStepCount"], 0, 120000),
   ].filter((value) => typeof value === "number");

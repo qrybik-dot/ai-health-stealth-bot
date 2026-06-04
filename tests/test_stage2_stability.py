@@ -8,6 +8,21 @@ import main
 
 
 class Stage2StabilityTests(unittest.TestCase):
+    def test_daily_steps_fetch_uses_day_range_signature(self):
+        class FakeGarmin:
+            def __init__(self):
+                self.calls = []
+
+            def get_daily_steps(self, start, end):
+                self.calls.append((start, end))
+                return [{"totalSteps": 2310}]
+
+        api = FakeGarmin()
+        value = main._fetch_garmin_metric(api, "get_daily_steps", "2026-06-03", "daily_steps")
+
+        self.assertEqual(value, [{"totalSteps": 2310}])
+        self.assertEqual(api.calls, [("2026-06-03", "2026-06-03")])
+
     def test_gist_consistency_path_and_debug_explanation(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_path = os.path.join(tmp, "cache.json")
@@ -53,6 +68,19 @@ class Stage2StabilityTests(unittest.TestCase):
 
         self.assertEqual(trimmed["steps"]["totalSteps"], 1406)
         self.assertFalse(trimmed["missing_flags"]["steps"])
+
+    def test_steps_fallback_uses_daily_steps_range(self):
+        raw = {
+            "source": "garmin",
+            "date": "2026-06-03",
+            "steps": {"totalSteps": 0},
+            "daily_steps": [{"calendarDate": "2026-06-03", "totalSteps": 2310}],
+            "daily_activity": {"activeSeconds": 720},
+        }
+        trimmed = cache._trim_daily_snapshot(raw, "2026-06-03")
+
+        self.assertEqual(trimmed["steps"]["totalSteps"], 2310)
+        self.assertIn("daily_steps", trimmed)
 
     def test_noop_refresh_merge_stability(self):
         with tempfile.TemporaryDirectory() as tmp:
