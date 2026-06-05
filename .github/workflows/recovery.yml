@@ -13,6 +13,7 @@ on:
           - sync
           - backfill
           - garmin-audit
+          - garmin-auth-refresh
       backfill_days:
         description: "Days to backfill when operation=backfill"
         required: true
@@ -114,6 +115,19 @@ jobs:
           GARMIN_PASSWORD_FALLBACK: "0"
         run: python main.py garmin-audit
 
+      - name: Garmin auth refresh
+        if: inputs.operation == 'garmin-auth-refresh'
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
+          GARMIN_TOKENSTORE_PATH: ${{ secrets.GARMIN_TOKENSTORE_PATH }}
+          GARMIN_PASSWORD_FALLBACK: "1"
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main.py garmin-auth-refresh
+
       - name: Validate recovery result
         if: inputs.operation == 'sync'
         env:
@@ -131,7 +145,7 @@ jobs:
         run: python main.py cache-self-check --require-today --require-usable-today --min-history-days ${{ inputs.backfill_days }}
 
       - name: Upload cache.json to Gist
-        if: inputs.operation == 'sync' || inputs.operation == 'backfill'
+        if: inputs.operation == 'sync' || inputs.operation == 'backfill' || inputs.operation == 'garmin-auth-refresh'
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}

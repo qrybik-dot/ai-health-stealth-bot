@@ -2376,6 +2376,19 @@ def build_garmin_audit(day: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
+def refresh_garmin_tokenstore() -> Dict[str, str]:
+    # Hydrate local cache first so auth refresh upload does not replace Gist with auth-only state.
+    persist_cache_snapshot(load_cache())
+    garmin_email = env("GARMIN_EMAIL")
+    garmin_password = env("GARMIN_PASSWORD")
+    api = Garmin(garmin_email, garmin_password)
+    auth_info = _authenticate_garmin(api)
+    if auth_info.get("method") != "password":
+        log.info("garmin_auth_refresh_used_existing_token source=%s", auth_info.get("source", ""))
+    _mark_recovery_upload_ok("garmin-auth-refresh")
+    return auth_info
+
+
 def run_backfill(days: int = 30) -> int:
     _clear_recovery_upload_guard()
     day_payloads = fetch_range(days)
@@ -3391,7 +3404,7 @@ def run_poll_self_check() -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 main.py [sync|backfill|garmin-audit [YYYY-MM-DD]|push|poll-once|poll-self-check|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
+        print("Usage: python3 main.py [sync|backfill|garmin-audit [YYYY-MM-DD]|garmin-auth-refresh|push|poll-once|poll-self-check|push-self-check|cache-self-check [--require-today] [--require-usable-today] [--min-history-days <n>]|debug-sync|serve|schedule-debug|schedule-self-check|color-self-check|color-card-self-check|today-card-self-check|today-status-self-check]")
         return
 
     mode = sys.argv[1].strip().lower()
@@ -3416,6 +3429,9 @@ def main() -> None:
             print("Error: garmin-audit day must be YYYY-MM-DD")
             return
         print(build_garmin_audit(day))
+    elif mode == "garmin-auth-refresh":
+        result = refresh_garmin_tokenstore()
+        print(f"garmin-auth-refresh ok: method={result.get('method', '-')} source={result.get('source', '-')}")
     elif mode == "push":
         push_kind = "scheduled"
         explicit_slot = None
@@ -3550,7 +3566,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, backfill, garmin-audit, push, poll-once, poll-self-check, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, backfill, garmin-audit, garmin-auth-refresh, push, poll-once, poll-self-check, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)
