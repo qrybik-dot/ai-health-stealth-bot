@@ -54,15 +54,11 @@ jobs:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
-          if [ "${{ inputs.operation }}" != "garmin-audit" ] && [ -z "$CACHE_GIST_ID" ]; then
+          if [ -z "$CACHE_GIST_ID" ]; then
             echo "CACHE_GIST_ID=missing"
             exit 1
           else
-            if [ -z "$CACHE_GIST_ID" ]; then
-              echo "CACHE_GIST_ID=not_required"
-            else
-              echo "CACHE_GIST_ID=present"
-            fi
+            echo "CACHE_GIST_ID=present"
           fi
           if [ -z "$GIST_TOKEN" ]; then
             echo "GIST_TOKEN=missing"
@@ -113,6 +109,9 @@ jobs:
           GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
           GARMIN_TOKENSTORE_PATH: ${{ secrets.GARMIN_TOKENSTORE_PATH }}
           GARMIN_PASSWORD_FALLBACK: "0"
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python main.py garmin-audit
 
       - name: Garmin auth refresh

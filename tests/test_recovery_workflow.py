@@ -10,6 +10,7 @@ class RecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("Garmin audit", workflow)
         self.assertIn("python main.py garmin-audit", workflow)
         self.assertIn('GARMIN_PASSWORD_FALLBACK: "0"', workflow)
+        self.assertIn("CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}", workflow)
 
     def test_recovery_workflow_exposes_manual_auth_refresh(self):
         workflow = Path(".github/workflows/recovery.yml").read_text(encoding="utf-8")
