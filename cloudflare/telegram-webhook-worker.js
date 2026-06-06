@@ -1025,13 +1025,30 @@ function buildDebugSentMessage(cache, chatId) {
 
 function routeTextQuestion(text, cache) {
   const q = text.toLowerCase();
+  const wantsDay = q.includes("как день") || q.includes("как мой день") || q.includes("что по дню") || q.includes("как я") || q.includes("мой статус");
+  const wantsFood = q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед") || q.includes("ужин") || q.includes("перекус");
+  const wantsCompare = q.includes("сравни") || q.includes("вчера") || q.includes("лучше чем") || q.includes("хуже");
+  const wantsLoad = q.includes("трен") || q.includes("нагруз") || q.includes("спорт") || q.includes("размяться");
+  const wantsMode = q.includes("режим") || q.includes("план") || q.includes("что делать") || q.includes("15") || q.includes("курс");
+  const wantsWhy = q.includes("почему") || q.includes("из-за чего") || q.includes("причины");
+
   if (q.includes("какое число") || q.includes("какая дата")) {
     return `Сегодня ${currentDayKey()}.`;
   }
   if (q.includes("данные") || q.includes("метрик") || q.includes("что видишь")) {
     return buildDataAnswer(cache);
   }
-  if (q.includes("как день") || q.includes("как мой день") || q.includes("что по дню") || q.includes("как я") || q.includes("мой статус")) {
+  const productIntentCount = [wantsDay, wantsFood, wantsLoad, wantsMode, wantsWhy].filter(Boolean).length;
+  if (productIntentCount >= 2) {
+    const sections = [];
+    if (wantsDay) sections.push(buildTodayMessage(cache, "midday"));
+    if (wantsFood) sections.push(buildFoodAnswer(cache));
+    if (wantsLoad) sections.push(buildLoadAnswer(cache));
+    if (wantsMode) sections.push(buildModeAnswer(cache));
+    if (wantsWhy) sections.push(buildWhyMessage(getSnapshot(cache, currentDayKey()), currentDayKey(), "midday"));
+    return sections.slice(0, 3).join("\n\n");
+  }
+  if (wantsDay) {
     return buildTodayMessage(cache);
   }
   if (q.includes("недел")) {
@@ -1043,16 +1060,16 @@ function routeTextQuestion(text, cache) {
   if (q.includes("шаг") || q.includes("ходьб")) {
     return buildStepsAnswer(cache);
   }
-  if (q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед") || q.includes("ужин") || q.includes("перекус")) {
+  if (wantsFood) {
     return buildFoodAnswer(cache);
   }
-  if (q.includes("сравни") || q.includes("вчера") || q.includes("лучше чем") || q.includes("хуже")) {
+  if (wantsCompare) {
     return buildCompareAnswer(cache);
   }
-  if (q.includes("трен") || q.includes("нагруз") || q.includes("спорт") || q.includes("размяться")) {
+  if (wantsLoad) {
     return buildLoadAnswer(cache);
   }
-  if (q.includes("режим") || q.includes("план") || q.includes("что делать") || q.includes("15") || q.includes("курс")) {
+  if (wantsMode) {
     return buildModeAnswer(cache);
   }
   return buildTodayMessage(cache);

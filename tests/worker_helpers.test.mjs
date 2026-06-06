@@ -168,6 +168,14 @@ const modeMessage = routeTextQuestion("какой режим сейчас", rich
 assert.match(modeMessage, /Режим сейчас/);
 assert.match(modeMessage, /Опора:/);
 
+const comboDayFood = routeTextQuestion("как день и что поесть", richCache);
+assert.match(comboDayFood, /Сверка в середине дня/);
+assert.match(comboDayFood, /Еда сейчас/);
+
+const comboLoadWhy = routeTextQuestion("что по нагрузке и почему так", richCache);
+assert.match(comboLoadWhy, /Нагрузка/);
+assert.match(comboLoadWhy, /Почему так/);
+
 const morningToday = buildTodayMessage(richCache, "morning");
 const middayToday = buildTodayMessage(richCache, "midday");
 const eveningToday = buildTodayMessage(richCache, "evening");

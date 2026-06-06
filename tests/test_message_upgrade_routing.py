@@ -83,6 +83,16 @@ class MessageUpgradeRoutingTests(unittest.TestCase):
         self.assertIn("Факты", msg)
         self.assertNotIn("Вердикт", msg)
 
+    def test_multi_intent_product_question_combines_sections(self):
+        msg = main._route_structured_reply("как день и что поесть?", self.context, self.history)
+        self.assertIn("Итог дня", msg)
+        self.assertIn("Еда сейчас", msg)
+
+    def test_multi_intent_load_and_why_combines_sections(self):
+        msg = main._route_structured_reply("что по нагрузке и почему так?", self.context, self.history)
+        self.assertIn("Нагрузка", msg)
+        self.assertIn("Почему так", msg)
+
     def test_training_question_is_grounded_without_medical_claim(self):
         msg = main._route_structured_reply("можно ли тренироваться сегодня?", self.context, self.history)
         self.assertIn("Нагрузка", msg)

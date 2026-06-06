@@ -2961,10 +2961,45 @@ def _build_what15_message(slot: str, snapshot: Optional[Dict[str, Any]]) -> str:
     return "🎯 <b>Что делать за 15 минут</b><br>1) 3 мин — приглушить свет и уведомления.<br>2) 7 мин — спокойный ритуал закрытия дня.<br>3) 5 мин — подготовка ко сну без экрана."
 
 
+def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
+    sections: List[str] = []
+    snapshot = context.get("snapshot")
+    day_key = str(context.get("day_key", current_day_key()))
+    partial = context.get("day_status") != "ready"
+
+    wants_day = any(token in q for token in ("как день", "как мой день", "что по дню", "как я", "мой статус"))
+    wants_food = any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус"))
+    wants_load = any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q
+    wants_mode = "режим" in q or "план" in q
+    wants_why = any(token in q for token in ("почему", "из-за чего", "причины"))
+
+    count = sum(1 for flag in (wants_day, wants_food, wants_load, wants_mode, wants_why) if flag)
+    if count < 2:
+        return None
+
+    if wants_day:
+        sections.append(build_push_message("day", snapshot, day_key, partial=partial, mode="short"))
+    if wants_food:
+        sections.append(build_food_guidance_message(snapshot))
+    if wants_load:
+        sections.append(build_load_guidance_message(snapshot))
+    if wants_mode:
+        sections.append(build_mode_guidance_message(snapshot, slot="midday"))
+    if wants_why:
+        sections.append(build_why_message(snapshot))
+
+    if not sections:
+        return None
+    return "\n\n".join(sections[:3])
+
+
 def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
     q = query.strip().lower()
     if "какие данные" in q and ("сколько" in q or "за сколько" in q):
         return build_metrics_message(context)
+    combined = _route_multi_intent_reply(q, context)
+    if combined:
+        return combined
     if "месяц" in q or "30" in q:
         return build_period_summary_message(history_cache, days=30, title="Месяц")
     if any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")):
