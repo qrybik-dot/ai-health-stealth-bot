@@ -130,7 +130,13 @@ async function handleMessage(message, env, ctx) {
   }
 
   const cache = await loadCache(env);
-  await sendMessage(env, chatId, routeTextQuestion(text, cache));
+  const dialogState = getDialogState(cache, chatId);
+  const routed = routeTextQuestionDetailed(text, cache, dialogState);
+  await sendMessage(env, chatId, routed.text);
+  if (routed.intent) {
+    setDialogState(cache, chatId, { day_key: currentDayKey(), last_product_intent: routed.intent, updated_at: new Date().toISOString() });
+    await saveCache(env, cache);
+  }
   return { action: "structured_reply", chat_id: chatId };
 }
 
@@ -374,6 +380,21 @@ function formatMskDate(date) {
 function getSnapshot(cache, day = currentDayKey()) {
   const snapshot = cache?.[day];
   return snapshot && typeof snapshot === "object" ? snapshot : {};
+}
+
+function getDialogState(cache, chatId) {
+  const state = cache?._dialog_state;
+  if (!state || typeof state !== "object") return null;
+  const raw = state[chatId];
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.day_key !== currentDayKey()) return null;
+  if (!["day", "food", "load", "mode", "why", "what15"].includes(raw.last_product_intent)) return null;
+  return raw;
+}
+
+function setDialogState(cache, chatId, value) {
+  if (!cache._dialog_state || typeof cache._dialog_state !== "object") cache._dialog_state = {};
+  cache._dialog_state[chatId] = value;
 }
 
 function pickVariant(snapshot, tag, options) {
@@ -1032,7 +1053,23 @@ function buildDebugSentMessage(cache, chatId) {
   return [`sent-registry ${day}:`, ...keys.map((key) => `• ${key}`)].join("\n");
 }
 
-function routeTextQuestion(text, cache) {
+function inferFollowupIntent(q, dialogState) {
+  if (!dialogState || !dialogState.last_product_intent) return null;
+  let compact = q.trim().toLowerCase();
+  while (compact.startsWith("а ") || compact.startsWith("и ") || compact.startsWith("ну ") || compact.startsWith("тогда ")) {
+    compact = compact.includes(" ") ? compact.split(" ").slice(1).join(" ").trim() : compact;
+  }
+  if (["почему", "почему?", "а почему?", "и почему?", "почему так", "почему так?"].includes(compact) || compact.includes("из-за чего")) return "why";
+  if (["что делать", "что делать?", "а что делать?", "и что делать?"].includes(compact)) return "mode";
+  if (["что сделать сейчас", "что сделать сейчас?", "а что сделать сейчас?"].includes(compact)) return "what15";
+  if (compact.includes("поесть") || compact.includes("еда") || compact.includes("завтрак") || compact.includes("обед") || compact.includes("ужин") || compact.includes("перекус")) return "food";
+  if (compact.includes("трен") || compact.includes("нагруз") || compact.includes("спорт") || compact.includes("размяться")) return "load";
+  if (compact.includes("режим") || compact.includes("план")) return "mode";
+  if (compact.includes("как день") || compact.includes("как мой день") || compact.includes("что по дню") || compact.includes("как я") || compact.includes("мой статус")) return "day";
+  return null;
+}
+
+function routeTextQuestionDetailed(text, cache, dialogState = null) {
   const q = text.toLowerCase();
   const wantsDay = q.includes("как день") || q.includes("как мой день") || q.includes("что по дню") || q.includes("как я") || q.includes("мой статус");
   const wantsFood = q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед") || q.includes("ужин") || q.includes("перекус");
@@ -1042,10 +1079,29 @@ function routeTextQuestion(text, cache) {
   const wantsWhy = q.includes("почему") || q.includes("из-за чего") || q.includes("причины");
 
   if (q.includes("какое число") || q.includes("какая дата")) {
-    return `Сегодня ${currentDayKey()}.`;
+    return { text: `Сегодня ${currentDayKey()}.`, intent: null };
   }
   if (q.includes("данные") || q.includes("метрик") || q.includes("что видишь")) {
-    return buildDataAnswer(cache);
+    return { text: buildDataAnswer(cache), intent: null };
+  }
+  const followupIntent = inferFollowupIntent(q, dialogState);
+  if (followupIntent === "why") {
+    return { text: buildWhyMessage(getSnapshot(cache, currentDayKey()), currentDayKey(), "midday"), intent: "why" };
+  }
+  if (followupIntent === "mode") {
+    return { text: buildModeAnswer(cache), intent: "mode" };
+  }
+  if (followupIntent === "what15") {
+    return { text: buildWhat15Message("midday", getSnapshot(cache, currentDayKey())), intent: "what15" };
+  }
+  if (followupIntent === "food") {
+    return { text: buildFoodAnswer(cache), intent: "food" };
+  }
+  if (followupIntent === "load") {
+    return { text: buildLoadAnswer(cache), intent: "load" };
+  }
+  if (followupIntent === "day") {
+    return { text: buildTodayMessage(cache), intent: "day" };
   }
   const productIntentCount = [wantsDay, wantsFood, wantsLoad, wantsMode, wantsWhy].filter(Boolean).length;
   if (productIntentCount >= 2) {
@@ -1055,33 +1111,38 @@ function routeTextQuestion(text, cache) {
     if (wantsLoad) sections.push(buildLoadAnswer(cache));
     if (wantsMode) sections.push(buildModeAnswer(cache));
     if (wantsWhy) sections.push(buildWhyMessage(getSnapshot(cache, currentDayKey()), currentDayKey(), "midday"));
-    return sections.slice(0, 3).join("\n\n");
+    const intent = wantsDay ? "day" : wantsFood ? "food" : wantsLoad ? "load" : wantsMode ? "mode" : wantsWhy ? "why" : null;
+    return { text: sections.slice(0, 3).join("\n\n"), intent };
   }
   if (wantsDay) {
-    return buildTodayMessage(cache);
+    return { text: buildTodayMessage(cache), intent: "day" };
   }
   if (q.includes("недел")) {
-    return buildWeekMessage(cache);
+    return { text: buildWeekMessage(cache), intent: null };
   }
   if (q.includes("месяц") || q.includes("30")) {
-    return buildMonthAnswer(cache);
+    return { text: buildMonthAnswer(cache), intent: null };
   }
   if (q.includes("шаг") || q.includes("ходьб")) {
-    return buildStepsAnswer(cache);
+    return { text: buildStepsAnswer(cache), intent: null };
   }
   if (wantsFood) {
-    return buildFoodAnswer(cache);
+    return { text: buildFoodAnswer(cache), intent: "food" };
   }
   if (wantsCompare) {
-    return buildCompareAnswer(cache);
+    return { text: buildCompareAnswer(cache), intent: null };
   }
   if (wantsLoad) {
-    return buildLoadAnswer(cache);
+    return { text: buildLoadAnswer(cache), intent: "load" };
   }
   if (wantsMode) {
-    return buildModeAnswer(cache);
+    return { text: buildModeAnswer(cache), intent: "mode" };
   }
-  return buildTodayMessage(cache);
+  return { text: buildTodayMessage(cache), intent: "day" };
+}
+
+function routeTextQuestion(text, cache) {
+  return routeTextQuestionDetailed(text, cache, null).text;
 }
 
 function buildStepsAnswer(cache) {
@@ -1328,6 +1389,7 @@ export {
   buildWeekMessage,
   buildWhat15Message,
   routeTextQuestion,
+  routeTextQuestionDetailed,
   buildStatsMessage,
   buildDebugHealthMessage,
   buildNoDataTodayMessage,

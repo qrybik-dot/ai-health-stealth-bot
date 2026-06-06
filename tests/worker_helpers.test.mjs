@@ -12,6 +12,7 @@ import {
   buildWhat15Message,
   isoWeekIdFromDay,
   routeTextQuestion,
+  routeTextQuestionDetailed,
   storeColorVote,
   storeTodayVote,
   todayKeyboard,
@@ -175,6 +176,13 @@ assert.match(comboDayFood, /Еда сейчас/);
 const comboLoadWhy = routeTextQuestion("что по нагрузке и почему так", richCache);
 assert.match(comboLoadWhy, /Нагрузка/);
 assert.match(comboLoadWhy, /Почему так/);
+
+const followupWhy = routeTextQuestionDetailed("а почему?", richCache, {
+  day_key: today,
+  last_product_intent: "load",
+  updated_at: `${today}T12:00:00Z`,
+});
+assert.match(followupWhy.text, /Почему так/);
 
 const morningToday = buildTodayMessage(richCache, "morning");
 const middayToday = buildTodayMessage(richCache, "midday");

@@ -2961,6 +2961,79 @@ def _build_what15_message(slot: str, snapshot: Optional[Dict[str, Any]]) -> str:
     return "🎯 <b>Что делать за 15 минут</b><br>1) 3 мин — приглушить свет и уведомления.<br>2) 7 мин — спокойный ритуал закрытия дня.<br>3) 5 мин — подготовка ко сну без экрана."
 
 
+PRODUCT_MEMORY_INTENTS = {"day", "food", "load", "mode", "why", "what15"}
+
+
+def _product_intent_flags(q: str) -> Dict[str, bool]:
+    return {
+        "day": any(token in q for token in ("как день", "как мой день", "что по дню", "как я", "мой статус")),
+        "food": any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")),
+        "load": any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q,
+        "mode": "режим" in q or "план" in q,
+        "why": any(token in q for token in ("почему", "из-за чего", "причины")),
+        "what15": "15 минут" in q or "15м" in q or "что сделать сейчас" in q or "что делать сейчас" in q,
+    }
+
+
+def _get_dialog_memory(chat_id: str) -> Dict[str, Any]:
+    if not chat_id:
+        return {}
+    prefs = get_user_prefs(chat_id)
+    raw = prefs.get("dialog_memory")
+    if not isinstance(raw, dict):
+        return {}
+    if raw.get("day_key") != current_day_key():
+        return {}
+    last_intent = str(raw.get("last_product_intent", "")).strip()
+    if last_intent not in PRODUCT_MEMORY_INTENTS:
+        return {}
+    return raw
+
+
+def _remember_product_intent(chat_id: str, intent: Optional[str]) -> None:
+    if not chat_id or intent not in PRODUCT_MEMORY_INTENTS:
+        return
+    upsert_user_prefs(
+        chat_id,
+        {
+            "dialog_memory": {
+                "day_key": current_day_key(),
+                "last_product_intent": intent,
+                "updated_at": utc_now_iso(),
+            }
+        },
+    )
+
+
+def _infer_followup_intent(q: str, chat_id: str) -> Optional[str]:
+    memory = _get_dialog_memory(chat_id)
+    if not memory:
+        return None
+    compact = q.strip().lower()
+    while compact.startswith(("а ", "и ", "ну ", "тогда ")):
+        compact = compact.split(" ", 1)[1].strip() if " " in compact else compact
+    if compact in {"почему", "почему?", "а почему?", "и почему?", "почему так", "почему так?"} or "из-за чего" in compact:
+        return "why"
+    if compact in {"что делать", "что делать?", "а что делать?", "и что делать?"}:
+        return "mode"
+    if compact in {"что сделать сейчас", "что сделать сейчас?", "а что сделать сейчас?"}:
+        return "what15"
+    flags = _product_intent_flags(compact)
+    if flags["food"]:
+        return "food"
+    if flags["load"]:
+        return "load"
+    if flags["mode"]:
+        return "mode"
+    if flags["what15"]:
+        return "what15"
+    if flags["why"]:
+        return "why"
+    if flags["day"]:
+        return "day"
+    return None
+
+
 def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
     sections: List[str] = []
     snapshot = context.get("snapshot")
@@ -2993,36 +3066,51 @@ def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
     return "\n\n".join(sections[:3])
 
 
-def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
+def _route_structured_reply_internal(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Tuple[Optional[str], Optional[str]]:
     q = query.strip().lower()
     if "какие данные" in q and ("сколько" in q or "за сколько" in q):
-        return build_metrics_message(context)
+        return build_metrics_message(context), None
+    followup_intent = _infer_followup_intent(q, chat_id)
+    if followup_intent == "why":
+        return build_why_message(context.get("snapshot")), "why"
+    if followup_intent == "mode":
+        return build_mode_guidance_message(context.get("snapshot"), slot="midday"), "mode"
+    if followup_intent == "what15":
+        return _build_what15_message("midday", context.get("snapshot")), "what15"
+    if followup_intent == "food":
+        return build_food_guidance_message(context.get("snapshot")), "food"
+    if followup_intent == "load":
+        return build_load_guidance_message(context.get("snapshot")), "load"
+    if followup_intent == "day":
+        return build_push_message("day", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready", mode="short"), "day"
     combined = _route_multi_intent_reply(q, context)
     if combined:
-        return combined
+        flags = _product_intent_flags(q)
+        primary = next((name for name in ("day", "food", "load", "mode", "why", "what15") if flags.get(name)), None)
+        return combined, primary
     if "месяц" in q or "30" in q:
-        return build_period_summary_message(history_cache, days=30, title="Месяц")
+        return build_period_summary_message(history_cache, days=30, title="Месяц"), None
     if any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")):
-        return build_food_guidance_message(context.get("snapshot"))
+        return build_food_guidance_message(context.get("snapshot")), "food"
     if any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q:
-        return build_load_guidance_message(context.get("snapshot"))
+        return build_load_guidance_message(context.get("snapshot")), "load"
     if "15 минут" in q or "15м" in q or "что сделать сейчас" in q or "что делать сейчас" in q:
-        return _build_what15_message("midday", context.get("snapshot"))
+        return _build_what15_message("midday", context.get("snapshot")), "what15"
     if "режим" in q or "план" in q:
-        return build_mode_guidance_message(context.get("snapshot"), slot="midday")
+        return build_mode_guidance_message(context.get("snapshot"), slot="midday"), "mode"
     intent = resolve_intent(q)
     speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":
-        return _format_metrics_availability(context)
+        return _format_metrics_availability(context), None
     if intent == "detail":
-        return _format_detailed_analysis(context)
+        return _format_detailed_analysis(context), None
     if intent == "history":
-        return _format_history_answer(context)
+        return _format_history_answer(context), None
     if intent == "what_data":
-        return build_metrics_message(context)
+        return build_metrics_message(context), None
     metric_reply = _render_metric_answer(intent, context)
     if metric_reply:
-        return metric_reply
+        return metric_reply, None
     if intent == "day_verdict":
         return build_push_message(
             slot="day",
@@ -3030,31 +3118,36 @@ def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: 
             day_key=str(context.get("day_key", current_day_key())),
             partial=context.get("day_status") != "ready",
             mode=speech_mode,
-        )
+        ), "day"
     if intent == "current_state":
-        return build_push_message("midday", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready")
+        return build_push_message("midday", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready"), "day"
     if intent == "weekly":
         history = load_cache()
         payload = build_weekly_payload(history, _now_msk(), chat_id="ad-hoc")
-        return payload["caption"]
+        return payload["caption"], None
     if intent == "compare_days":
         days = list(context.get("available_days", []))
         if len(days) < 2:
-            return _format_history_answer(context)
+            return _format_history_answer(context), None
         d1, d2 = days[-2], days[-1]
         s1 = build_day_context(day_key=d1, cache_data=history_cache).get("snapshot")
         s2 = build_day_context(day_key=d2, cache_data=history_cache).get("snapshot")
-        return render_compare_days(d1, d2, s1, s2)
+        return render_compare_days(d1, d2, s1, s2), None
     if _is_current_date_only_query(q):
         today = _now_msk().date()
-        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()})."
+        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()}).", None
     if _is_date_data_query(q):
         target_date = _resolve_target_date(query, _now_msk().date())
         if target_date is None:
-            return None
+            return None, None
         day_context = build_day_context(day_key=target_date.isoformat(), cache_data=history_cache)
-        return _format_day_data_answer(target_date, day_context)
-    return None
+        return _format_day_data_answer(target_date, day_context), None
+    return None, None
+
+
+def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
+    reply, _intent = _route_structured_reply_internal(query, context, history_cache, chat_id=chat_id)
+    return reply
 
 
 def build_chat_prompt(cache: Dict[str, Any], query: str) -> str:
@@ -3191,13 +3284,15 @@ def _handle_message_update(tg_token: str, default_chat_id: str, message: Dict[st
 
     history_cache = load_cache()
     context = build_day_context(cache_data=history_cache)
-    response_msg = _route_structured_reply(text, context, history_cache, chat_id=message_chat_id)
+    response_msg, product_intent = _route_structured_reply_internal(text, context, history_cache, chat_id=message_chat_id)
     action = "structured_reply"
     if response_msg is None:
         response_msg = generate_chat_message(
             env("GEMINI_API_KEY"), env("GEMINI_MODEL"), history_cache, text
         )
         action = "gemini_reply"
+    else:
+        _remember_product_intent(message_chat_id, product_intent)
 
     telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
     return {"kind": "message", "chat_id": message_chat_id, "action": action}

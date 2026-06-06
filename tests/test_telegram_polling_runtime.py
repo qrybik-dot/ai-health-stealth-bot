@@ -82,6 +82,38 @@ class TelegramPollingRuntimeTests(unittest.TestCase):
         self.assertEqual(result["action"], "structured_reply")
         self.assertIn("Сегодня", sent[0][1])
 
+    def test_followup_uses_recent_product_intent_memory(self):
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cache, "CACHE_FILE", os.path.join(tmp, "cache.json")):
+                day = main.current_day_key()
+                cache.upsert_day_snapshot(day, {
+                    "source": "garmin",
+                    "date": day,
+                    "body_battery": {"mostRecentValue": 52, "chargedValue": 79},
+                    "stress": {"avgStressLevel": 47, "maxStressLevel": 85},
+                    "sleep": {"sleepTimeSeconds": 25200},
+                    "rhr": {"restingHeartRate": 57},
+                    "steps": {"totalSteps": 6800},
+                })
+                with patch.object(main, "_send_typing_action"), \
+                     patch.object(main, "telegram_send") as send:
+                    send.side_effect = lambda _token, chat_id, text, parse_mode=None: sent.append((chat_id, text, parse_mode))
+                    first = main.process_telegram_update(
+                        {"update_id": 40, "message": {"text": "что по нагрузке?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+                    second = main.process_telegram_update(
+                        {"update_id": 41, "message": {"text": "а почему?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+        self.assertEqual(first["action"], "structured_reply")
+        self.assertEqual(second["action"], "structured_reply")
+        self.assertIn("Нагрузка", sent[0][1])
+        self.assertIn("Почему так", sent[1][1])
+
     def test_callback_facts_sends_facts_message(self):
         sent = []
         snapshot = {
