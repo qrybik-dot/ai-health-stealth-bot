@@ -2962,6 +2962,7 @@ def _build_what15_message(slot: str, snapshot: Optional[Dict[str, Any]]) -> str:
 
 
 PRODUCT_MEMORY_INTENTS = {"day", "food", "load", "mode", "why", "what15"}
+PRODUCT_MEMORY_SLOTS = {"morning", "midday", "evening", "day"}
 
 
 def _product_intent_flags(q: str) -> Dict[str, bool]:
@@ -2987,18 +2988,27 @@ def _get_dialog_memory(chat_id: str) -> Dict[str, Any]:
     last_intent = str(raw.get("last_product_intent", "")).strip()
     if last_intent not in PRODUCT_MEMORY_INTENTS:
         return {}
+    last_slot = str(raw.get("last_slot", "")).strip()
+    if last_slot and last_slot not in PRODUCT_MEMORY_SLOTS:
+        return {}
     return raw
 
 
-def _remember_product_intent(chat_id: str, intent: Optional[str]) -> None:
+def _current_product_slot() -> str:
+    return _resolve_push_slot(_now_msk()) or _nearest_slot(_now_msk())
+
+
+def _remember_product_intent(chat_id: str, intent: Optional[str], slot: Optional[str] = None) -> None:
     if not chat_id or intent not in PRODUCT_MEMORY_INTENTS:
         return
+    remembered_slot = slot if slot in PRODUCT_MEMORY_SLOTS else _current_product_slot()
     upsert_user_prefs(
         chat_id,
         {
             "dialog_memory": {
                 "day_key": current_day_key(),
                 "last_product_intent": intent,
+                "last_slot": remembered_slot,
                 "updated_at": utc_now_iso(),
             }
         },
@@ -3034,6 +3044,14 @@ def _infer_followup_intent(q: str, chat_id: str) -> Optional[str]:
     return None
 
 
+def _infer_followup_slot(chat_id: str) -> str:
+    memory = _get_dialog_memory(chat_id)
+    slot = str(memory.get("last_slot", "")).strip() if memory else ""
+    if slot in PRODUCT_MEMORY_SLOTS:
+        return slot
+    return _current_product_slot()
+
+
 def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
     sections: List[str] = []
     snapshot = context.get("snapshot")
@@ -3066,87 +3084,95 @@ def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
     return "\n\n".join(sections[:3])
 
 
-def _route_structured_reply_internal(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Tuple[Optional[str], Optional[str]]:
+def _route_structured_reply_internal(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Tuple[Optional[str], Optional[str], Optional[str]]:
     q = query.strip().lower()
+    current_slot = _current_product_slot()
     if "какие данные" in q and ("сколько" in q or "за сколько" in q):
-        return build_metrics_message(context), None
+        return build_metrics_message(context), None, None
     followup_intent = _infer_followup_intent(q, chat_id)
+    followup_slot = _infer_followup_slot(chat_id)
     if followup_intent == "why":
-        return build_why_message(context.get("snapshot")), "why"
+        return build_why_message(context.get("snapshot")), "why", followup_slot
     if followup_intent == "mode":
-        return build_mode_guidance_message(context.get("snapshot"), slot="midday"), "mode"
+        return build_mode_guidance_message(context.get("snapshot"), slot=followup_slot if followup_slot != "day" else "midday"), "mode", followup_slot
     if followup_intent == "what15":
-        return _build_what15_message("midday", context.get("snapshot")), "what15"
+        return _build_what15_message(followup_slot if followup_slot != "day" else "midday", context.get("snapshot")), "what15", followup_slot
     if followup_intent == "food":
-        return build_food_guidance_message(context.get("snapshot")), "food"
+        return build_food_guidance_message(context.get("snapshot")), "food", followup_slot
     if followup_intent == "load":
-        return build_load_guidance_message(context.get("snapshot")), "load"
+        return build_load_guidance_message(context.get("snapshot")), "load", followup_slot
     if followup_intent == "day":
-        return build_push_message("day", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready", mode="short"), "day"
+        slot = followup_slot if followup_slot in {"morning", "midday", "evening"} else "day"
+        return build_push_message(slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready", mode="short"), "day", slot
     combined = _route_multi_intent_reply(q, context)
     if combined:
         flags = _product_intent_flags(q)
         primary = next((name for name in ("day", "food", "load", "mode", "why", "what15") if flags.get(name)), None)
-        return combined, primary
+        return combined, primary, current_slot
     if "месяц" in q or "30" in q:
-        return build_period_summary_message(history_cache, days=30, title="Месяц"), None
+        return build_period_summary_message(history_cache, days=30, title="Месяц"), None, None
     if any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")):
-        return build_food_guidance_message(context.get("snapshot")), "food"
+        return build_food_guidance_message(context.get("snapshot")), "food", current_slot
     if any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q:
-        return build_load_guidance_message(context.get("snapshot")), "load"
+        return build_load_guidance_message(context.get("snapshot")), "load", current_slot
     if "15 минут" in q or "15м" in q or "что сделать сейчас" in q or "что делать сейчас" in q:
-        return _build_what15_message("midday", context.get("snapshot")), "what15"
+        return _build_what15_message(current_slot, context.get("snapshot")), "what15", current_slot
     if "режим" in q or "план" in q:
-        return build_mode_guidance_message(context.get("snapshot"), slot="midday"), "mode"
+        return build_mode_guidance_message(context.get("snapshot"), slot=current_slot), "mode", current_slot
+    metric_intents = {"respiration", "oxygen", "steps", "activity", "stress_metric", "sleep_metric", "pulse", "hrv_metric", "since_morning"}
+    if _product_intent_flags(q).get("day") and resolve_intent(q) not in metric_intents:
+        slot = current_slot if current_slot in {"morning", "midday", "evening"} else "day"
+        return build_push_message(slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready", mode="short"), "day", slot
     intent = resolve_intent(q)
     speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":
-        return _format_metrics_availability(context), None
+        return _format_metrics_availability(context), None, None
     if intent == "detail":
-        return _format_detailed_analysis(context), None
+        return _format_detailed_analysis(context), None, None
     if intent == "history":
-        return _format_history_answer(context), None
+        return _format_history_answer(context), None, None
     if intent == "what_data":
-        return build_metrics_message(context), None
+        return build_metrics_message(context), None, None
     metric_reply = _render_metric_answer(intent, context)
     if metric_reply:
-        return metric_reply, None
+        return metric_reply, None, None
     if intent == "day_verdict":
+        slot = current_slot if current_slot in {"morning", "midday", "evening"} else "day"
         return build_push_message(
-            slot="day",
+            slot=slot,
             snapshot=context.get("snapshot"),
             day_key=str(context.get("day_key", current_day_key())),
             partial=context.get("day_status") != "ready",
             mode=speech_mode,
-        ), "day"
+        ), "day", slot
     if intent == "current_state":
-        return build_push_message("midday", context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready"), "day"
+        return build_push_message(current_slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready"), "day", current_slot
     if intent == "weekly":
         history = load_cache()
         payload = build_weekly_payload(history, _now_msk(), chat_id="ad-hoc")
-        return payload["caption"], None
+        return payload["caption"], None, None
     if intent == "compare_days":
         days = list(context.get("available_days", []))
         if len(days) < 2:
-            return _format_history_answer(context), None
+            return _format_history_answer(context), None, None
         d1, d2 = days[-2], days[-1]
         s1 = build_day_context(day_key=d1, cache_data=history_cache).get("snapshot")
         s2 = build_day_context(day_key=d2, cache_data=history_cache).get("snapshot")
-        return render_compare_days(d1, d2, s1, s2), None
+        return render_compare_days(d1, d2, s1, s2), None, None
     if _is_current_date_only_query(q):
         today = _now_msk().date()
-        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()}).", None
+        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()}).", None, None
     if _is_date_data_query(q):
         target_date = _resolve_target_date(query, _now_msk().date())
         if target_date is None:
-            return None, None
+            return None, None, None
         day_context = build_day_context(day_key=target_date.isoformat(), cache_data=history_cache)
-        return _format_day_data_answer(target_date, day_context), None
-    return None, None
+        return _format_day_data_answer(target_date, day_context), None, None
+    return None, None, None
 
 
 def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
-    reply, _intent = _route_structured_reply_internal(query, context, history_cache, chat_id=chat_id)
+    reply, _intent, _slot = _route_structured_reply_internal(query, context, history_cache, chat_id=chat_id)
     return reply
 
 
@@ -3284,7 +3310,7 @@ def _handle_message_update(tg_token: str, default_chat_id: str, message: Dict[st
 
     history_cache = load_cache()
     context = build_day_context(cache_data=history_cache)
-    response_msg, product_intent = _route_structured_reply_internal(text, context, history_cache, chat_id=message_chat_id)
+    response_msg, product_intent, product_slot = _route_structured_reply_internal(text, context, history_cache, chat_id=message_chat_id)
     action = "structured_reply"
     if response_msg is None:
         response_msg = generate_chat_message(
@@ -3292,7 +3318,7 @@ def _handle_message_update(tg_token: str, default_chat_id: str, message: Dict[st
         )
         action = "gemini_reply"
     else:
-        _remember_product_intent(message_chat_id, product_intent)
+        _remember_product_intent(message_chat_id, product_intent, product_slot)
 
     telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
     return {"kind": "message", "chat_id": message_chat_id, "action": action}

@@ -114,6 +114,37 @@ class TelegramPollingRuntimeTests(unittest.TestCase):
         self.assertIn("Нагрузка", sent[0][1])
         self.assertIn("Почему так", sent[1][1])
 
+    def test_followup_keeps_remembered_slot(self):
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cache, "CACHE_FILE", os.path.join(tmp, "cache.json")):
+                day = main.current_day_key()
+                cache.upsert_day_snapshot(day, {
+                    "source": "garmin",
+                    "date": day,
+                    "body_battery": {"mostRecentValue": 60, "chargedValue": 82},
+                    "stress": {"avgStressLevel": 28, "maxStressLevel": 52},
+                    "sleep": {"sleepTimeSeconds": 27000},
+                    "rhr": {"restingHeartRate": 54},
+                    "steps": {"totalSteps": 1200},
+                })
+                with patch.object(main, "_send_typing_action"), \
+                     patch.object(main, "_now_msk", return_value=main.dt.datetime(2026, 6, 6, 9, 25, tzinfo=main.TZ_MSK_FIXED)), \
+                     patch.object(main, "telegram_send") as send:
+                    send.side_effect = lambda _token, chat_id, text, parse_mode=None: sent.append((chat_id, text, parse_mode))
+                    main.process_telegram_update(
+                        {"update_id": 42, "message": {"text": "как день?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+                    main.process_telegram_update(
+                        {"update_id": 43, "message": {"text": "а что делать?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+        self.assertIn("Старт дня", sent[0][1])
+        self.assertIn("восстановление после сна", sent[1][1])
+
     def test_callback_facts_sends_facts_message(self):
         sent = []
         snapshot = {

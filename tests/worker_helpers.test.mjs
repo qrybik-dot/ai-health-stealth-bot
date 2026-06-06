@@ -180,9 +180,18 @@ assert.match(comboLoadWhy, /Почему так/);
 const followupWhy = routeTextQuestionDetailed("а почему?", richCache, {
   day_key: today,
   last_product_intent: "load",
+  last_slot: "morning",
   updated_at: `${today}T12:00:00Z`,
 });
 assert.match(followupWhy.text, /Почему так/);
+
+const followupModeMorning = routeTextQuestionDetailed("а что делать?", richCache, {
+  day_key: today,
+  last_product_intent: "day",
+  last_slot: "morning",
+  updated_at: `${today}T12:00:00Z`,
+});
+assert.match(followupModeMorning.text, /восстановление после сна/);
 
 const morningToday = buildTodayMessage(richCache, "morning");
 const middayToday = buildTodayMessage(richCache, "midday");
