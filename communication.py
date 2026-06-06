@@ -67,6 +67,24 @@ def _seed(*parts: str) -> int:
     return sum(ord(ch) for ch in "|".join(parts))
 
 
+def _variant_key(snapshot: Optional[Dict[str, Any]], tag: str) -> str:
+    metrics = _extract_metrics(snapshot)
+    bits = [
+        tag,
+        str(_fmt_int(metrics.get("bb_now"), 0, 100) or 0),
+        str(_fmt_int(metrics.get("stress_avg"), 0, 100) or 0),
+        str(_fmt_int(metrics.get("steps"), 0, 120000) or 0),
+        str(_fmt_int(metrics.get("active_minutes"), 0, 600) or 0),
+    ]
+    return "|".join(bits)
+
+
+def _pick_variant(snapshot: Optional[Dict[str, Any]], tag: str, options: List[str]) -> str:
+    if not options:
+        return ""
+    return options[_seed(_variant_key(snapshot, tag)) % len(options)]
+
+
 def resolve_intent(query: str) -> str:
     q = query.strip().lower()
     metric_first = (
@@ -453,12 +471,22 @@ def build_why_message(snapshot: Optional[Dict[str, Any]]) -> str:
         reasons.append(f"↗️ Этажи: <b>{floors}</b>")
     if not reasons:
         reasons = ["Данных мало, поэтому вывод с низкой уверенностью"]
+    short_line = _pick_variant(snapshot, "why-short", [
+        "день определяется ритмом, а не одним показателем.",
+        "картину дня делает сочетание сигналов, не одна цифра.",
+        "смысл дня читается по связке метрик, не по одиночному пику.",
+    ])
+    lever_line = _pick_variant(snapshot, "why-lever", [
+        "один 15-минутный тихий блок без переключений.",
+        "короткий reset и затем один простой приоритет.",
+        "тихий блок без шума, потом возврат к одному делу.",
+    ])
     return (
         "🧩 <b>Почему так</b>\n\n"
-        "<b>Коротко:</b> день определяется ритмом, а не одним показателем.\n\n"
+        f"<b>Коротко:</b> {short_line}\n\n"
         "<b>Причины:</b>\n"
         + "\n".join(f"• {r}" for r in reasons[:5])
-        + "\n\n🎯 <b>Рычаг:</b> один 15-минутный тихий блок без переключений."
+        + f"\n\n🎯 <b>Рычаг:</b> {lever_line}"
     )
 
 
@@ -669,12 +697,17 @@ def build_food_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     if floors is not None and floors > 0:
         extra_bits.append(f"{floors} этажей")
     extras = f"\n<b>Контекст:</b> {', '.join(extra_bits)}." if extra_bits else ""
+    practical_line = _pick_variant(snapshot, "food-practical", [
+        "нормальный простой приём еды + вода, без тяжёлых экспериментов и без догоняться сладким как стратегией.",
+        "простая еда и вода сейчас работают лучше, чем случайные перекусы и тяжёлые комбинации.",
+        "держать базовую еду: вода, нормальная порция, без попытки чинить день сладким или кофе.",
+    ])
     return (
         "🍽 <b>Еда сейчас</b>\n\n"
         "<b>Факты:</b>\n"
         + "\n".join(f"• {line}" for line in facts)
         + extras
-        + f"\n\n<b>Практично:</b> {advice}."
+        + f"\n\n<b>Практично:</b> {advice}.\n<b>Формат:</b> {practical_line}"
     )
 
 
@@ -709,9 +742,14 @@ def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     if floors is not None and floors > 0:
         intensity_parts.append(f"{floors} этажей")
     intensity_line = f"\n<b>Контекст нагрузки:</b> {', '.join(intensity_parts)}." if intensity_parts else ""
+    regime_line = _pick_variant(snapshot, "load-regime", [
+        mode,
+        mode.replace("формат", "режим"),
+        "сейчас лучше " + ("бережный темп" if soft else "ровная умеренная нагрузка"),
+    ])
     return (
         "🏃 <b>Нагрузка</b>\n\n"
-        f"<b>По режиму:</b> {mode}.\n"
+        f"<b>По режиму:</b> {regime_line}.\n"
         "<b>Факты:</b>\n"
         + facts_block
         + activity_line
@@ -725,9 +763,14 @@ def build_mode_guidance_message(snapshot: Optional[Dict[str, Any]], slot: str = 
     score = _score(metrics)
     support = build_data_chips(snapshot, max_items=3, slot=slot)
     support_line = "\n<b>Опора:</b> " + " · ".join(support) if support else ""
+    focus_line = _pick_variant(snapshot, f"mode-focus-{slot}", [
+        SLOT_FOCUS.get(slot, SLOT_FOCUS["midday"]),
+        SLOT_FOCUS.get(slot, SLOT_FOCUS["midday"]).replace(" и ", ", "),
+        "держать " + SLOT_FOCUS.get(slot, SLOT_FOCUS["midday"]),
+    ])
     return (
         "🧭 <b>Режим сейчас</b>\n\n"
-        f"<b>Фокус:</b> {SLOT_FOCUS.get(slot, SLOT_FOCUS['midday'])}.\n"
+        f"<b>Фокус:</b> {focus_line}.\n"
         f"<b>Смысл:</b> {_meaning_line(slot, score)}\n\n"
         + support_line
         + ("\n\n" if support_line else "")

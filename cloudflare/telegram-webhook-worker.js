@@ -376,6 +376,15 @@ function getSnapshot(cache, day = currentDayKey()) {
   return snapshot && typeof snapshot === "object" ? snapshot : {};
 }
 
+function pickVariant(snapshot, tag, options) {
+  if (!Array.isArray(options) || options.length === 0) return "";
+  const metrics = snapshotMetrics(snapshot || {});
+  const seed = `${tag}|${Math.round(metrics.bb || 0)}|${Math.round(metrics.stress || 0)}|${Math.round(metrics.steps || 0)}|${Math.round(metrics.activeMinutes || 0)}`;
+  let sum = 0;
+  for (const ch of seed) sum += ch.charCodeAt(0);
+  return options[sum % options.length];
+}
+
 function metricValue(snapshot, metric, keys) {
   const node = snapshot?.[metric];
   if (!node || typeof node !== "object") return null;
@@ -1201,11 +1210,16 @@ function buildFoodAnswer(cache) {
   }
   if (typeof metrics.activeKcal === "number") contextParts.push(`${Math.round(metrics.activeKcal)} активных ккал`);
   if (typeof metrics.floors === "number" && metrics.floors > 0) contextParts.push(`${Math.round(metrics.floors)} этажей`);
+  const practical = pickVariant(snapshot, "food-practical", [
+    "Практично: нормальная простая еда + вода. Белок/крупа или овощи, без тяжёлых экспериментов и без догоняться сладким как стратегией.",
+    "Практично: простая еда и вода сейчас работают лучше, чем случайные перекусы и тяжёлые комбинации.",
+    "Практично: держать базовую еду — вода, нормальная порция, без попытки чинить день сладким или кофе.",
+  ]);
   return [
     "🍽 <b>Еда сейчас</b>",
     `По данным: ${resourcePart}, ${stressPart}, ${movementPart}, ${energyPart}.`,
     contextParts.length ? `Контекст: ${contextParts.join(", ")}.` : "",
-    "Практично: нормальная простая еда + вода. Белок/крупа или овощи, без тяжёлых экспериментов и без догоняться сладким как стратегией.",
+    practical,
   ].filter(Boolean).join("\n");
 }
 
@@ -1214,6 +1228,11 @@ function buildLoadAnswer(cache) {
   if (!hasUsableSnapshot(snapshot)) return "🏃 <b>Нагрузка</b>\nДанных нет. По режиму: только лёгкая активность, интенсивность не планировать.";
   const metrics = snapshotMetrics(snapshot);
   const soft = (typeof metrics.bb === "number" && metrics.bb < 40) || (typeof metrics.stress === "number" && metrics.stress >= 60);
+  const regime = pickVariant(snapshot, "load-regime", [
+    soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок",
+    soft ? "лучше бережный режим" : "ровная умеренная нагрузка выглядит ок",
+    soft ? "сейчас без интенсивности" : "можно держать спокойную рабочую нагрузку",
+  ]);
   const movement = typeof metrics.steps === "number"
     ? `Движение: ${Math.round(metrics.steps)} шагов${typeof metrics.activeMinutes === "number" ? `, активность ${metrics.activeMinutes} мин` : ""}.`
     : typeof metrics.activeMinutes === "number"
@@ -1230,7 +1249,7 @@ function buildLoadAnswer(cache) {
   ].filter(Boolean).join(" · ");
   return [
     "🏃 <b>Нагрузка</b>",
-    `По режиму: ${soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок"}.`,
+    `По режиму: ${regime}.`,
     `Факты: ${metricChips(snapshot, 3, "midday").join(" · ")}.`,
     movement,
     intensity,
@@ -1244,10 +1263,15 @@ function buildLoadAnswer(cache) {
 function buildModeAnswer(cache) {
   const snapshot = getSnapshot(cache, currentDayKey());
   const support = metricChips(snapshot, 3, "midday").join(" · ");
+  const focus = pickVariant(snapshot, "mode-focus", [
+    SLOT_FOCUS.midday,
+    SLOT_FOCUS.midday.replace(" и ", ", "),
+    `держать ${SLOT_FOCUS.midday}`,
+  ]);
   return [
     "🧭 <b>Режим сейчас</b>",
     statusForSnapshot(snapshot),
-    `Фокус: ${SLOT_FOCUS.midday}.`,
+    `Фокус: ${focus}.`,
     support ? `Опора: ${support}.` : "",
     `Действие: ${actionForSnapshot("midday", snapshot)}.`,
     "",
