@@ -145,6 +145,18 @@ assert.match(compareMessage, /Сравнение/);
 assert.match(compareMessage, new RegExp(today));
 assert.match(compareMessage, new RegExp(yesterdayKey));
 
+const compareFollowupWhy = routeTextQuestionDetailed("а почему?", richCache, {
+  day_key: today,
+  last_product_intent: "day",
+  last_slot: "day",
+  target_day: today,
+  compare_days: [yesterdayKey, today],
+  updated_at: `${today}T12:00:00Z`,
+});
+assert.match(compareFollowupWhy.text, /Почему так в сравнении/);
+assert.match(compareFollowupWhy.text, new RegExp(yesterdayKey));
+assert.match(compareFollowupWhy.text, new RegExp(today));
+
 const foodMessage = routeTextQuestion("что мне лучше поесть", richCache);
 assert.match(foodMessage, /Еда сейчас/);
 assert.match(foodMessage, /активности уже прилично/);

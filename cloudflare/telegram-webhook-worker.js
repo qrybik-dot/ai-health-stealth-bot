@@ -134,11 +134,13 @@ async function handleMessage(message, env, ctx) {
   const routed = routeTextQuestionDetailed(text, cache, dialogState);
   await sendMessage(env, chatId, routed.text);
   if (routed.intent) {
+    const compareDays = Array.isArray(routed.compare_days) ? routed.compare_days.filter((day) => isDayKey(day)).slice(-2) : null;
     setDialogState(cache, chatId, {
       day_key: currentDayKey(),
       last_product_intent: routed.intent,
       last_slot: routed.slot || currentSlotId(),
       target_day: routed.target_day || currentDayKey(),
+      ...(compareDays && compareDays.length >= 2 ? { compare_days: compareDays } : {}),
       updated_at: new Date().toISOString(),
     });
     await saveCache(env, cache);
@@ -416,6 +418,7 @@ function getDialogState(cache, chatId) {
   if (!["day", "food", "load", "mode", "why", "what15"].includes(raw.last_product_intent)) return null;
   if (raw.last_slot && !["morning", "midday", "evening", "day"].includes(raw.last_slot)) return null;
   if (raw.target_day && !isDayKey(raw.target_day)) return null;
+  if (raw.compare_days && (!Array.isArray(raw.compare_days) || raw.compare_days.some((day) => !isDayKey(day)))) return null;
   return raw;
 }
 
@@ -1109,6 +1112,12 @@ function followupTargetDay(dialogState) {
   return currentDayKey();
 }
 
+function followupCompareDays(dialogState) {
+  if (!dialogState || !Array.isArray(dialogState.compare_days)) return [];
+  const days = dialogState.compare_days.filter((day) => isDayKey(day));
+  return days.length >= 2 ? days.slice(-2) : [];
+}
+
 function followupSlot(dialogState) {
   if (followupTargetDay(dialogState) !== currentDayKey()) return "day";
   if (dialogState && ["morning", "midday", "evening", "day"].includes(dialogState.last_slot)) return dialogState.last_slot;
@@ -1136,6 +1145,17 @@ function routeTextQuestionDetailed(text, cache, dialogState = null) {
   const rememberedTargetDay = followupTargetDay(dialogState);
   const rememberedSnapshot = getSnapshot(cache, rememberedTargetDay);
   const rememberedSlot = followupSlot(dialogState);
+  const rememberedCompareDays = followupCompareDays(dialogState);
+  if (rememberedCompareDays.length >= 2 && (followupIntent === "why" || followupIntent === "mode")) {
+    const [day1, day2] = rememberedCompareDays;
+    return {
+      text: followupIntent === "why" ? buildCompareWhyAnswer(cache, day1, day2) : buildCompareModeAnswer(cache, day1, day2),
+      intent: followupIntent,
+      slot: "day",
+      target_day: day2,
+      compare_days: [day1, day2],
+    };
+  }
   if (followupIntent === "why") {
     return { text: buildWhyMessage(rememberedSnapshot, rememberedTargetDay, rememberedSlot === "day" ? "midday" : rememberedSlot), intent: "why", slot: rememberedSlot, target_day: rememberedTargetDay };
   }
@@ -1169,7 +1189,8 @@ function routeTextQuestionDetailed(text, cache, dialogState = null) {
   }
   if (explicitTargetDay && explicitTargetDay !== currentDay) {
     if (wantsCompare) {
-      return { text: buildCompareAnswer(cache), intent: "day", slot: "day", target_day: currentDay };
+      const pair = getComparePair(cache);
+      return { text: buildCompareAnswer(cache), intent: "day", slot: "day", target_day: currentDay, compare_days: pair || [relativeDayKey(-1), currentDay] };
     }
     if (wantsFood) return { text: buildFoodAnswer(cache, explicitTargetDay), intent: "food", slot: "day", target_day: explicitTargetDay };
     if (wantsLoad) return { text: buildLoadAnswer(cache, explicitTargetDay), intent: "load", slot: "day", target_day: explicitTargetDay };
@@ -1193,7 +1214,8 @@ function routeTextQuestionDetailed(text, cache, dialogState = null) {
     return { text: buildFoodAnswer(cache, currentDay), intent: "food", slot: slotNow, target_day: currentDay };
   }
   if (wantsCompare) {
-    return { text: buildCompareAnswer(cache), intent: "day", slot: "day", target_day: currentDay };
+    const pair = getComparePair(cache);
+    return { text: buildCompareAnswer(cache), intent: "day", slot: "day", target_day: currentDay, compare_days: pair || [relativeDayKey(-1), currentDay] };
   }
   if (wantsLoad) {
     return { text: buildLoadAnswer(cache, currentDay), intent: "load", slot: slotNow, target_day: currentDay };
@@ -1250,10 +1272,9 @@ function buildDataAnswer(cache) {
 }
 
 function buildCompareAnswer(cache) {
-  const keys = historyDayKeys(cache).filter((day) => hasUsableSnapshot(getSnapshot(cache, day)));
-  if (keys.length < 2) return "Сравнение пока слабое: нужно минимум два дня с данными.";
-  const current = keys[keys.length - 1];
-  const previous = keys[keys.length - 2];
+  const pair = getComparePair(cache);
+  if (!pair) return "Сравнение пока слабое: нужно минимум два дня с данными.";
+  const [previous, current] = pair;
   const currentSnapshot = getSnapshot(cache, current);
   const previousSnapshot = getSnapshot(cache, previous);
   const currentScore = scoreSnapshot(currentSnapshot);
@@ -1266,6 +1287,63 @@ function buildCompareAnswer(cache) {
     `Индекс режима: ${currentScore} против ${previousScore}.`,
     `Сегодня: ${metricChips(currentSnapshot, 3, "day").join(" · ")}.`,
     `Вчера: ${metricChips(previousSnapshot, 3, "day").join(" · ")}.`,
+  ].join("\n");
+}
+
+function getComparePair(cache) {
+  const keys = historyDayKeys(cache).filter((day) => hasUsableSnapshot(getSnapshot(cache, day)));
+  if (keys.length < 2) return null;
+  return [keys[keys.length - 2], keys[keys.length - 1]];
+}
+
+function buildCompareWhyAnswer(cache, day1, day2) {
+  const snapshot1 = getSnapshot(cache, day1);
+  const snapshot2 = getSnapshot(cache, day2);
+  const metrics1 = snapshotMetrics(snapshot1);
+  const metrics2 = snapshotMetrics(snapshot2);
+  const reasons = [];
+  const signed = (value) => `${value >= 0 ? "+" : ""}${Math.round(value)}`;
+  if (metrics1.bb !== null && metrics2.bb !== null && metrics1.bb !== metrics2.bb) reasons.push(`ресурс: ${Math.round(metrics1.bb)} -> ${Math.round(metrics2.bb)} (${signed(metrics2.bb - metrics1.bb)})`);
+  if (metrics1.stress !== null && metrics2.stress !== null && metrics1.stress !== metrics2.stress) reasons.push(`стресс: ${Math.round(metrics1.stress)} -> ${Math.round(metrics2.stress)} (${signed(metrics2.stress - metrics1.stress)})`);
+  if (metrics1.sleepSeconds !== null && metrics2.sleepSeconds !== null && metrics1.sleepSeconds !== metrics2.sleepSeconds) reasons.push(`сон: ${formatHours(metrics1.sleepSeconds)} -> ${formatHours(metrics2.sleepSeconds)}`);
+  if (metrics1.steps !== null && metrics2.steps !== null && metrics1.steps !== metrics2.steps) reasons.push(`шаги: ${Math.round(metrics1.steps)} -> ${Math.round(metrics2.steps)} (${signed(metrics2.steps - metrics1.steps)})`);
+  if (metrics1.rhr !== null && metrics2.rhr !== null && metrics1.rhr !== metrics2.rhr) reasons.push(`пульс покоя: ${Math.round(metrics1.rhr)} -> ${Math.round(metrics2.rhr)} (${signed(metrics2.rhr - metrics1.rhr)})`);
+  if (!reasons.length) reasons.push("метрики близки, сильного сдвига не видно");
+  const score1 = scoreSnapshot(snapshot1);
+  const score2 = scoreSnapshot(snapshot2);
+  const verdict = score2 > score1 + 4 ? "второй день ровнее" : score1 > score2 + 4 ? "первый день ровнее" : "дни близки по ритму";
+  return [
+    "🧩 <b>Почему так в сравнении</b>",
+    `${day1} против ${day2}: ${verdict}.`,
+    `Сдвиги: ${reasons.slice(0, 4).join("; ")}.`,
+    "Рычаг: смотреть на паттерн, а не на одну удачную цифру.",
+  ].join("\n");
+}
+
+function buildCompareModeAnswer(cache, day1, day2) {
+  const snapshot1 = getSnapshot(cache, day1);
+  const snapshot2 = getSnapshot(cache, day2);
+  const score1 = scoreSnapshot(snapshot1);
+  const score2 = scoreSnapshot(snapshot2);
+  const worseDay = score1 <= score2 ? day1 : day2;
+  const worse = score1 <= score2 ? snapshotMetrics(snapshot1) : snapshotMetrics(snapshot2);
+  let action = "один главный блок и паузы между переключениями";
+  let limit = "не добивать день лишним шумом";
+  if (typeof worse.stress === "number" && worse.stress >= 60) {
+    action = "тихий reset 7-10 минут, потом одна простая задача";
+    limit = "не добавлять шум поверх высокого стресса";
+  } else if (typeof worse.steps === "number" && worse.steps < 2500) {
+    action = "короткая спокойная ходьба и возврат к одному блоку";
+    limit = "не сидеть весь день без сброса";
+  } else if (typeof worse.sleepSeconds === "number" && worse.sleepSeconds < 6 * 3600) {
+    action = "вести день бережно и не ускоряться рывками";
+    limit = "не компенсировать короткий сон перегазовкой";
+  }
+  return [
+    "🧭 <b>Что делать по сравнению</b>",
+    `Слабее выглядел день ${worseDay}.`,
+    `Действие: ${action}.`,
+    `Лимит: ${limit}.`,
   ].join("\n");
 }
 

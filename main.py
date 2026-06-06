@@ -98,6 +98,9 @@ from communication import (
     build_why_message,
     render_compare_days,
     resolve_intent,
+    _extract_metrics,
+    _score,
+    _fmt_sleep_seconds,
 )
 
 logging.basicConfig(
@@ -2994,6 +2997,13 @@ def _get_dialog_memory(chat_id: str) -> Dict[str, Any]:
     target_day = str(raw.get("target_day", "")).strip()
     if target_day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_day):
         return {}
+    compare_days = raw.get("compare_days")
+    if compare_days is not None:
+        if not isinstance(compare_days, list):
+            return {}
+        for day in compare_days:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day).strip()):
+                return {}
     return raw
 
 
@@ -3086,11 +3096,71 @@ def _infer_followup_target_day(chat_id: str) -> str:
     return current_day_key()
 
 
+def _infer_followup_compare_days(chat_id: str) -> List[str]:
+    memory = _get_dialog_memory(chat_id)
+    raw = memory.get("compare_days") if memory else None
+    if not isinstance(raw, list):
+        return []
+    days = [str(day).strip() for day in raw if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day).strip())]
+    return days[-2:] if len(days) >= 2 else []
+
+
 def _context_for_day(day_key: str, history_cache: Dict[str, Any], fallback_context: Dict[str, Any]) -> Dict[str, Any]:
     target_day = str(day_key).strip()
     if target_day == str(fallback_context.get("day_key", current_day_key())):
         return fallback_context
     return build_day_context(day_key=target_day, cache_data=history_cache)
+
+
+def _build_compare_why_message(day1: str, day2: str, snapshot1: Dict[str, Any], snapshot2: Dict[str, Any]) -> str:
+    m1, m2 = _extract_metrics(snapshot1), _extract_metrics(snapshot2)
+    reasons: List[str] = []
+    for key, label in (("bb_now", "ресурс"), ("stress_avg", "стресс"), ("sleep_seconds", "сон"), ("steps", "движение"), ("rhr", "пульс покоя")):
+        a, b = m1.get(key), m2.get(key)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and a != b:
+            if key == "sleep_seconds":
+                reasons.append(f"• {label}: {_fmt_sleep_seconds(a)} -> {_fmt_sleep_seconds(b)}")
+            else:
+                reasons.append(f"• {label}: {int(a)} -> {int(b)} ({int(b - a):+d})")
+    if not reasons:
+        reasons.append("• метрики близки, сильного сдвига между днями нет")
+    score1, score2 = _score(m1), _score(m2)
+    verdict = "второй день ровнее" if score2 > score1 + 0.3 else "первый день ровнее" if score1 > score2 + 0.3 else "дни близки по ритму"
+    return (
+        f"🧩 <b>Почему так в сравнении</b>\n\n"
+        f"<b>Пара:</b> {day1} vs {day2}.\n"
+        f"<b>Коротко:</b> {verdict}.\n\n"
+        "<b>Сдвиги:</b>\n"
+        + "\n".join(reasons[:5])
+        + "\n\n🎯 <b>Рычаг:</b> смотреть на повторяющийся паттерн, а не на одну удачную цифру."
+    )
+
+
+def _build_compare_mode_message(day1: str, day2: str, snapshot1: Dict[str, Any], snapshot2: Dict[str, Any]) -> str:
+    m1, m2 = _extract_metrics(snapshot1), _extract_metrics(snapshot2)
+    score1, score2 = _score(m1), _score(m2)
+    worse_day = day1 if score1 < score2 else day2
+    worse_metrics = m1 if score1 < score2 else m2
+    stress = worse_metrics.get("stress_avg")
+    steps = worse_metrics.get("steps")
+    sleep_seconds = worse_metrics.get("sleep_seconds")
+    action = "держать один главный блок и паузы между переключениями"
+    limit = "не делать добивку поверх уже слабого ритма"
+    if isinstance(stress, (int, float)) and stress >= 60:
+        action = "сначала тихий reset 7-10 минут, потом одна простая задача"
+        limit = "не добавлять шум поверх высокого стресса"
+    elif isinstance(steps, (int, float)) and steps < 2500:
+        action = "короткая спокойная ходьба и возврат к одному блоку"
+        limit = "не сидеть весь день без сброса"
+    elif isinstance(sleep_seconds, (int, float)) and sleep_seconds < 6 * 3600:
+        action = "вести день бережно и не ускоряться рывками"
+        limit = "не компенсировать слабый сон перегазовкой"
+    return (
+        "🧭 <b>Что делать по сравнению</b>\n"
+        f"Слабее выглядел день <b>{worse_day}</b>.\n"
+        f"Действие: {action}.\n"
+        f"Лимит: {limit}."
+    )
 
 
 def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
@@ -3125,75 +3195,83 @@ def _route_multi_intent_reply(q: str, context: Dict[str, Any]) -> Optional[str]:
     return "\n\n".join(sections[:3])
 
 
-def _route_structured_reply_internal(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+def _route_structured_reply_internal(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[List[str]]]:
     q = query.strip().lower()
     current_slot = _current_product_slot()
     resolved_target_date = _resolve_target_date(query, _now_msk().date())
     resolved_target_day = resolved_target_date.isoformat() if resolved_target_date else current_day_key()
     if "какие данные" in q and ("сколько" in q or "за сколько" in q):
-        return build_metrics_message(context), None, None, None
+        return build_metrics_message(context), None, None, None, None
     followup_intent = _infer_followup_intent(q, chat_id)
     followup_slot = _infer_followup_slot(chat_id)
     followup_target_day = _infer_followup_target_day(chat_id)
+    followup_compare_days = _infer_followup_compare_days(chat_id)
     followup_context = _context_for_day(followup_target_day, history_cache, context)
+    if len(followup_compare_days) >= 2 and followup_intent in {"why", "mode"}:
+        d1, d2 = followup_compare_days[-2], followup_compare_days[-1]
+        s1 = _context_for_day(d1, history_cache, context).get("snapshot") or {}
+        s2 = _context_for_day(d2, history_cache, context).get("snapshot") or {}
+        if followup_intent == "why":
+            return _build_compare_why_message(d1, d2, s1, s2), "why", "day", d2, [d1, d2]
+        return _build_compare_mode_message(d1, d2, s1, s2), "mode", "day", d2, [d1, d2]
     if followup_intent == "why":
-        return build_why_message(followup_context.get("snapshot")), "why", followup_slot, followup_target_day
+        return build_why_message(followup_context.get("snapshot")), "why", followup_slot, followup_target_day, None
     if followup_intent == "mode":
-        return build_mode_guidance_message(followup_context.get("snapshot"), slot=followup_slot if followup_slot != "day" else "midday"), "mode", followup_slot, followup_target_day
+        return build_mode_guidance_message(followup_context.get("snapshot"), slot=followup_slot if followup_slot != "day" else "midday"), "mode", followup_slot, followup_target_day, None
     if followup_intent == "what15":
-        return _build_what15_message(followup_slot if followup_slot != "day" else "midday", followup_context.get("snapshot")), "what15", followup_slot, followup_target_day
+        return _build_what15_message(followup_slot if followup_slot != "day" else "midday", followup_context.get("snapshot")), "what15", followup_slot, followup_target_day, None
     if followup_intent == "food":
-        return build_food_guidance_message(followup_context.get("snapshot")), "food", followup_slot, followup_target_day
+        return build_food_guidance_message(followup_context.get("snapshot")), "food", followup_slot, followup_target_day, None
     if followup_intent == "load":
-        return build_load_guidance_message(followup_context.get("snapshot")), "load", followup_slot, followup_target_day
+        return build_load_guidance_message(followup_context.get("snapshot")), "load", followup_slot, followup_target_day, None
     if followup_intent == "day":
         slot = followup_slot if followup_target_day == current_day_key() and followup_slot in {"morning", "midday", "evening"} else "day"
-        return build_push_message(slot, followup_context.get("snapshot"), str(followup_context.get("day_key", current_day_key())), partial=followup_context.get("day_status") != "ready", mode="short"), "day", slot, followup_target_day
+        return build_push_message(slot, followup_context.get("snapshot"), str(followup_context.get("day_key", current_day_key())), partial=followup_context.get("day_status") != "ready", mode="short"), "day", slot, followup_target_day, followup_compare_days or None
     combined = _route_multi_intent_reply(q, context)
     if combined:
         flags = _product_intent_flags(q)
         primary = next((name for name in ("day", "food", "load", "mode", "why", "what15") if flags.get(name)), None)
-        return combined, primary, current_slot, current_day_key()
+        return combined, primary, current_slot, current_day_key(), None
     if "месяц" in q or "30" in q:
-        return build_period_summary_message(history_cache, days=30, title="Месяц"), None, None, None
+        return build_period_summary_message(history_cache, days=30, title="Месяц"), None, None, None, None
     if resolved_target_date and resolved_target_day != current_day_key() and any(
         token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус", "трен", "спорт", "нагруз", "интенсив", "режим", "план", "почему", "из-за чего", "причины", "как день", "как мой день", "что по дню", "как я", "мой статус")
     ):
         target_context = _context_for_day(resolved_target_day, history_cache, context)
         if any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")):
-            return build_food_guidance_message(target_context.get("snapshot")), "food", "day", resolved_target_day
+            return build_food_guidance_message(target_context.get("snapshot")), "food", "day", resolved_target_day, None
         if any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q:
-            return build_load_guidance_message(target_context.get("snapshot")), "load", "day", resolved_target_day
+            return build_load_guidance_message(target_context.get("snapshot")), "load", "day", resolved_target_day, None
         if "режим" in q or "план" in q:
-            return build_mode_guidance_message(target_context.get("snapshot"), slot="midday"), "mode", "day", resolved_target_day
+            return build_mode_guidance_message(target_context.get("snapshot"), slot="midday"), "mode", "day", resolved_target_day, None
         if any(token in q for token in ("почему", "из-за чего", "причины")):
-            return build_why_message(target_context.get("snapshot")), "why", "day", resolved_target_day
-        return build_push_message("day", target_context.get("snapshot"), resolved_target_day, partial=target_context.get("day_status") != "ready", mode="short"), "day", "day", resolved_target_day
+            return build_why_message(target_context.get("snapshot")), "why", "day", resolved_target_day, None
+        return build_push_message("day", target_context.get("snapshot"), resolved_target_day, partial=target_context.get("day_status") != "ready", mode="short"), "day", "day", resolved_target_day, None
     if any(token in q for token in ("поесть", "еда", "завтрак", "обед", "ужин", "перекус")):
-        return build_food_guidance_message(context.get("snapshot")), "food", current_slot, current_day_key()
+        return build_food_guidance_message(context.get("snapshot")), "food", current_slot, current_day_key(), None
     if any(token in q for token in ("трен", "спорт", "нагруз", "интенсив")) or "можно ли" in q:
-        return build_load_guidance_message(context.get("snapshot")), "load", current_slot, current_day_key()
+        return build_load_guidance_message(context.get("snapshot")), "load", current_slot, current_day_key(), None
     if "15 минут" in q or "15м" in q or "что сделать сейчас" in q or "что делать сейчас" in q:
-        return _build_what15_message(current_slot, context.get("snapshot")), "what15", current_slot, current_day_key()
+        return _build_what15_message(current_slot, context.get("snapshot")), "what15", current_slot, current_day_key(), None
     if "режим" in q or "план" in q:
-        return build_mode_guidance_message(context.get("snapshot"), slot=current_slot), "mode", current_slot, current_day_key()
+        return build_mode_guidance_message(context.get("snapshot"), slot=current_slot), "mode", current_slot, current_day_key(), None
     metric_intents = {"respiration", "oxygen", "steps", "activity", "stress_metric", "sleep_metric", "pulse", "hrv_metric", "since_morning"}
     if _product_intent_flags(q).get("day") and resolve_intent(q) not in metric_intents and resolved_target_day == current_day_key():
         slot = current_slot if current_slot in {"morning", "midday", "evening"} else "day"
-        return build_push_message(slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready", mode="short"), "day", slot, current_day_key()
+        return build_push_message(slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready", mode="short"), "day", slot, current_day_key(), None
     intent = resolve_intent(q)
     speech_mode = str(get_user_prefs(chat_id).get("speech_mode", "short")) if chat_id else "short"
     if intent == "metrics":
-        return _format_metrics_availability(context), None, None, None
+        return _format_metrics_availability(context), None, None, None, None
     if intent == "detail":
-        return _format_detailed_analysis(context), None, None, None
+        return _format_detailed_analysis(context), None, None, None, None
     if intent == "history":
-        return _format_history_answer(context), None, None, None
+        return _format_history_answer(context), None, None, None, None
     if intent == "what_data":
-        return build_metrics_message(context), None, None, None
+        return build_metrics_message(context), None, None, None, None
     metric_reply = _render_metric_answer(intent, context)
     if metric_reply:
-        return metric_reply, None, None, None
+        return metric_reply, None, None, None, None
     if intent == "day_verdict":
         slot = current_slot if current_slot in {"morning", "midday", "evening"} else "day"
         return build_push_message(
@@ -3202,35 +3280,35 @@ def _route_structured_reply_internal(query: str, context: Dict[str, Any], histor
             day_key=str(context.get("day_key", current_day_key())),
             partial=context.get("day_status") != "ready",
             mode=speech_mode,
-        ), "day", slot, current_day_key()
+        ), "day", slot, current_day_key(), None
     if intent == "current_state":
-        return build_push_message(current_slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready"), "day", current_slot, current_day_key()
+        return build_push_message(current_slot, context.get("snapshot"), str(context.get("day_key", current_day_key())), partial=context.get("day_status") != "ready"), "day", current_slot, current_day_key(), None
     if intent == "weekly":
         history = load_cache()
         payload = build_weekly_payload(history, _now_msk(), chat_id="ad-hoc")
-        return payload["caption"], None, None, None
+        return payload["caption"], None, None, None, None
     if intent == "compare_days":
         days = list(context.get("available_days", []))
         if len(days) < 2:
-            return _format_history_answer(context), None, None, None
+            return _format_history_answer(context), None, None, None, None
         d1, d2 = days[-2], days[-1]
         s1 = build_day_context(day_key=d1, cache_data=history_cache).get("snapshot")
         s2 = build_day_context(day_key=d2, cache_data=history_cache).get("snapshot")
-        return render_compare_days(d1, d2, s1, s2), "day", "day", d2
+        return render_compare_days(d1, d2, s1, s2), "day", "day", d2, [d1, d2]
     if _is_current_date_only_query(q):
         today = _now_msk().date()
-        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()}).", None, None, None
+        return f"Сегодня {_format_ru_date(today)} ({today.isoformat()}).", None, None, None, None
     if _is_date_data_query(q):
         target_date = _resolve_target_date(query, _now_msk().date())
         if target_date is None:
-            return None, None, None, None
+            return None, None, None, None, None
         day_context = build_day_context(day_key=target_date.isoformat(), cache_data=history_cache)
-        return _format_day_data_answer(target_date, day_context), "day", "day", target_date.isoformat()
-    return None, None, None, None
+        return _format_day_data_answer(target_date, day_context), "day", "day", target_date.isoformat(), None
+    return None, None, None, None, None
 
 
 def _route_structured_reply(query: str, context: Dict[str, Any], history_cache: Dict[str, Any], chat_id: str = "") -> Optional[str]:
-    reply, _intent, _slot, _target_day = _route_structured_reply_internal(query, context, history_cache, chat_id=chat_id)
+    reply, _intent, _slot, _target_day, _compare_days = _route_structured_reply_internal(query, context, history_cache, chat_id=chat_id)
     return reply
 
 
@@ -3368,7 +3446,7 @@ def _handle_message_update(tg_token: str, default_chat_id: str, message: Dict[st
 
     history_cache = load_cache()
     context = build_day_context(cache_data=history_cache)
-    response_msg, product_intent, product_slot, product_target_day = _route_structured_reply_internal(text, context, history_cache, chat_id=message_chat_id)
+    response_msg, product_intent, product_slot, product_target_day, product_compare_days = _route_structured_reply_internal(text, context, history_cache, chat_id=message_chat_id)
     action = "structured_reply"
     if response_msg is None:
         response_msg = generate_chat_message(
@@ -3376,7 +3454,7 @@ def _handle_message_update(tg_token: str, default_chat_id: str, message: Dict[st
         )
         action = "gemini_reply"
     else:
-        _remember_product_intent(message_chat_id, product_intent, product_slot, target_day=product_target_day)
+        _remember_product_intent(message_chat_id, product_intent, product_slot, target_day=product_target_day, compare_days=product_compare_days)
 
     telegram_send(tg_token, message_chat_id, _sanitize_user_text(response_msg), parse_mode="HTML")
     return {"kind": "message", "chat_id": message_chat_id, "action": action}

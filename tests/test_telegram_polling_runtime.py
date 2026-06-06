@@ -183,6 +183,48 @@ class TelegramPollingRuntimeTests(unittest.TestCase):
         self.assertIn("Итог дня", sent[0][1])
         self.assertIn("88", sent[1][1])
 
+    def test_compare_followup_keeps_both_days(self):
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cache, "CACHE_FILE", os.path.join(tmp, "cache.json")):
+                day1 = "2026-06-04"
+                day2 = "2026-06-05"
+                cache.upsert_day_snapshot(day1, {
+                    "source": "garmin",
+                    "date": day1,
+                    "body_battery": {"mostRecentValue": 35},
+                    "stress": {"avgStressLevel": 71},
+                    "sleep": {"sleepTimeSeconds": 20400},
+                    "steps": {"totalSteps": 2300},
+                    "rhr": {"restingHeartRate": 61},
+                })
+                cache.upsert_day_snapshot(day2, {
+                    "source": "garmin",
+                    "date": day2,
+                    "body_battery": {"mostRecentValue": 67},
+                    "stress": {"avgStressLevel": 29},
+                    "sleep": {"sleepTimeSeconds": 27900},
+                    "steps": {"totalSteps": 7600},
+                    "rhr": {"restingHeartRate": 54},
+                })
+                with patch.object(main, "_send_typing_action"), \
+                     patch.object(main, "telegram_send") as send:
+                    send.side_effect = lambda _token, chat_id, text, parse_mode=None: sent.append((chat_id, text, parse_mode))
+                    main.process_telegram_update(
+                        {"update_id": 46, "message": {"text": "сравни дни", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+                    main.process_telegram_update(
+                        {"update_id": 47, "message": {"text": "а почему?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+        self.assertIn("Сравнение", sent[0][1])
+        self.assertIn(day1, sent[1][1])
+        self.assertIn(day2, sent[1][1])
+        self.assertIn("Почему так в сравнении", sent[1][1])
+
     def test_callback_facts_sends_facts_message(self):
         sent = []
         snapshot = {
