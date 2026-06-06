@@ -588,13 +588,6 @@ SCHEDULE_CRON_TO_SLOT: Dict[str, str] = {
     "0 17 * * *": "evening",
 }
 
-SLOT_STALE_AFTER: Dict[str, Tuple[int, int]] = {
-    "morning": (12, 0),
-    "midday": (18, 0),
-    "evening": (23, 59),
-}
-
-
 def _minutes(hh: int, mm: int) -> int:
     return hh * 60 + mm
 
@@ -619,10 +612,19 @@ def _nearest_slot(now_msk: dt.datetime) -> str:
     return best_slot
 
 
+def _slot_stale_after(slot: str) -> Tuple[int, int]:
+    order = list(SLOT_WINDOWS.keys())
+    if slot in order:
+        idx = order.index(slot)
+        if idx + 1 < len(order):
+            next_slot = order[idx + 1]
+            next_start, _next_target, _next_end = SLOT_WINDOWS[next_slot]
+            return next_start
+    return (23, 59)
+
+
 def _is_slot_stale(now_msk: dt.datetime, slot: str) -> bool:
-    stale_after = SLOT_STALE_AFTER.get(slot)
-    if stale_after is None:
-        return False
+    stale_after = _slot_stale_after(slot)
     return _minutes(now_msk.hour, now_msk.minute) > _minutes(*stale_after)
 
 
