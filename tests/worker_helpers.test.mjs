@@ -147,11 +147,13 @@ assert.match(compareMessage, new RegExp(yesterdayKey));
 const foodMessage = routeTextQuestion("что мне лучше поесть", richCache);
 assert.match(foodMessage, /Еда сейчас/);
 assert.match(foodMessage, /активности уже прилично/);
+assert.match(foodMessage, /420 активных ккал|интенсивность 35\/12 мин/);
 assert.doesNotMatch(foodMessage, /Сравнение/);
 
 const loadMessage = routeTextQuestion("что по нагрузке", richCache);
 assert.match(loadMessage, /Нагрузка/);
 assert.match(loadMessage, /активность 47 мин|Активность: 47 мин|Интенсивность/);
+assert.match(loadMessage, /420 активных ккал|HRV|дыхание/);
 
 const monthMessage = routeTextQuestion("как прошёл месяц", richCache);
 assert.match(monthMessage, /Месяц/);
@@ -161,6 +163,10 @@ assert.match(monthMessage, /Фокус/);
 
 const what15 = buildWhat15Message("midday", richCache[yesterdayKey]);
 assert.match(what15, /тишина|экран|ходьба/);
+
+const modeMessage = routeTextQuestion("какой режим сейчас", richCache);
+assert.match(modeMessage, /Режим сейчас/);
+assert.match(modeMessage, /Опора:/);
 
 const morningToday = buildTodayMessage(richCache, "morning");
 const middayToday = buildTodayMessage(richCache, "midday");

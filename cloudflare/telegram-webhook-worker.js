@@ -1175,12 +1175,21 @@ function buildFoodAnswer(cache) {
       : "движение обычным фоном";
   const energyPart = typeof metrics.activeMinutes === "number" && metrics.activeMinutes >= 45
     ? "активности уже прилично — нормальная еда и вода важнее перекусов на автомате"
-    : "еда без усложнения";
+    : typeof metrics.activeKcal === "number" && metrics.activeKcal >= 350
+      ? "движение уже стоило энергии — лучше нормальный приём еды, не случайный перекус"
+      : "еда без усложнения";
+  const contextParts = [];
+  if (typeof metrics.moderateMinutes === "number" || typeof metrics.vigorousMinutes === "number") {
+    contextParts.push(`интенсивность ${Math.round(metrics.moderateMinutes || 0)}/${Math.round(metrics.vigorousMinutes || 0)} мин`);
+  }
+  if (typeof metrics.activeKcal === "number") contextParts.push(`${Math.round(metrics.activeKcal)} активных ккал`);
+  if (typeof metrics.floors === "number" && metrics.floors > 0) contextParts.push(`${Math.round(metrics.floors)} этажей`);
   return [
     "🍽 <b>Еда сейчас</b>",
     `По данным: ${resourcePart}, ${stressPart}, ${movementPart}, ${energyPart}.`,
+    contextParts.length ? `Контекст: ${contextParts.join(", ")}.` : "",
     "Практично: нормальная простая еда + вода. Белок/крупа или овощи, без тяжёлых экспериментов и без догоняться сладким как стратегией.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildLoadAnswer(cache) {
@@ -1196,12 +1205,19 @@ function buildLoadAnswer(cache) {
   const intensity = metrics.moderateMinutes !== null || metrics.vigorousMinutes !== null
     ? `Интенсивность: умеренная ${Math.round(metrics.moderateMinutes || 0)} мин, высокая ${Math.round(metrics.vigorousMinutes || 0)} мин.`
     : "";
+  const support = [
+    typeof metrics.activeKcal === "number" ? `${Math.round(metrics.activeKcal)} активных ккал` : "",
+    typeof metrics.floors === "number" && metrics.floors > 0 ? `${Math.round(metrics.floors)} этажей` : "",
+    metrics.hrvStatus ? `HRV ${escapeHtml(metrics.hrvStatus)}` : "",
+    typeof metrics.respirationAvg === "number" ? `дыхание ${metrics.respirationAvg.toFixed(1)}/мин` : "",
+  ].filter(Boolean).join(" · ");
   return [
     "🏃 <b>Нагрузка</b>",
     `По режиму: ${soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок"}.`,
     `Факты: ${metricChips(snapshot, 3, "midday").join(" · ")}.`,
     movement,
     intensity,
+    support ? `Контекст: ${support}.` : "",
     soft || (typeof metrics.activeMinutes === "number" && metrics.activeMinutes >= 60)
       ? "Лимит: без интенсивности и без добивки вечером."
       : "Лимит: не превращать нормальный день в тест на выживание.",
@@ -1210,14 +1226,16 @@ function buildLoadAnswer(cache) {
 
 function buildModeAnswer(cache) {
   const snapshot = getSnapshot(cache, currentDayKey());
+  const support = metricChips(snapshot, 3, "midday").join(" · ");
   return [
     "🧭 <b>Режим сейчас</b>",
     statusForSnapshot(snapshot),
     `Фокус: ${SLOT_FOCUS.midday}.`,
+    support ? `Опора: ${support}.` : "",
     `Действие: ${actionForSnapshot("midday", snapshot)}.`,
     "",
     buildWhat15Message("midday", snapshot),
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function todayKeyboard(day, slot = "midday") {

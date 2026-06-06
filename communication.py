@@ -439,14 +439,25 @@ def render_roast(day_summary: Optional[Dict[str, Any]], history_optional: Option
 
 
 def build_why_message(snapshot: Optional[Dict[str, Any]]) -> str:
-    reasons = build_data_chips(snapshot, max_items=3, slot="day")
+    reasons = build_data_chips(snapshot, max_items=4, slot="day")
+    metrics = _extract_metrics(snapshot)
+    active_kcal = _fmt_int(metrics.get("active_kcal"), 0, 5000)
+    moderate = _fmt_int(metrics.get("moderate_minutes"), 0, 600)
+    vigorous = _fmt_int(metrics.get("vigorous_minutes"), 0, 600)
+    floors = _fmt_int(metrics.get("floors"), 0, 200)
+    if active_kcal is not None and len(reasons) < 5:
+        reasons.append(f"🔥 Активные ккал: <b>{active_kcal}</b>")
+    if (moderate is not None or vigorous is not None) and len(reasons) < 5:
+        reasons.append(f"⏱ Интенсивность: <b>{moderate or 0}</b> умеренно / <b>{vigorous or 0}</b> интенсивно")
+    if floors is not None and floors > 0 and len(reasons) < 5:
+        reasons.append(f"↗️ Этажи: <b>{floors}</b>")
     if not reasons:
         reasons = ["Данных мало, поэтому вывод с низкой уверенностью"]
     return (
         "🧩 <b>Почему так</b>\n\n"
         "<b>Коротко:</b> день определяется ритмом, а не одним показателем.\n\n"
         "<b>Причины:</b>\n"
-        + "\n".join(f"• {r}" for r in reasons[:3])
+        + "\n".join(f"• {r}" for r in reasons[:5])
         + "\n\n🎯 <b>Рычаг:</b> один 15-минутный тихий блок без переключений."
     )
 
@@ -626,10 +637,14 @@ def build_period_summary_message(history_cache: Dict[str, Any], days: int = 30, 
 
 def build_food_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     metrics = _extract_metrics(snapshot)
-    facts = build_data_chips(snapshot, max_items=3, slot="midday")
+    facts = build_data_chips(snapshot, max_items=4, slot="midday")
     stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
     bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
     active_minutes = _fmt_int(metrics.get("active_minutes"), 0, 600)
+    active_kcal = _fmt_int(metrics.get("active_kcal"), 0, 5000)
+    moderate = _fmt_int(metrics.get("moderate_minutes"), 0, 600)
+    vigorous = _fmt_int(metrics.get("vigorous_minutes"), 0, 600)
+    floors = _fmt_int(metrics.get("floors"), 0, 200)
     if not facts:
         return (
             "🍽 <b>Еда сейчас</b>\n\n"
@@ -642,23 +657,38 @@ def build_food_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
         advice = "ресурс низкий — ровная еда полезнее, чем героизм на кофе"
     elif active_minutes is not None and active_minutes >= 45:
         advice = "активности уже прилично — нормальный приём еды и вода, без добивки сладким"
+    elif active_kcal is not None and active_kcal >= 350:
+        advice = "движение уже стоило энергии — лучше нормальный приём еды, а не перекус на автомате"
     else:
         advice = "ресурс терпимый — держать обычный простой режим, без догоняться сладким как стратегией"
+    extra_bits: List[str] = []
+    if moderate is not None or vigorous is not None:
+        extra_bits.append(f"интенсивность {moderate or 0}/{vigorous or 0} мин")
+    if active_kcal is not None:
+        extra_bits.append(f"{active_kcal} активных ккал")
+    if floors is not None and floors > 0:
+        extra_bits.append(f"{floors} этажей")
+    extras = f"\n<b>Контекст:</b> {', '.join(extra_bits)}." if extra_bits else ""
     return (
         "🍽 <b>Еда сейчас</b>\n\n"
         "<b>Факты:</b>\n"
         + "\n".join(f"• {line}" for line in facts)
+        + extras
         + f"\n\n<b>Практично:</b> {advice}."
     )
 
 
 def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     metrics = _extract_metrics(snapshot)
-    facts = build_data_chips(snapshot, max_items=3, slot="midday")
+    facts = build_data_chips(snapshot, max_items=4, slot="midday")
     stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
     bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
     sleep_seconds = metrics.get("sleep_seconds")
     active_minutes = _fmt_int(metrics.get("active_minutes"), 0, 600)
+    moderate = _fmt_int(metrics.get("moderate_minutes"), 0, 600)
+    vigorous = _fmt_int(metrics.get("vigorous_minutes"), 0, 600)
+    active_kcal = _fmt_int(metrics.get("active_kcal"), 0, 5000)
+    floors = _fmt_int(metrics.get("floors"), 0, 200)
     soft = (
         (bb_now is not None and bb_now < 40)
         or (stress is not None and stress >= 60)
@@ -670,12 +700,22 @@ def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
         limit = "активность уже набрана, дальше только спокойный формат"
     facts_block = "\n".join(f"• {line}" for line in facts) if facts else "• данных мало"
     activity_line = f"\n<b>Активность:</b> {active_minutes} мин." if active_minutes is not None else ""
+    intensity_parts: List[str] = []
+    if moderate is not None or vigorous is not None:
+        intensity_parts.append(f"умеренная {moderate or 0} мин")
+        intensity_parts.append(f"интенсивная {vigorous or 0} мин")
+    if active_kcal is not None:
+        intensity_parts.append(f"{active_kcal} активных ккал")
+    if floors is not None and floors > 0:
+        intensity_parts.append(f"{floors} этажей")
+    intensity_line = f"\n<b>Контекст нагрузки:</b> {', '.join(intensity_parts)}." if intensity_parts else ""
     return (
         "🏃 <b>Нагрузка</b>\n\n"
         f"<b>По режиму:</b> {mode}.\n"
         "<b>Факты:</b>\n"
         + facts_block
         + activity_line
+        + intensity_line
         + f"\n\n<b>Лимит:</b> {limit}."
     )
 
@@ -683,10 +723,14 @@ def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
 def build_mode_guidance_message(snapshot: Optional[Dict[str, Any]], slot: str = "midday") -> str:
     metrics = _extract_metrics(snapshot)
     score = _score(metrics)
+    support = build_data_chips(snapshot, max_items=3, slot=slot)
+    support_line = "\n<b>Опора:</b> " + " · ".join(support) if support else ""
     return (
         "🧭 <b>Режим сейчас</b>\n\n"
         f"<b>Фокус:</b> {SLOT_FOCUS.get(slot, SLOT_FOCUS['midday'])}.\n"
         f"<b>Смысл:</b> {_meaning_line(slot, score)}\n\n"
+        + support_line
+        + ("\n\n" if support_line else "")
         + build_action_block(slot, score, metrics)
     )
 

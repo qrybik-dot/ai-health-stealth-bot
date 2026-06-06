@@ -4,6 +4,8 @@ import unittest
 from communication import (
     build_food_guidance_message,
     build_load_guidance_message,
+    build_mode_guidance_message,
+    build_why_message,
     build_day_verdict_message,
     build_push_message,
     build_verdict_label,
@@ -86,10 +88,16 @@ class CommunicationSystemTests(unittest.TestCase):
 
         load = build_load_guidance_message(snapshot)
         food = build_food_guidance_message(snapshot)
+        why = build_why_message(snapshot)
+        mode = build_mode_guidance_message(snapshot)
 
         self.assertIn("Активность", load)
         self.assertIn("47 мин", load)
+        self.assertIn("420 активных ккал", load)
         self.assertIn("активности уже прилично", food)
+        self.assertIn("интенсивность 35/12 мин", food)
+        self.assertIn("Активные ккал", why)
+        self.assertIn("Опора", mode)
 
     def test_visual_trigger_blocked_at_night(self):
         now = dt.datetime(2026, 2, 28, 2, 30)
