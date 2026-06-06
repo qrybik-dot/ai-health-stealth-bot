@@ -145,6 +145,44 @@ class TelegramPollingRuntimeTests(unittest.TestCase):
         self.assertIn("Старт дня", sent[0][1])
         self.assertIn("восстановление после сна", sent[1][1])
 
+    def test_followup_keeps_remembered_target_day(self):
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(cache, "CACHE_FILE", os.path.join(tmp, "cache.json")):
+                today = main.current_day_key()
+                yesterday = (main._now_msk().date() - main.dt.timedelta(days=1)).isoformat()
+                cache.upsert_day_snapshot(today, {
+                    "source": "garmin",
+                    "date": today,
+                    "body_battery": {"mostRecentValue": 74, "chargedValue": 84},
+                    "stress": {"avgStressLevel": 18, "maxStressLevel": 30},
+                    "sleep": {"sleepTimeSeconds": 28200},
+                    "steps": {"totalSteps": 8200},
+                })
+                cache.upsert_day_snapshot(yesterday, {
+                    "source": "garmin",
+                    "date": yesterday,
+                    "body_battery": {"mostRecentValue": 31, "chargedValue": 46},
+                    "stress": {"avgStressLevel": 88, "maxStressLevel": 96},
+                    "sleep": {"sleepTimeSeconds": 18000},
+                    "steps": {"totalSteps": 1400},
+                })
+                with patch.object(main, "_send_typing_action"), \
+                     patch.object(main, "telegram_send") as send:
+                    send.side_effect = lambda _token, chat_id, text, parse_mode=None: sent.append((chat_id, text, parse_mode))
+                    main.process_telegram_update(
+                        {"update_id": 44, "message": {"text": "как вчера?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+                    main.process_telegram_update(
+                        {"update_id": 45, "message": {"text": "а почему?", "chat": {"id": "c1"}}},
+                        tg_token="token",
+                        default_chat_id="default",
+                    )
+        self.assertIn("Итог дня", sent[0][1])
+        self.assertIn("88", sent[1][1])
+
     def test_callback_facts_sends_facts_message(self):
         sent = []
         snapshot = {

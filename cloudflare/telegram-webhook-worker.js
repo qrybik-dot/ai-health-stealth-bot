@@ -138,6 +138,7 @@ async function handleMessage(message, env, ctx) {
       day_key: currentDayKey(),
       last_product_intent: routed.intent,
       last_slot: routed.slot || currentSlotId(),
+      target_day: routed.target_day || currentDayKey(),
       updated_at: new Date().toISOString(),
     });
     await saveCache(env, cache);
@@ -341,6 +342,25 @@ function currentDayKey() {
   return formatMskDate(new Date());
 }
 
+function isDayKey(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function relativeDayKey(offset) {
+  const now = new Date();
+  return formatMskDate(new Date(now.getTime() + offset * 24 * 60 * 60 * 1000));
+}
+
+function resolveTargetDay(text) {
+  const q = String(text || "").toLowerCase();
+  if (q.includes("позавчера")) return relativeDayKey(-2);
+  if (q.includes("вчера")) return relativeDayKey(-1);
+  if (q.includes("сегодня")) return currentDayKey();
+  const isoMatch = q.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (isoMatch) return isoMatch[1];
+  return null;
+}
+
 function currentIsoWeekId() {
   return isoWeekIdFromDay(currentDayKey());
 }
@@ -395,6 +415,7 @@ function getDialogState(cache, chatId) {
   if (raw.day_key !== currentDayKey()) return null;
   if (!["day", "food", "load", "mode", "why", "what15"].includes(raw.last_product_intent)) return null;
   if (raw.last_slot && !["morning", "midday", "evening", "day"].includes(raw.last_slot)) return null;
+  if (raw.target_day && !isDayKey(raw.target_day)) return null;
   return raw;
 }
 
@@ -636,10 +657,13 @@ function meaningForSlot(slot, snapshot) {
 }
 
 function buildTodayMessage(cache, slot = "midday") {
-  const day = currentDayKey();
+  return buildDayMessage(cache, currentDayKey(), slot);
+}
+
+function buildDayMessage(cache, day = currentDayKey(), slot = "midday") {
   const snapshot = getSnapshot(cache, day);
   if (!hasUsableSnapshot(snapshot)) {
-    return buildNoDataTodayMessage(slot);
+    return buildNoDataDayMessage(day, slot);
   }
 
   const chips = metricChips(snapshot, 4, slot);
@@ -657,10 +681,15 @@ function buildTodayMessage(cache, slot = "midday") {
 }
 
 function buildNoDataTodayMessage(slot = "midday") {
+  return buildNoDataDayMessage(currentDayKey(), slot);
+}
+
+function buildNoDataDayMessage(day = currentDayKey(), slot = "midday") {
+  const current = day === currentDayKey();
   return [
     `🟡 <b>${slotHead(slot)}</b>`,
     "",
-    "Данные за сегодня ещё не приехали.",
+    current ? "Данные за сегодня ещё не приехали." : `Данных за ${day} пока нет.`,
     "Пока держим ровный режим без резких решений.",
     "<b>Действие:</b> один спокойный блок и короткая пауза.",
     "<b>Надёжность:</b> нет данных.",
@@ -1075,13 +1104,21 @@ function inferFollowupIntent(q, dialogState) {
   return null;
 }
 
+function followupTargetDay(dialogState) {
+  if (dialogState && isDayKey(dialogState.target_day)) return dialogState.target_day;
+  return currentDayKey();
+}
+
 function followupSlot(dialogState) {
+  if (followupTargetDay(dialogState) !== currentDayKey()) return "day";
   if (dialogState && ["morning", "midday", "evening", "day"].includes(dialogState.last_slot)) return dialogState.last_slot;
   return currentSlotId();
 }
 
 function routeTextQuestionDetailed(text, cache, dialogState = null) {
   const q = text.toLowerCase();
+  const explicitTargetDay = resolveTargetDay(q);
+  const currentDay = currentDayKey();
   const wantsDay = q.includes("как день") || q.includes("как мой день") || q.includes("что по дню") || q.includes("как я") || q.includes("мой статус");
   const wantsFood = q.includes("поесть") || q.includes("еда") || q.includes("есть ") || q.includes("завтрак") || q.includes("обед") || q.includes("ужин") || q.includes("перекус");
   const wantsCompare = q.includes("сравни") || q.includes("вчера") || q.includes("лучше чем") || q.includes("хуже");
@@ -1096,40 +1133,52 @@ function routeTextQuestionDetailed(text, cache, dialogState = null) {
     return { text: buildDataAnswer(cache), intent: null, slot: null };
   }
   const followupIntent = inferFollowupIntent(q, dialogState);
+  const rememberedTargetDay = followupTargetDay(dialogState);
+  const rememberedSnapshot = getSnapshot(cache, rememberedTargetDay);
   const rememberedSlot = followupSlot(dialogState);
   if (followupIntent === "why") {
-    return { text: buildWhyMessage(getSnapshot(cache, currentDayKey()), currentDayKey(), rememberedSlot === "day" ? "midday" : rememberedSlot), intent: "why", slot: rememberedSlot };
+    return { text: buildWhyMessage(rememberedSnapshot, rememberedTargetDay, rememberedSlot === "day" ? "midday" : rememberedSlot), intent: "why", slot: rememberedSlot, target_day: rememberedTargetDay };
   }
   if (followupIntent === "mode") {
-    return { text: buildModeAnswer(cache, rememberedSlot === "day" ? "midday" : rememberedSlot), intent: "mode", slot: rememberedSlot };
+    return { text: buildModeAnswer(cache, rememberedSlot === "day" ? "midday" : rememberedSlot, rememberedTargetDay), intent: "mode", slot: rememberedSlot, target_day: rememberedTargetDay };
   }
   if (followupIntent === "what15") {
-    return { text: buildWhat15Message(rememberedSlot === "day" ? "midday" : rememberedSlot, getSnapshot(cache, currentDayKey())), intent: "what15", slot: rememberedSlot };
+    return { text: buildWhat15Message(rememberedSlot === "day" ? "midday" : rememberedSlot, rememberedSnapshot), intent: "what15", slot: rememberedSlot, target_day: rememberedTargetDay };
   }
   if (followupIntent === "food") {
-    return { text: buildFoodAnswer(cache), intent: "food", slot: rememberedSlot };
+    return { text: buildFoodAnswer(cache, rememberedTargetDay), intent: "food", slot: rememberedSlot, target_day: rememberedTargetDay };
   }
   if (followupIntent === "load") {
-    return { text: buildLoadAnswer(cache), intent: "load", slot: rememberedSlot };
+    return { text: buildLoadAnswer(cache, rememberedTargetDay), intent: "load", slot: rememberedSlot, target_day: rememberedTargetDay };
   }
   if (followupIntent === "day") {
-    const slot = rememberedSlot === "day" ? currentSlotId() : rememberedSlot;
-    return { text: buildTodayMessage(cache, slot), intent: "day", slot };
+    const slot = rememberedTargetDay === currentDay ? (rememberedSlot === "day" ? currentSlotId() : rememberedSlot) : "day";
+    return { text: buildDayMessage(cache, rememberedTargetDay, slot), intent: "day", slot, target_day: rememberedTargetDay };
   }
   const slotNow = currentSlotId();
   const productIntentCount = [wantsDay, wantsFood, wantsLoad, wantsMode, wantsWhy].filter(Boolean).length;
   if (productIntentCount >= 2) {
     const sections = [];
     if (wantsDay) sections.push(buildTodayMessage(cache, slotNow));
-    if (wantsFood) sections.push(buildFoodAnswer(cache));
-    if (wantsLoad) sections.push(buildLoadAnswer(cache));
-    if (wantsMode) sections.push(buildModeAnswer(cache, slotNow));
-    if (wantsWhy) sections.push(buildWhyMessage(getSnapshot(cache, currentDayKey()), currentDayKey(), slotNow));
+    if (wantsFood) sections.push(buildFoodAnswer(cache, currentDay));
+    if (wantsLoad) sections.push(buildLoadAnswer(cache, currentDay));
+    if (wantsMode) sections.push(buildModeAnswer(cache, slotNow, currentDay));
+    if (wantsWhy) sections.push(buildWhyMessage(getSnapshot(cache, currentDay), currentDay, slotNow));
     const intent = wantsDay ? "day" : wantsFood ? "food" : wantsLoad ? "load" : wantsMode ? "mode" : wantsWhy ? "why" : null;
-    return { text: sections.slice(0, 3).join("\n\n"), intent, slot: slotNow };
+    return { text: sections.slice(0, 3).join("\n\n"), intent, slot: slotNow, target_day: currentDay };
+  }
+  if (explicitTargetDay && explicitTargetDay !== currentDay) {
+    if (wantsCompare) {
+      return { text: buildCompareAnswer(cache), intent: "day", slot: "day", target_day: currentDay };
+    }
+    if (wantsFood) return { text: buildFoodAnswer(cache, explicitTargetDay), intent: "food", slot: "day", target_day: explicitTargetDay };
+    if (wantsLoad) return { text: buildLoadAnswer(cache, explicitTargetDay), intent: "load", slot: "day", target_day: explicitTargetDay };
+    if (wantsMode) return { text: buildModeAnswer(cache, "midday", explicitTargetDay), intent: "mode", slot: "day", target_day: explicitTargetDay };
+    if (wantsWhy) return { text: buildWhyMessage(getSnapshot(cache, explicitTargetDay), explicitTargetDay, "midday"), intent: "why", slot: "day", target_day: explicitTargetDay };
+    return { text: buildDayMessage(cache, explicitTargetDay, "day"), intent: "day", slot: "day", target_day: explicitTargetDay };
   }
   if (wantsDay) {
-    return { text: buildTodayMessage(cache, slotNow), intent: "day", slot: slotNow };
+    return { text: buildTodayMessage(cache, slotNow), intent: "day", slot: slotNow, target_day: currentDay };
   }
   if (q.includes("недел")) {
     return { text: buildWeekMessage(cache), intent: null, slot: null };
@@ -1141,18 +1190,18 @@ function routeTextQuestionDetailed(text, cache, dialogState = null) {
     return { text: buildStepsAnswer(cache), intent: null, slot: null };
   }
   if (wantsFood) {
-    return { text: buildFoodAnswer(cache), intent: "food", slot: slotNow };
+    return { text: buildFoodAnswer(cache, currentDay), intent: "food", slot: slotNow, target_day: currentDay };
   }
   if (wantsCompare) {
-    return { text: buildCompareAnswer(cache), intent: null, slot: null };
+    return { text: buildCompareAnswer(cache), intent: "day", slot: "day", target_day: currentDay };
   }
   if (wantsLoad) {
-    return { text: buildLoadAnswer(cache), intent: "load", slot: slotNow };
+    return { text: buildLoadAnswer(cache, currentDay), intent: "load", slot: slotNow, target_day: currentDay };
   }
   if (wantsMode) {
-    return { text: buildModeAnswer(cache, slotNow), intent: "mode", slot: slotNow };
+    return { text: buildModeAnswer(cache, slotNow, currentDay), intent: "mode", slot: slotNow, target_day: currentDay };
   }
-  return { text: buildTodayMessage(cache, slotNow), intent: "day", slot: slotNow };
+  return { text: buildTodayMessage(cache, slotNow), intent: "day", slot: slotNow, target_day: currentDay };
 }
 
 function routeTextQuestion(text, cache) {
@@ -1257,8 +1306,8 @@ function buildMonthAnswer(cache) {
   ].join("\n");
 }
 
-function buildFoodAnswer(cache) {
-  const snapshot = getSnapshot(cache, currentDayKey());
+function buildFoodAnswer(cache, day = currentDayKey()) {
+  const snapshot = getSnapshot(cache, day);
   const metrics = snapshotMetrics(snapshot);
   if (!hasUsableSnapshot(snapshot)) {
     return "🍽 <b>Еда сейчас</b>\nДанных за день пока нет. Базово: простой приём еды, вода, без экспериментов на пустом баке.";
@@ -1298,8 +1347,8 @@ function buildFoodAnswer(cache) {
   ].filter(Boolean).join("\n");
 }
 
-function buildLoadAnswer(cache) {
-  const snapshot = getSnapshot(cache, currentDayKey());
+function buildLoadAnswer(cache, day = currentDayKey()) {
+  const snapshot = getSnapshot(cache, day);
   if (!hasUsableSnapshot(snapshot)) return "🏃 <b>Нагрузка</b>\nДанных нет. По режиму: только лёгкая активность, интенсивность не планировать.";
   const metrics = snapshotMetrics(snapshot);
   const soft = (typeof metrics.bb === "number" && metrics.bb < 40) || (typeof metrics.stress === "number" && metrics.stress >= 60);
@@ -1335,8 +1384,8 @@ function buildLoadAnswer(cache) {
   ].filter(Boolean).join("\n");
 }
 
-function buildModeAnswer(cache, slot = "midday") {
-  const snapshot = getSnapshot(cache, currentDayKey());
+function buildModeAnswer(cache, slot = "midday", day = currentDayKey()) {
+  const snapshot = getSnapshot(cache, day);
   const effectiveSlot = slot || "midday";
   const support = metricChips(snapshot, 3, effectiveSlot).join(" · ");
   const focusBase = SLOT_FOCUS[effectiveSlot] || SLOT_FOCUS.midday;

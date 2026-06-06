@@ -193,6 +193,16 @@ const followupModeMorning = routeTextQuestionDetailed("а что делать?",
 });
 assert.match(followupModeMorning.text, /восстановление после сна/);
 
+const followupWhyYesterday = routeTextQuestionDetailed("а почему?", richCache, {
+  day_key: today,
+  last_product_intent: "day",
+  last_slot: "day",
+  target_day: yesterdayKey,
+  updated_at: `${today}T12:00:00Z`,
+});
+assert.match(followupWhyYesterday.text, new RegExp(yesterdayKey));
+assert.match(followupWhyYesterday.text, /61|19800|3200/);
+
 const morningToday = buildTodayMessage(richCache, "morning");
 const middayToday = buildTodayMessage(richCache, "midday");
 const eveningToday = buildTodayMessage(richCache, "evening");
