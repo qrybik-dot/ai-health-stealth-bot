@@ -379,6 +379,11 @@ function getSnapshot(cache, day = currentDayKey()) {
 function metricValue(snapshot, metric, keys) {
   const node = snapshot?.[metric];
   if (!node || typeof node !== "object") return null;
+  return metricValueFromNode(node, keys);
+}
+
+function metricValueFromNode(node, keys) {
+  if (!node || typeof node !== "object") return null;
   for (const key of keys) {
     const value = node[key];
     if (typeof value === "number") return value;
@@ -388,6 +393,14 @@ function metricValue(snapshot, metric, keys) {
 
 function boundedMetricValue(snapshot, metric, keys, minValue, maxValue) {
   const value = metricValue(snapshot, metric, keys);
+  return boundedNumber(value, minValue, maxValue);
+}
+
+function boundedNodeMetric(node, keys, minValue, maxValue) {
+  return boundedNumber(metricValueFromNode(node, keys), minValue, maxValue);
+}
+
+function boundedNumber(value, minValue, maxValue) {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   if (value < minValue || value > maxValue) return null;
   return value;
@@ -402,6 +415,11 @@ function availableMetrics(snapshot) {
 
 function stringMetric(snapshot, metric, keys) {
   const node = snapshot?.[metric];
+  if (!node || typeof node !== "object") return null;
+  return stringValueFromNode(node, keys);
+}
+
+function stringValueFromNode(node, keys) {
   if (!node || typeof node !== "object") return null;
   for (const key of keys) {
     const value = node[key];
@@ -423,22 +441,44 @@ function bestStepValue(snapshot) {
 
 function snapshotMetrics(snapshot) {
   const activeSeconds = boundedMetricValue(snapshot, "daily_activity", ["activeSeconds", "activeTimeSeconds"], 0, 24 * 3600);
-  const activeMinutes = typeof activeSeconds === "number" ? Math.round(activeSeconds / 60) : null;
+  const moderateMinutes = boundedMetricValue(snapshot, "intensity_minutes", ["moderateMinutes", "moderateIntensityMinutes"], 0, 24 * 60);
+  const vigorousMinutes = boundedMetricValue(snapshot, "intensity_minutes", ["vigorousMinutes", "vigorousIntensityMinutes"], 0, 24 * 60);
+  const activeMinutes = typeof moderateMinutes === "number" || typeof vigorousMinutes === "number"
+    ? Math.round((moderateMinutes || 0) + (vigorousMinutes || 0))
+    : typeof activeSeconds === "number" ? Math.round(activeSeconds / 60) : null;
   const rawSteps = boundedMetricValue(snapshot, "steps", ["totalSteps", "steps"], 0, 120000);
   const bestSteps = bestStepValue(snapshot);
   const stepsReliable = !(bestSteps === 0 && typeof activeMinutes === "number" && activeMinutes >= 10);
+  const sleepNode = snapshot?.sleep?.dailySleepDTO && typeof snapshot.sleep.dailySleepDTO === "object" ? snapshot.sleep.dailySleepDTO : null;
+  const hrvStatusNode = snapshot?.sleep?.hrvStatus && typeof snapshot.sleep.hrvStatus === "object" ? snapshot.sleep.hrvStatus : null;
   return {
-    bb: boundedMetricValue(snapshot, "body_battery", ["mostRecentValue", "currentValue", "chargedValue"], 0, 100),
-    bbCharged: boundedMetricValue(snapshot, "body_battery", ["chargedValue"], 0, 100),
-    stress: boundedMetricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"], 0, 100),
+    bb: boundedMetricValue(snapshot, "body_battery", ["mostRecentValue", "currentValue", "chargedValue"], 0, 100)
+      ?? boundedMetricValue(snapshot, "daily_activity", ["bodyBatteryMostRecentValue"], 0, 100),
+    bbCharged: boundedMetricValue(snapshot, "body_battery", ["chargedValue"], 0, 100)
+      ?? boundedMetricValue(snapshot, "daily_activity", ["bodyBatteryChargedValue", "bodyBatteryAtWakeTime"], 0, 100),
+    stress: boundedMetricValue(snapshot, "stress", ["avgStressLevel", "overallStressLevel"], 0, 100)
+      ?? boundedMetricValue(snapshot, "daily_activity", ["averageStressLevel"], 0, 100),
     maxStress: boundedMetricValue(snapshot, "stress", ["maxStressLevel"], 0, 100),
-    sleepSeconds: boundedMetricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"], 1, 24 * 3600),
-    rhr: boundedMetricValue(snapshot, "rhr", ["restingHeartRate"], 30, 130),
+    sleepSeconds: boundedMetricValue(snapshot, "sleep", ["sleepTimeSeconds", "totalSleepSeconds"], 1, 24 * 3600)
+      ?? boundedNodeMetric(sleepNode, ["sleepTimeSeconds", "totalSleepSeconds"], 1, 24 * 3600),
+    rhr: boundedMetricValue(snapshot, "rhr", ["restingHeartRate"], 30, 130)
+      ?? boundedMetricValue(snapshot, "heart_rate", ["restingHeartRate"], 30, 130)
+      ?? boundedMetricValue(snapshot, "sleep", ["restingHeartRate"], 30, 130),
     steps: stepsReliable ? bestSteps : null,
     stepsRaw: rawSteps,
     stepsReliable,
     activeMinutes,
-    hrvStatus: stringMetric(snapshot, "hrv_status", ["status", "hrvStatus"]),
+    moderateMinutes,
+    vigorousMinutes,
+    activeKcal: boundedMetricValue(snapshot, "daily_activity", ["activeKilocalories"], 0, 5000),
+    floors: boundedMetricValue(snapshot, "daily_activity", ["floorsAscended"], 0, 200)
+      ?? boundedMetricValue(snapshot, "floors", ["floorsAscended"], 0, 200),
+    respirationAvg: boundedMetricValue(snapshot, "respiration", ["avgWakingRespirationValue", "latestRespirationValue"], 5, 40)
+      ?? boundedMetricValue(snapshot, "daily_activity", ["avgWakingRespirationValue"], 5, 40),
+    spo2Avg: boundedMetricValue(snapshot, "pulse_ox", ["avgSpo2", "mostRecentValue"], 60, 100)
+      ?? boundedMetricValue(snapshot, "daily_activity", ["averageSpo2"], 60, 100),
+    hrvStatus: stringMetric(snapshot, "hrv_status", ["status", "hrvStatus"])
+      ?? stringValueFromNode(hrvStatusNode, ["status", "hrvStatus"]),
   };
 }
 
@@ -476,13 +516,18 @@ function metricChips(snapshot, limit = 4, slot = "midday") {
     maxStress: metrics.maxStress !== null ? `пик стресса ${Math.round(metrics.maxStress)}` : null,
     rhr: metrics.rhr !== null ? `RHR ${Math.round(metrics.rhr)}` : null,
     steps: metrics.steps !== null ? `${Math.round(metrics.steps)} шагов` : null,
+    active: metrics.activeMinutes !== null ? `активность ${Math.round(metrics.activeMinutes)} мин` : null,
+    kcal: metrics.activeKcal !== null ? `активные ккал ${Math.round(metrics.activeKcal)}` : null,
+    floors: metrics.floors !== null && metrics.floors > 0 ? `этажи ${Math.round(metrics.floors)}` : null,
+    respiration: metrics.respirationAvg !== null ? `дыхание ${metrics.respirationAvg.toFixed(1)}/мин` : null,
+    spo2: metrics.spo2Avg !== null ? `SpO2 ${Math.round(metrics.spo2Avg)}%` : null,
     hrv: metrics.hrvStatus ? `HRV ${escapeHtml(metrics.hrvStatus)}` : null,
   };
   const order = {
-    morning: ["sleep", "bbCharged", "hrv", "rhr", "bb", "stress", "steps"],
-    midday: ["bb", "bbDelta", "stress", "maxStress", "steps", "sleep", "rhr"],
-    evening: ["bb", "bbDelta", "stress", "steps", "maxStress", "sleep", "rhr"],
-  }[slot] || ["bb", "stress", "sleep", "rhr", "steps"];
+    morning: ["sleep", "bbCharged", "hrv", "rhr", "respiration", "spo2", "bb", "stress", "steps"],
+    midday: ["bb", "bbDelta", "stress", "maxStress", "steps", "active", "kcal", "sleep", "rhr"],
+    evening: ["bb", "bbDelta", "stress", "steps", "active", "floors", "maxStress", "sleep", "rhr"],
+  }[slot] || ["bb", "stress", "sleep", "rhr", "steps", "active"];
   return order.map((key) => pool[key]).filter(Boolean).slice(0, limit);
 }
 
@@ -601,6 +646,14 @@ function buildFactsMessage(snapshot, day, slot = "midday") {
     `• Стресс: ${valueOrDash(metrics.stress)}${metrics.maxStress !== null ? ` / пик ${Math.round(metrics.maxStress)}` : ""}`,
     `• Сон: ${formatMaybeHours(metrics.sleepSeconds)}`,
     `• Шаги: ${stepsLine}`,
+    metrics.activeMinutes !== null ? `• Активность: ${Math.round(metrics.activeMinutes)} мин${metrics.activeKcal !== null ? ` / ${Math.round(metrics.activeKcal)} активных ккал` : ""}` : "",
+    metrics.respirationAvg !== null || metrics.spo2Avg !== null || metrics.hrvStatus
+      ? `• Фон: ${[
+        metrics.respirationAvg !== null ? `дыхание ${metrics.respirationAvg.toFixed(1)}/мин` : "",
+        metrics.spo2Avg !== null ? `SpO2 ${Math.round(metrics.spo2Avg)}%` : "",
+        metrics.hrvStatus ? `HRV ${escapeHtml(metrics.hrvStatus)}` : "",
+      ].filter(Boolean).join(" · ")}`
+      : "",
     metrics.stepsReliable ? "" : "• Вывод по шагам: блок steps есть, но значение похоже на неполную синхронизацию.",
     `• Надёжность: ${dataQuality(snapshot)}`,
     `Вывод: ${statusForSnapshot(snapshot)}.`,
@@ -631,6 +684,8 @@ function buildWhyMessage(snapshot, day, slot = "midday") {
   if (metrics.stress !== null) reasons.push(`нагрузка: стресс ${Math.round(metrics.stress)}`);
   if (metrics.sleepSeconds !== null) reasons.push(`восстановление: сон ${formatHours(metrics.sleepSeconds)}`);
   if (metrics.steps !== null) reasons.push(`движение: ${Math.round(metrics.steps)} шагов`);
+  if (metrics.activeMinutes !== null) reasons.push(`активность: ${Math.round(metrics.activeMinutes)} мин`);
+  if (metrics.respirationAvg !== null) reasons.push(`дыхание: ${metrics.respirationAvg.toFixed(1)}/мин`);
   if (!metrics.stepsReliable && metrics.stepsRaw === 0) reasons.push("движение: шаги не считаю, Garmin отдал 0 при признаках активности");
   return [
     `Почему так (${day})`,
@@ -1118,9 +1173,12 @@ function buildFoodAnswer(cache) {
     : typeof metrics.steps === "number" && metrics.steps >= 7000
       ? "движения уже достаточно — без тяжёлой добивки"
       : "движение обычным фоном";
+  const energyPart = typeof metrics.activeMinutes === "number" && metrics.activeMinutes >= 45
+    ? "активности уже прилично — нормальная еда и вода важнее перекусов на автомате"
+    : "еда без усложнения";
   return [
     "🍽 <b>Еда сейчас</b>",
-    `По данным: ${resourcePart}, ${stressPart}, ${movementPart}.`,
+    `По данным: ${resourcePart}, ${stressPart}, ${movementPart}, ${energyPart}.`,
     "Практично: нормальная простая еда + вода. Белок/крупа или овощи, без тяжёлых экспериментов и без догоняться сладким как стратегией.",
   ].join("\n");
 }
@@ -1135,12 +1193,18 @@ function buildLoadAnswer(cache) {
     : typeof metrics.activeMinutes === "number"
       ? `Движение: шаги неясны, активность ${metrics.activeMinutes} мин.`
       : "";
+  const intensity = metrics.moderateMinutes !== null || metrics.vigorousMinutes !== null
+    ? `Интенсивность: умеренная ${Math.round(metrics.moderateMinutes || 0)} мин, высокая ${Math.round(metrics.vigorousMinutes || 0)} мин.`
+    : "";
   return [
     "🏃 <b>Нагрузка</b>",
     `По режиму: ${soft ? "лучше лёгкий формат" : "умеренный формат выглядит ок"}.`,
     `Факты: ${metricChips(snapshot, 3, "midday").join(" · ")}.`,
     movement,
-    soft ? "Лимит: без интенсивности и без добивки вечером." : "Лимит: не превращать нормальный день в тест на выживание.",
+    intensity,
+    soft || (typeof metrics.activeMinutes === "number" && metrics.activeMinutes >= 60)
+      ? "Лимит: без интенсивности и без добивки вечером."
+      : "Лимит: не превращать нормальный день в тест на выживание.",
   ].filter(Boolean).join("\n");
 }
 

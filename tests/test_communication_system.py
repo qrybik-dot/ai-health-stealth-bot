@@ -2,6 +2,8 @@ import datetime as dt
 import unittest
 
 from communication import (
+    build_food_guidance_message,
+    build_load_guidance_message,
     build_day_verdict_message,
     build_push_message,
     build_verdict_label,
@@ -71,6 +73,23 @@ class CommunicationSystemTests(unittest.TestCase):
         self.assertIn("короткий сон", build_push_message("morning", short_sleep, "2026-02-28"))
         self.assertIn("высокого стресса", build_push_message("midday", stressed, "2026-02-28"))
         self.assertIn("сброса", build_push_message("midday", low_steps, "2026-02-28"))
+
+    def test_guidance_uses_extended_garmin_fields(self):
+        snapshot = dict(self.snapshot)
+        snapshot["intensity_minutes"] = {"moderateMinutes": 35, "vigorousMinutes": 12}
+        snapshot["daily_activity"] = {
+            "activeKilocalories": 420,
+            "averageSpo2": 97,
+            "avgWakingRespirationValue": 15.2,
+            "floorsAscended": 4,
+        }
+
+        load = build_load_guidance_message(snapshot)
+        food = build_food_guidance_message(snapshot)
+
+        self.assertIn("Активность", load)
+        self.assertIn("47 мин", load)
+        self.assertIn("активности уже прилично", food)
 
     def test_visual_trigger_blocked_at_night(self):
         now = dt.datetime(2026, 2, 28, 2, 30)

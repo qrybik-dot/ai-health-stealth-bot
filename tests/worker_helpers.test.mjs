@@ -103,6 +103,13 @@ const richCache = {
     sleep: { sleepTimeSeconds: 27000 },
     rhr: { restingHeartRate: 55 },
     steps: { totalSteps: 9100 },
+    daily_activity: {
+      activeKilocalories: 420,
+      averageSpo2: 97,
+      avgWakingRespirationValue: 15.2,
+      floorsAscended: 4,
+    },
+    intensity_minutes: { moderateMinutes: 35, vigorousMinutes: 12 },
   },
   _weekly_state: {
     "2026-W10": { name_ru: "мягкий зелёный", hex: "#2FAE68" },
@@ -139,7 +146,12 @@ assert.match(compareMessage, new RegExp(yesterdayKey));
 
 const foodMessage = routeTextQuestion("что мне лучше поесть", richCache);
 assert.match(foodMessage, /Еда сейчас/);
+assert.match(foodMessage, /активности уже прилично/);
 assert.doesNotMatch(foodMessage, /Сравнение/);
+
+const loadMessage = routeTextQuestion("что по нагрузке", richCache);
+assert.match(loadMessage, /Нагрузка/);
+assert.match(loadMessage, /активность 47 мин|Активность: 47 мин|Интенсивность/);
 
 const monthMessage = routeTextQuestion("как прошёл месяц", richCache);
 assert.match(monthMessage, /Месяц/);

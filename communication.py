@@ -101,6 +101,14 @@ def _safe(snapshot: Dict[str, Any], *path: str) -> Optional[Any]:
     return node
 
 
+def _first_value(snapshot: Dict[str, Any], *paths: Tuple[str, ...]) -> Optional[Any]:
+    for path in paths:
+        value = _safe(snapshot, *path)
+        if value not in (None, "", {}, []):
+            return value
+    return None
+
+
 def _best_steps(snapshot: Dict[str, Any]) -> Optional[Any]:
     candidates = (
         _safe(snapshot, "steps", "totalSteps"),
@@ -119,19 +127,31 @@ def _best_steps(snapshot: Dict[str, Any]) -> Optional[Any]:
 def _extract_metrics(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(snapshot, dict):
         return {}
+    active_seconds = _first_value(snapshot, ("daily_activity", "activeSeconds"), ("daily_activity", "activeTimeSeconds"))
+    moderate = _first_value(snapshot, ("intensity_minutes", "moderateMinutes"), ("intensity_minutes", "moderateIntensityMinutes"))
+    vigorous = _first_value(snapshot, ("intensity_minutes", "vigorousMinutes"), ("intensity_minutes", "vigorousIntensityMinutes"))
+    active_minutes = None
+    if isinstance(moderate, (int, float)) or isinstance(vigorous, (int, float)):
+        active_minutes = float(moderate or 0) + float(vigorous or 0)
+    elif isinstance(active_seconds, (int, float)):
+        active_minutes = float(active_seconds) / 60.0
     return {
-        "bb_now": _safe(snapshot, "body_battery", "mostRecentValue"),
-        "bb_start": _safe(snapshot, "body_battery", "chargedValue"),
-        "stress_avg": _safe(snapshot, "stress", "avgStressLevel") or _safe(snapshot, "stress", "overallStressLevel"),
+        "bb_now": _first_value(snapshot, ("body_battery", "mostRecentValue"), ("daily_activity", "bodyBatteryMostRecentValue")),
+        "bb_start": _first_value(snapshot, ("body_battery", "chargedValue"), ("daily_activity", "bodyBatteryChargedValue"), ("daily_activity", "bodyBatteryAtWakeTime")),
+        "stress_avg": _first_value(snapshot, ("stress", "avgStressLevel"), ("stress", "overallStressLevel"), ("daily_activity", "averageStressLevel")),
         "stress_peak": _safe(snapshot, "stress", "maxStressLevel"),
-        "sleep_seconds": _safe(snapshot, "sleep", "sleepTimeSeconds") or _safe(snapshot, "sleep", "totalSleepSeconds"),
-        "hrv_status": _safe(snapshot, "hrv_status", "status"),
-        "hrv_weekly_avg": _safe(snapshot, "hrv", "weeklyAvg"),
+        "sleep_seconds": _first_value(snapshot, ("sleep", "sleepTimeSeconds"), ("sleep", "totalSleepSeconds"), ("sleep", "dailySleepDTO", "sleepTimeSeconds")),
+        "hrv_status": _first_value(snapshot, ("hrv_status", "status"), ("sleep", "hrvStatus", "status")),
+        "hrv_weekly_avg": _first_value(snapshot, ("hrv", "weeklyAvg"), ("hrv", "hrvSummary", "weeklyAvg"), ("sleep", "avgOvernightHrv")),
         "steps": _best_steps(snapshot),
-        "rhr": _safe(snapshot, "rhr", "restingHeartRate"),
-        "respiration_avg": _safe(snapshot, "respiration", "avgWakingRespirationValue") or _safe(snapshot, "respiration", "latestRespirationValue"),
-        "spo2_avg": _safe(snapshot, "pulse_ox", "avgSpo2") or _safe(snapshot, "pulse_ox", "mostRecentValue"),
-        "active_minutes": _safe(snapshot, "intensity_minutes", "moderateIntensityMinutes") or _safe(snapshot, "daily_activity", "activeSeconds"),
+        "rhr": _first_value(snapshot, ("rhr", "restingHeartRate"), ("heart_rate", "restingHeartRate"), ("sleep", "restingHeartRate")),
+        "respiration_avg": _first_value(snapshot, ("respiration", "avgWakingRespirationValue"), ("respiration", "latestRespirationValue"), ("daily_activity", "avgWakingRespirationValue")),
+        "spo2_avg": _first_value(snapshot, ("pulse_ox", "avgSpo2"), ("pulse_ox", "mostRecentValue"), ("daily_activity", "averageSpo2")),
+        "active_minutes": active_minutes,
+        "moderate_minutes": moderate,
+        "vigorous_minutes": vigorous,
+        "active_kcal": _safe(snapshot, "daily_activity", "activeKilocalories"),
+        "floors": _first_value(snapshot, ("daily_activity", "floorsAscended"), ("floors", "floorsAscended")),
     }
 
 
@@ -250,7 +270,15 @@ def _chip_candidates(snapshot: Optional[Dict[str, Any]], slot: str) -> List[Tupl
 
     active = m.get("active_minutes")
     if isinstance(active, (int, float)):
-        chips.append(("active_minutes", relevance.get("active_minutes", 0.3) + min(1.0, float(active) / 2400.0), f"🏃 Активность: <b>{int(active // 60) if active > 120 else int(active)} мин</b>"))
+        chips.append(("active_minutes", relevance.get("active_minutes", 0.3) + min(1.0, float(active) / 240.0), f"🏃 Активность: <b>{int(round(active))} мин</b>"))
+
+    active_kcal = _fmt_int(m.get("active_kcal"), 0, 5000)
+    if active_kcal is not None:
+        chips.append(("active_kcal", 0.45 + min(1.0, active_kcal / 900.0), f"🔥 Активные ккал: <b>{active_kcal}</b>"))
+
+    floors = _fmt_int(m.get("floors"), 0, 200)
+    if floors is not None and floors > 0:
+        chips.append(("floors", 0.35 + min(1.0, floors / 25.0), f"↗️ Этажи: <b>{floors}</b>"))
 
     return chips
 
@@ -601,6 +629,7 @@ def build_food_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     facts = build_data_chips(snapshot, max_items=3, slot="midday")
     stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
     bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
+    active_minutes = _fmt_int(metrics.get("active_minutes"), 0, 600)
     if not facts:
         return (
             "🍽 <b>Еда сейчас</b>\n\n"
@@ -611,6 +640,8 @@ def build_food_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
         advice = "стресс высокий — лучше простая еда, вода и без тяжёлых экспериментов"
     elif bb_now is not None and bb_now < 35:
         advice = "ресурс низкий — ровная еда полезнее, чем героизм на кофе"
+    elif active_minutes is not None and active_minutes >= 45:
+        advice = "активности уже прилично — нормальный приём еды и вода, без добивки сладким"
     else:
         advice = "ресурс терпимый — держать обычный простой режим, без догоняться сладким как стратегией"
     return (
@@ -627,6 +658,7 @@ def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     stress = _fmt_int(metrics.get("stress_avg"), 0, 100)
     bb_now = _fmt_int(metrics.get("bb_now"), 0, 100)
     sleep_seconds = metrics.get("sleep_seconds")
+    active_minutes = _fmt_int(metrics.get("active_minutes"), 0, 600)
     soft = (
         (bb_now is not None and bb_now < 40)
         or (stress is not None and stress >= 60)
@@ -634,12 +666,16 @@ def build_load_guidance_message(snapshot: Optional[Dict[str, Any]]) -> str:
     )
     mode = "лёгкий формат" if soft else "умеренный формат выглядит ок"
     limit = "без интенсивности и без вечерней добивки" if soft else "не превращать нормальный день в тест на выживание"
+    if active_minutes is not None and active_minutes >= 60:
+        limit = "активность уже набрана, дальше только спокойный формат"
     facts_block = "\n".join(f"• {line}" for line in facts) if facts else "• данных мало"
+    activity_line = f"\n<b>Активность:</b> {active_minutes} мин." if active_minutes is not None else ""
     return (
         "🏃 <b>Нагрузка</b>\n\n"
         f"<b>По режиму:</b> {mode}.\n"
         "<b>Факты:</b>\n"
         + facts_block
+        + activity_line
         + f"\n\n<b>Лимит:</b> {limit}."
     )
 
