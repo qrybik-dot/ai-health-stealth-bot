@@ -2,7 +2,7 @@ import json
 import os
 import sys
 import requests
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 
 def env(name: str) -> str:
@@ -13,6 +13,9 @@ def env(name: str) -> str:
 
 
 STATE_KEYS = ("_push_state", "_weekly_state", "_daily_votes", "_today_votes", "_today_state")
+MEMORY_DAYS = max(30, min(3650, int(os.getenv("CACHE_RETENTION_DAYS", "365") or "365")))
+WEEKLY_RETENTION_WEEKS = 26
+PUSH_STATE_RETENTION_DAYS = max(1, min(MEMORY_DAYS, int(os.getenv("PUSH_STATE_RETENTION_DAYS", "14") or "14")))
 
 
 def _headers(token: str) -> dict:
@@ -21,6 +24,62 @@ def _headers(token: str) -> dict:
         "Accept": "application/vnd.github+json",
         "User-Agent": "coach-potato-gist-upload",
     }
+
+
+def _week_start(week_id: str):
+    try:
+        return datetime.strptime(f"{week_id}-1", "%G-W%V-%u").date()
+    except ValueError:
+        return None
+
+
+def _trim_state_for_guard(cache_payload: dict) -> dict:
+    if not isinstance(cache_payload, dict):
+        return {}
+    trimmed = json.loads(json.dumps(cache_payload))
+    today = date.today()
+    daily_cutoff = today - timedelta(days=MEMORY_DAYS)
+    push_cutoff = today - timedelta(days=PUSH_STATE_RETENTION_DAYS)
+    week_cutoff = today - timedelta(weeks=WEEKLY_RETENTION_WEEKS)
+
+    for state_key in ("_today_state", "_today_votes", "_daily_votes"):
+        state = trimmed.get(state_key)
+        if not isinstance(state, dict):
+            continue
+        for composite_key in list(state.keys()):
+            day_part = str(composite_key).split("|", 1)[0]
+            try:
+                if date.fromisoformat(day_part) < daily_cutoff:
+                    state.pop(composite_key, None)
+            except ValueError:
+                continue
+
+    weekly_state = trimmed.get("_weekly_state")
+    if isinstance(weekly_state, dict):
+        for week_id in list(weekly_state.keys()):
+            start = _week_start(str(week_id))
+            if start and start < week_cutoff:
+                weekly_state.pop(week_id, None)
+
+    push_state = trimmed.get("_push_state")
+    if isinstance(push_state, dict):
+        for state_key in list(push_state.keys()):
+            key = str(state_key)
+            if key.startswith("weekly|"):
+                parts = key.split("|")
+                if len(parts) >= 3:
+                    start = _week_start(parts[1])
+                    if start and start < week_cutoff:
+                        push_state.pop(state_key, None)
+                continue
+            day_part = key.split("|", 1)[0]
+            try:
+                if date.fromisoformat(day_part) < push_cutoff:
+                    push_state.pop(state_key, None)
+            except ValueError:
+                continue
+
+    return trimmed
 
 
 def _load_remote_cache(gist_id: str, token: str) -> dict:
@@ -49,6 +108,8 @@ def _assert_no_state_loss(local_cache: dict, remote_cache: dict) -> None:
     if os.getenv("ALLOW_GIST_STATE_DROP", "").strip().lower() in ("1", "true", "yes"):
         print("state loss guard: bypassed by ALLOW_GIST_STATE_DROP")
         return
+    local_cache = _trim_state_for_guard(local_cache)
+    remote_cache = _trim_state_for_guard(remote_cache)
     problems = []
     for key in STATE_KEYS:
         remote_state = remote_cache.get(key)
@@ -58,8 +119,9 @@ def _assert_no_state_loss(local_cache: dict, remote_cache: dict) -> None:
         if not isinstance(local_state, dict):
             problems.append(f"{key}:missing_local_remote_count={len(remote_state)}")
             continue
-        if len(local_state) < len(remote_state):
-            problems.append(f"{key}:local_count={len(local_state)}<remote_count={len(remote_state)}")
+        missing_keys = sorted(set(remote_state.keys()) - set(local_state.keys()))
+        if missing_keys:
+            problems.append(f"{key}:missing_keys={len(missing_keys)}")
     if problems:
         raise RuntimeError("state loss guard blocked gist upload: " + ",".join(problems))
     counts = {
