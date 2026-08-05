@@ -4,9 +4,50 @@ on:
   schedule:
     - cron: "0 */3 * * *"   # каждые 3 часа по UTC
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "**.py"
+      - "cloudflare/**"
+      - "tests/**"
+      - "requirements.txt"
+      - ".github/workflows/sync.yml"
+
+permissions:
+  contents: read
 
 jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Python unit tests
+        env:
+          CI: "0"
+        run: python -m unittest discover -s tests
+
+      - name: Cloudflare Worker syntax
+        run: node --check cloudflare/telegram-webhook-worker.js
+
+      - name: Cloudflare Worker helper tests
+        run: node tests/worker_helpers_ci.mjs
+
   sync:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -17,7 +58,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
 
       - name: Workflow context (safe)
         run: |

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 import requests
 from datetime import date, datetime, timedelta, timezone
 
@@ -16,6 +17,14 @@ STATE_KEYS = ("_push_state", "_weekly_state", "_daily_votes", "_today_votes", "_
 MEMORY_DAYS = max(30, min(3650, int(os.getenv("CACHE_RETENTION_DAYS", "365") or "365")))
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = max(1, min(MEMORY_DAYS, int(os.getenv("PUSH_STATE_RETENTION_DAYS", "14") or "14")))
+GIST_PATCH_ATTEMPTS = max(1, min(10, int(os.getenv("GIST_PATCH_ATTEMPTS", "6") or "6")))
+GIST_PATCH_TIMEOUT_SECONDS = max(30, min(300, int(os.getenv("GIST_PATCH_TIMEOUT_SECONDS", "120") or "120")))
+GIST_PATCH_BACKOFF_BASE_SECONDS = max(1, min(30, int(os.getenv("GIST_PATCH_BACKOFF_BASE_SECONDS", "2") or "2")))
+GIST_PATCH_BACKOFF_MAX_SECONDS = max(
+    GIST_PATCH_BACKOFF_BASE_SECONDS,
+    min(120, int(os.getenv("GIST_PATCH_BACKOFF_MAX_SECONDS", "30") or "30")),
+)
+RETRYABLE_GIST_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 def _headers(token: str) -> dict:
@@ -131,6 +140,58 @@ def _assert_no_state_loss(local_cache: dict, remote_cache: dict) -> None:
     print("state loss guard: ok " + " ".join(f"{key}={value}" for key, value in counts.items()))
 
 
+def _retry_delay_seconds(resp, attempt: int) -> int:
+    retry_after = str(resp.headers.get("Retry-After", "")).strip()
+    if retry_after.isdigit():
+        return max(1, min(GIST_PATCH_BACKOFF_MAX_SECONDS, int(retry_after)))
+    return min(
+        GIST_PATCH_BACKOFF_MAX_SECONDS,
+        GIST_PATCH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
+    )
+
+
+def _patch_gist(gist_id: str, token: str, payload: dict):
+    url = f"https://api.github.com/gists/{gist_id}"
+    last_error = None
+
+    for attempt in range(1, GIST_PATCH_ATTEMPTS + 1):
+        try:
+            resp = requests.patch(
+                url,
+                headers=_headers(token),
+                json=payload,
+                timeout=GIST_PATCH_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= GIST_PATCH_ATTEMPTS:
+                raise RuntimeError(
+                    f"Gist PATCH failed after {attempt} attempts: {type(exc).__name__}: {exc}"
+                ) from exc
+            delay = min(
+                GIST_PATCH_BACKOFF_MAX_SECONDS,
+                GIST_PATCH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
+            )
+            print(
+                f"gist patch transient_error attempt={attempt}/{GIST_PATCH_ATTEMPTS} "
+                f"type={type(exc).__name__} retry_in={delay}s"
+            )
+            time.sleep(delay)
+            continue
+
+        print(f"gist patch attempt={attempt}/{GIST_PATCH_ATTEMPTS} status={resp.status_code}")
+        if resp.status_code < 300:
+            return resp
+        if resp.status_code not in RETRYABLE_GIST_STATUSES or attempt >= GIST_PATCH_ATTEMPTS:
+            return resp
+
+        delay = _retry_delay_seconds(resp, attempt)
+        print(f"gist patch retryable_status={resp.status_code} retry_in={delay}s")
+        time.sleep(delay)
+
+    raise RuntimeError(f"Gist PATCH failed: {last_error}")
+
+
 def main() -> None:
     gist_id = env("CACHE_GIST_ID")
     token = None
@@ -163,7 +224,12 @@ def main() -> None:
     remote_cache = _load_remote_cache(gist_id, token)
     _assert_no_state_loss(local_cache, remote_cache)
 
-    print(f"gist upload file=cache.json bytes={len(content.encode('utf-8'))} ts_utc={datetime.now(timezone.utc).isoformat()}")
+    content_bytes = len(content.encode("utf-8"))
+    print(
+        f"gist upload file=cache.json bytes={content_bytes} "
+        f"attempts={GIST_PATCH_ATTEMPTS} timeout={GIST_PATCH_TIMEOUT_SECONDS}s "
+        f"ts_utc={datetime.now(timezone.utc).isoformat()}"
+    )
 
     payload = {
         "files": {
@@ -173,18 +239,14 @@ def main() -> None:
         }
     }
 
-    resp = requests.patch(
-        f"https://api.github.com/gists/{gist_id}",
-        headers=_headers(token),
-        json=payload,
-        timeout=30,
-    )
-
+    resp = _patch_gist(gist_id, token, payload)
     print("Status:", resp.status_code)
-    print("Response:", resp.text)
 
     if resp.status_code >= 300:
+        print("Response:", resp.text[:1000])
         raise SystemExit("Failed to update gist")
+
+    print("Gist updated successfully")
 
 
 if __name__ == "__main__":
