@@ -44,7 +44,7 @@ jobs:
         run: node --check cloudflare/telegram-webhook-worker.js
 
       - name: Cloudflare Worker helper tests
-        run: node tests/worker_helpers.test.mjs
+        run: node tests/worker_helpers_ci.mjs
 
   sync:
     if: github.event_name != 'pull_request'
