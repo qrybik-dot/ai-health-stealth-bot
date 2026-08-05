@@ -36,6 +36,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Python unit tests
+        env:
+          CI: "0"
         run: python -m unittest discover -s tests
 
       - name: Cloudflare Worker syntax
