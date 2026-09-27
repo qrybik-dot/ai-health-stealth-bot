@@ -17,6 +17,9 @@ on:
           - firestore-migrate-dry-run
           - firestore-migrate
           - firestore-verify
+          - archive-gist-dry-run
+          - archive-gist-sync
+          - archive-gist-verify
       backfill_days:
         description: "Days to backfill when operation=backfill"
         required: true
@@ -109,6 +112,30 @@ jobs:
               ;;
             *)
               echo "unsupported Firestore operation: $OPERATION"
+              exit 1
+              ;;
+          esac
+
+      - name: Garmin archive Gist
+        if: startsWith(inputs.operation, 'archive-gist-')
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          case "$OPERATION" in
+            archive-gist-dry-run)
+              python scripts/gist_archive.py --dry-run
+              ;;
+            archive-gist-sync)
+              python scripts/gist_archive.py --sync-all
+              ;;
+            archive-gist-verify)
+              python scripts/gist_archive.py --verify
+              ;;
+            *)
+              echo "unsupported archive operation: $OPERATION"
               exit 1
               ;;
           esac
