@@ -14,6 +14,9 @@ on:
           - backfill
           - garmin-audit
           - garmin-auth-refresh
+          - firestore-migrate-dry-run
+          - firestore-migrate
+          - firestore-verify
       backfill_days:
         description: "Days to backfill when operation=backfill"
         required: true
@@ -66,6 +69,49 @@ jobs:
           else
             echo "GIST_TOKEN=present"
           fi
+
+      - name: Firestore archive preflight
+        if: startsWith(inputs.operation, 'firestore-')
+        env:
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$FIRESTORE_PROJECT_ID" ]; then
+            echo "FIRESTORE_PROJECT_ID=missing"
+            exit 1
+          fi
+          if [ -z "$FIRESTORE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "FIRESTORE_SERVICE_ACCOUNT_JSON=missing"
+            exit 1
+          fi
+          echo "firestore_archive_credentials=present"
+
+      - name: Firestore archive migration / verification
+        if: startsWith(inputs.operation, 'firestore-')
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIRESTORE_SERVICE_ACCOUNT_JSON }}
+          DATA_OWNER_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          case "$OPERATION" in
+            firestore-migrate-dry-run)
+              python scripts/migrate_cache_to_firestore.py --dry-run
+              ;;
+            firestore-migrate)
+              python scripts/migrate_cache_to_firestore.py
+              ;;
+            firestore-verify)
+              python scripts/migrate_cache_to_firestore.py --verify-only
+              ;;
+            *)
+              echo "unsupported Firestore operation: $OPERATION"
+              exit 1
+              ;;
+          esac
 
       - name: Cache check
         if: inputs.operation == 'cache-check'
