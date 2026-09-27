@@ -12,18 +12,23 @@ Coach Potato отправляет короткие data-driven вердикты 
 
 ## Источники данных
 
-- Garmin Connect (минимальный набор метрик): сон, stress, body battery, RHR, шаги и др.
-- Cloud-first store: Firestore (`users/{chat_id}/days`, `users/{chat_id}/sent`, `users/{chat_id}/auth/garmin`).
-- Локальный `cache.json` используется как dev fallback и для аварийной деградации.
-- История дней хранится и гидратируется с retention 365 дней по умолчанию (`CACHE_RETENTION_DAYS`), без старого жёсткого потолка 120 дней. Firestore-запрос истории по умолчанию следует этому же лимиту; отдельно можно задать `HISTORY_HYDRATION_DAYS` или `FIRESTORE_HISTORY_QUERY_DAYS`.
-- Backfill по умолчанию ограничен 90 днями (`BACKFILL_MAX_DAYS`) как защита от Garmin rate-limit; лимит можно поднять отдельно, когда auth стабилен.
+- Garmin Connect: сон, stress, body battery, RHR, шаги, HRV, respiration, SpO2, activity и другие доступные метрики.
+- **Текущий production source of truth:** private GitHub Gist с `cache.json`. Он содержит накопленную Garmin-историю и runtime-state.
+- Firestore-код и безопасный мигратор уже есть, но Firestore не считается production-хранилищем, пока не настроены credentials и не прошла полная проверка архива.
+- Garmin day snapshots нельзя удалять/обрезать из Gist до подтверждённой durable-копии: `firestore_archive_verification=ok` или эквивалентной проверки нового archive store.
+- `CACHE_RETENTION_DAYS` сейчас ограничивает runtime cache (по умолчанию 365 дней); это **не политика хранения будущего канонического Garmin-архива**.
+- Backfill ограничен `BACKFILL_MAX_DAYS` (по умолчанию 90) для защиты от Garmin rate-limit.
+
+Подробно: `docs/ARCHITECTURE.md`.
 
 ## Расписание
 
-Окна по Москве:
-- morning: 09:15–09:45
-- midday: 13:40–14:20
-- evening: 19:40–20:20
+Целевые слоты по Москве:
+- morning: 09:30 MSK; дополнительные GitHub retries 10:30 и 11:30 используются как страховка задержек;
+- midday: 14:07 MSK;
+- evening: 20:07 MSK.
+
+Scheduled run всегда сохраняет исходный slot из cron. Если GitHub запускает его настолько поздно, что слот уже устарел, run пропускается как `stale_schedule` и **не превращается** в следующий слот.
 
 ## Визуалы Variant A
 
@@ -89,6 +94,10 @@ Coach Potato отправляет короткие data-driven вердикты 
 - когда был последний sync.
 
 `/debug_sync` теперь показывает и sent-registry статус по слотам (`morning/midday/evening`) и типам (`color/verdict/weekly`).
+
+### CI
+
+Pull Request проверки вынесены в `.github/workflows/ci.yml`. Production `sync.yml` выполняет только scheduled/manual Garmin sync и не содержит PR-test job. Все GitHub-hosted workflows закреплены на `ubuntu-24.04`.
 
 ### Ops Health Summary
 
