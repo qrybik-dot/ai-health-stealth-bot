@@ -46,6 +46,27 @@ jobs:
       - name: Cloudflare Worker helper tests
         run: node tests/worker_helpers_ci.mjs
 
+      - name: Firestore archive secret probe
+        if: github.head_ref == 'ops/firestore-archive-probe-20260927'
+        env:
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          missing=0
+          if [ -z "$FIRESTORE_PROJECT_ID" ]; then
+            echo "FIRESTORE_PROJECT_ID=missing"
+            missing=1
+          else
+            echo "FIRESTORE_PROJECT_ID=present"
+          fi
+          if [ -z "$FIRESTORE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "FIRESTORE_SERVICE_ACCOUNT_JSON=missing"
+            missing=1
+          else
+            echo "FIRESTORE_SERVICE_ACCOUNT_JSON=present"
+          fi
+          exit "$missing"
+
   sync:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
