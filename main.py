@@ -82,7 +82,7 @@ from color_engine import (
 )
 
 
-from prompts import SYSTEM_PROMPT, CODEX_RULES
+from prompts import SYSTEM_PROMPT
 from communication import (
     build_verdict_label,
     build_day_detail_message,
@@ -462,40 +462,6 @@ def fetch_garmin_minimal(email: str, password: str) -> Dict[str, Any]:
             out["errors"].append({"metric": key, "error": str(e)})
 
     return out
-
-
-def build_user_prompt(cache: Dict[str, Any], push_kind: str) -> str:
-    """Builds the user prompt for a scheduled push, using the strict codex."""
-    return (
-        "Write in Russian.\n"
-        f"Push type: {push_kind}\n"
-        "Generate ONE Daily-Insight message in the REQUIRED format.\n"
-        "Codex (strict):\n"
-        + CODEX_RULES
-        + "\nIf cache has errors or missing data: lower confidence and mention uncertainty briefly.\n"
-        "User is recovering after clavicle fracture: DO NOT push sport/training.\n"
-        "Input JSON:\n"
-        f"{json.dumps(cache, ensure_ascii=False)}\n"
-    )
-
-
-def generate_message(
-    gemini_key: str, model_name: str, cache: Dict[str, Any], push_kind: str
-) -> str:
-    """Generates a daily push message using the strict CODEX_RULES."""
-    genai.configure(api_key=gemini_key)
-    # For pushes, we use a dedicated model/config that understands the strict rules.
-    # The system prompt is minimal as the rules are in the user prompt.
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction="You are a health assistant bot. Follow the user's instructions precisely.",
-    )
-    prompt = build_user_prompt(cache, push_kind)
-    resp = model.generate_content(prompt)
-    text = (resp.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned empty text for push")
-    return text
 
 
 def run_sync() -> None:
