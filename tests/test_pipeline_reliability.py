@@ -108,16 +108,18 @@ class PipelineReliabilityTests(unittest.TestCase):
 
         self.assertEqual(decision["window_matched"], "none")
         self.assertEqual(decision["slot_id"], "morning")
+        self.assertFalse(decision["stale_schedule"])
         self.assertEqual(decision["schedule_cron"], "30 6 * * *")
 
-    def test_delayed_github_morning_schedule_turns_midday_after_midday_window_starts(self):
+    def test_delayed_github_morning_schedule_is_stale_not_reinterpreted_as_midday(self):
         tz = dt.timezone(dt.timedelta(hours=3))
         delayed_now = dt.datetime(2026, 5, 24, 13, 41, tzinfo=tz)
         with patch.dict(os.environ, {"PUSH_SCHEDULE_CRON": "30 6 * * *"}, clear=False):
             decision = main._build_schedule_decision(delayed_now, "chat")
 
         self.assertEqual(decision["window_matched"], "midday")
-        self.assertEqual(decision["slot_id"], "midday")
+        self.assertEqual(decision["slot_id"], "morning")
+        self.assertTrue(decision["stale_schedule"])
         self.assertEqual(decision["schedule_cron"], "30 6 * * *")
 
     def test_delayed_data_catchup_without_duplicates(self):

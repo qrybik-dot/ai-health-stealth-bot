@@ -587,8 +587,8 @@ SCHEDULE_CRON_TO_SLOT: Dict[str, str] = {
     "30 6 * * *": "morning",
     "30 7 * * *": "morning",
     "30 8 * * *": "morning",
-    "0 11 * * *": "midday",
-    "0 17 * * *": "evening",
+    "7 11 * * *": "midday",
+    "7 17 * * *": "evening",
 }
 
 def _minutes(hh: int, mm: int) -> int:
@@ -636,9 +636,10 @@ def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] =
         return override
     schedule_cron = os.getenv("PUSH_SCHEDULE_CRON", "").strip()
     if schedule_cron in SCHEDULE_CRON_TO_SLOT:
-        cron_slot = SCHEDULE_CRON_TO_SLOT[schedule_cron]
-        if not _is_slot_stale(now_msk, cron_slot):
-            return cron_slot
+        # A delayed GitHub cron keeps its original slot identity.
+        # Staleness is handled by the schedule decision; never reinterpret
+        # a delayed morning trigger as midday/evening.
+        return SCHEDULE_CRON_TO_SLOT[schedule_cron]
     in_window = _resolve_push_slot(now_msk)
     if in_window:
         return in_window
@@ -655,17 +656,24 @@ def _send_push_fallback(tg_token: str, chat_id: str, text: str) -> None:
 
 def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optional[str] = None) -> Dict[str, Any]:
     window_slot = _resolve_push_slot(now_msk)
+    schedule_cron = os.getenv("PUSH_SCHEDULE_CRON", "").strip()
     slot = _resolve_scheduled_push_kind(now_msk, override=override)
     today_str = now_msk.date().isoformat()
     already_sent = _already_sent_for_slot(chat_id=chat_id, send_date=today_str, slot=slot)
+    stale_schedule = bool(
+        override is None
+        and schedule_cron in SCHEDULE_CRON_TO_SLOT
+        and _is_slot_stale(now_msk, slot)
+    )
     return {
         "now_msk": now_msk.isoformat(),
         "window_matched": window_slot if window_slot is not None else "none",
         "slot_id": slot,
         "already_sent": already_sent,
+        "stale_schedule": stale_schedule,
         "target_chat_id": chat_id,
         "date": today_str,
-        "schedule_cron": os.getenv("PUSH_SCHEDULE_CRON", "").strip(),
+        "schedule_cron": schedule_cron,
     }
 
 
@@ -1392,6 +1400,16 @@ def run_push(push_kind: str, dry_run: bool = False) -> None:
     _log_schedule_decision(decision)
     log.info("push_clock now_utc=%s now_msk=%s", now_utc.isoformat(), now_msk.isoformat())
     today_str = decision["date"]
+
+    if push_kind == "scheduled" and decision.get("stale_schedule", False):
+        log.warning(
+            "stale_schedule_skip slot=%s date=%s schedule_cron=%s now_msk=%s",
+            resolved_slot,
+            today_str,
+            decision.get("schedule_cron", ""),
+            decision.get("now_msk", ""),
+        )
+        return
 
     if decision["already_sent"]:
         log.info("dedupe_skip slot=%s date=%s chat_id=%s", resolved_slot, today_str, chat_id)
