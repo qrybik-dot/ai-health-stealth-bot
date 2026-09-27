@@ -2,19 +2,35 @@
 
 Цель: вернуть свежие Garmin-данные и usable history без Render, Cloudflare migration или storage rewrite.
 
+## Data Safety Rule
+
+На 2026-09-27 private Gist остаётся единственной подтверждённой полной production-копией накопленной Garmin-истории. Не уменьшать retention, не удалять старые YYYY-MM-DD snapshots и не разделять Gist до успешной миграции и верификации durable archive.
+
+Для Firestore уже доступны безопасные операции Recovery Controls:
+- `firestore-migrate-dry-run` — только читает source cache и считает dataset summary/hash;
+- `firestore-migrate` — идемпотентно upsert-ит дни и затем читает каждый день обратно;
+- `firestore-verify` — только сверяет source days с Firestore.
+
+Успех миграции подтверждается строкой `firestore_archive_verification=ok`. До неё Gist не чистить.
+
+
 ## Required Secrets
 
-В GitHub Actions должны быть заданы:
+Для штатных sync/push нужны:
 
 - `GARMIN_EMAIL`
-- `GARMIN_PASSWORD`
+- `GARMIN_PASSWORD` — хранится для recovery, но scheduled sync работает token-first;
+- `GARMIN_TOKENSTORE` — preferred serialized Garmin session tokenstore;
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL`
 - `CACHE_GIST_ID`
 - `GIST_TOKEN`
-- `GARMIN_TOKENSTORE` — preferred serialized Garmin session tokenstore.
+
+`GEMINI_API_KEY` и `GEMINI_MODEL` нужны для conversational fallback в chat runtime, но **не используются scheduled push**.
+
+Для Firestore archive дополнительно нужны:
+- `FIRESTORE_PROJECT_ID`
+- `FIRESTORE_SERVICE_ACCOUNT_JSON`
 
 `GIST_TOKEN` нужен не только для upload, но и для read path: private Gist нельзя надёжно читать через `GITHUB_TOKEN` репозитория. Если `GIST_TOKEN` отсутствует, workflow попробует fallback, но это не считается надёжной recovery-конфигурацией.
 
