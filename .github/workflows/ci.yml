@@ -41,3 +41,45 @@ jobs:
 
       - name: Cloudflare Worker helper tests
         run: node tests/worker_helpers_ci.mjs
+
+      - name: Read-only runtime cache size audit
+        if: github.head_ref == 'ops/runtime-cache-size-audit-20260927'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          from collections import defaultdict
+          from cache import load_cache_with_meta
+
+          payload, meta = load_cache_with_meta()
+          if not isinstance(payload, dict):
+              raise SystemExit("cache_not_dict")
+
+          def size(value):
+              return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+          daily_fields = defaultdict(int)
+          daily_counts = defaultdict(int)
+          daily_total = 0
+          day_count = 0
+          state_sizes = {}
+
+          for key, value in payload.items():
+              if isinstance(key, str) and len(key) == 10 and key[4] == "-" and key[7] == "-" and isinstance(value, dict):
+                  day_count += 1
+                  daily_total += size(value)
+                  for field, field_value in value.items():
+                      daily_fields[field] += size(field_value)
+                      daily_counts[field] += 1
+              elif isinstance(key, str) and key.startswith("_"):
+                  state_sizes[key] = size(value)
+
+          print(f"cache_audit source={meta.get('source')} days={day_count} daily_bytes={daily_total} state_bytes={sum(state_sizes.values())}")
+          for field, total in sorted(daily_fields.items(), key=lambda item: item[1], reverse=True):
+              print(f"daily_field={field} bytes={total} days_present={daily_counts[field]}")
+          for key, total in sorted(state_sizes.items(), key=lambda item: item[1], reverse=True):
+              print(f"state_key={key} bytes={total}")
+          PY
