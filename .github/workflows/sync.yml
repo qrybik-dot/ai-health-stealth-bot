@@ -73,3 +73,11 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/gist_upload.py
+
+      - name: Mirror current Garmin day to archive Gist
+        continue-on-error: true
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/gist_archive.py --sync-current
