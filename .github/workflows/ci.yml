@@ -41,3 +41,17 @@ jobs:
 
       - name: Cloudflare Worker helper tests
         run: node tests/worker_helpers_ci.mjs
+
+      - name: Bootstrap and verify private Garmin archive
+        if: github.head_ref == 'ops/bootstrap-garmin-archive-20260927-v2'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$CACHE_GIST_ID" ] || [ -z "$GIST_TOKEN" ]; then
+            echo "archive_bootstrap_secrets=missing"
+            exit 1
+          fi
+          echo "archive_bootstrap_secrets=present"
+          python scripts/gist_archive.py --sync-all
