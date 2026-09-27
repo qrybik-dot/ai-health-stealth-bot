@@ -3,17 +3,17 @@ name: Push Daily Insights
 on:
   schedule:
     # Fixed timezone policy: GMT+3 (Europe/Moscow).
-    # 09:30 / 14:00 / 20:00 MSK -> 06:30 / 11:00 / 17:00 UTC.
+    # 09:30 / 14:07 / 20:07 MSK -> 06:30 / 11:07 / 17:07 UTC. Avoid :00 GitHub Actions load peaks.
     - cron: "30 6 * * *"
     - cron: "30 7 * * *"
     - cron: "30 8 * * *"
-    - cron: "0 11 * * *"
-    - cron: "0 17 * * *"
+    - cron: "7 11 * * *"
+    - cron: "7 17 * * *"
   workflow_dispatch:
 
 jobs:
   push:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
