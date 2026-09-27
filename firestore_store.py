@@ -1,12 +1,15 @@
 import datetime as dt
+import json
 import logging
 import os
 from typing import Any, Dict, Optional
 
 try:
     from google.cloud import firestore
+    from google.oauth2 import service_account
 except Exception:  # optional dependency for local dev
     firestore = None
+    service_account = None
 
 log = logging.getLogger(__name__)
 
@@ -20,13 +23,49 @@ def _default_list_days() -> int:
     return max(1, min(3650, value))
 
 
+def _service_account_info() -> Optional[Dict[str, Any]]:
+    raw = os.getenv("FIRESTORE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("FIRESTORE_SERVICE_ACCOUNT_JSON must be a JSON object")
+    return payload
+
+
 class FirestoreStore:
     def __init__(self) -> None:
         self.project_id = os.getenv("FIRESTORE_PROJECT_ID", "").strip()
-        self.enabled = bool(self.project_id and firestore is not None)
+        self.enabled = False
+        self.init_error = ""
         self._client = None
-        if self.enabled:
-            self._client = firestore.Client(project=self.project_id)
+
+        if firestore is None:
+            return
+
+        try:
+            credentials = None
+            info = _service_account_info()
+            if info:
+                if service_account is None:
+                    raise RuntimeError("google.oauth2.service_account is unavailable")
+                credentials = service_account.Credentials.from_service_account_info(info)
+                if not self.project_id:
+                    self.project_id = str(info.get("project_id", "")).strip()
+
+            if not self.project_id:
+                return
+
+            kwargs: Dict[str, Any] = {"project": self.project_id}
+            if credentials is not None:
+                kwargs["credentials"] = credentials
+            self._client = firestore.Client(**kwargs)
+            self.enabled = True
+        except Exception as exc:
+            self.init_error = f"{type(exc).__name__}: {exc}"
+            self._client = None
+            self.enabled = False
+            log.warning("firestore_init_failed error=%s", self.init_error)
 
     def _doc(self, *parts: str):
         if not self.enabled or self._client is None:
