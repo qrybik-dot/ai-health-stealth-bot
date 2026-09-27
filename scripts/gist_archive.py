@@ -3,9 +3,13 @@ import datetime as dt
 import hashlib
 import json
 import os
-from typing import Any, Dict, Iterable, Optional, Tuple
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cache import load_cache_with_meta
 
