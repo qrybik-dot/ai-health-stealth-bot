@@ -46,6 +46,31 @@ jobs:
       - name: Cloudflare Worker helper tests
         run: node tests/worker_helpers_ci.mjs
 
+      - name: D1 archive read-only capability probe
+        if: github.head_ref == 'ops/d1-archive-probe-20260927'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "0c6d1b47eb7fa09887d0ecb17ccaf7e1"
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN=missing"
+            exit 1
+          fi
+          echo "CLOUDFLARE_API_TOKEN=present"
+          http_code=$(curl -sS -o /tmp/d1-list.json -w "%{http_code}"             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=10")
+          echo "d1_list_http=$http_code"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("/tmp/d1-list.json").read_text())
+          print(f"d1_api_success={bool(payload.get('success'))}")
+          print(f"d1_database_count_returned={len(payload.get('result') or [])}")
+          if not payload.get("success"):
+              errors = payload.get("errors") or []
+              print("d1_error_codes=" + ",".join(str(e.get("code", "")) for e in errors[:5]))
+              raise SystemExit(1)
+          PY
+
   sync:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
