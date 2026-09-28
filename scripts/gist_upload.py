@@ -13,7 +13,18 @@ def env(name: str) -> str:
     return v
 
 
-STATE_KEYS = ("_push_state", "_weekly_state", "_daily_votes", "_today_votes", "_today_state")
+STATE_KEYS = (
+    "_push_state",
+    "_weekly_state",
+    "_daily_votes",
+    "_today_votes",
+    "_today_state",
+    "_auth_state",
+    "_user_prefs",
+    "_bootstrap_state",
+    "_telegram_poll_state",
+    "_dialog_state",
+)
 MEMORY_DAYS = max(30, min(3650, int(os.getenv("CACHE_RETENTION_DAYS", "365") or "365")))
 WEEKLY_RETENTION_WEEKS = 26
 PUSH_STATE_RETENTION_DAYS = max(1, min(MEMORY_DAYS, int(os.getenv("PUSH_STATE_RETENTION_DAYS", "14") or "14")))

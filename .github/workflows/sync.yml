@@ -1,6 +1,11 @@
 name: Sync Garmin Cache
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync.yml"
   schedule:
     - cron: "0 */3 * * *"   # каждые 3 часа по UTC
   workflow_dispatch:
@@ -67,8 +72,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python main.py cache-self-check --require-today --require-usable-today
 
+      - name: Compact runtime cache to 90 days
+        run: python main.py cache-prune 90
+
       - name: Upload cache.json to Gist
         env:
+          CACHE_RETENTION_DAYS: "90"
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

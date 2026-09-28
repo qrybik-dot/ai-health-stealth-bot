@@ -282,11 +282,14 @@ def sync_archive(
     groups = group_by_month(selected)
     months_written = 0
     days_verified = 0
+    new_days_added = 0
 
     for filename, incoming_days in groups.items():
         remote = client.read_json(gist_id, filename)
         merged = dict(remote)
         for day_key, snapshot in incoming_days.items():
+            if day_key not in remote:
+                new_days_added += 1
             merged[day_key] = deep_merge_preserve(merged.get(day_key, {}), snapshot)
 
         if canonical_hash(remote) != canonical_hash(merged):
@@ -301,6 +304,19 @@ def sync_archive(
 
     manifest = client.read_json(gist_id, "manifest.json")
     source = dataset_summary(days)
+    previous_total = int(
+        manifest.get("archived_day_count")
+        or manifest.get("last_source_day_count")
+        or 0
+    )
+    archived_total = previous_total + new_days_added
+    if not current_only:
+        archived_total = max(archived_total, int(source["days"]))
+    archived_first_day = str(manifest.get("archived_first_day") or source["first_day"])
+    archived_last_day = max(
+        str(manifest.get("archived_last_day") or ""),
+        str(source["last_day"] or ""),
+    )
     manifest_update = {
         **manifest,
         "format": "coach-potato-garmin-archive-v1",
@@ -309,6 +325,9 @@ def sync_archive(
         "last_source_day_count": source["days"],
         "last_source_dataset_sha256": source["dataset_sha256"],
         "last_sync_mode": "current" if current_only else "all",
+        "archived_day_count": archived_total,
+        "archived_first_day": archived_first_day,
+        "archived_last_day": archived_last_day,
     }
     client.write_json(gist_id, "manifest.json", manifest_update)
 
@@ -318,6 +337,8 @@ def sync_archive(
         "months_checked": len(groups),
         "months_written": months_written,
         "days_verified": days_verified,
+        "new_days_added": new_days_added,
+        "archive_total_days": archived_total,
     }
 
 
@@ -395,7 +416,8 @@ def main() -> None:
         "archive_sync_result "
         f"source_days={result['source_days']} selected_days={result['selected_days']} "
         f"months_checked={result['months_checked']} months_written={result['months_written']} "
-        f"days_verified={result['days_verified']}"
+        f"days_verified={result['days_verified']} "
+        f"new_days_added={result['new_days_added']} archive_total_days={result['archive_total_days']}"
     )
     if args.sync_all:
         verified, mismatches = verify_archive(client, days)

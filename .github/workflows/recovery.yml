@@ -229,9 +229,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python main.py cache-self-check --require-today --require-usable-today --min-history-days ${{ inputs.backfill_days }}
 
+      - name: Compact recovery runtime cache to 90 days
+        if: inputs.operation == 'sync' || inputs.operation == 'backfill'
+        run: python main.py cache-prune 90
+
       - name: Upload cache.json to Gist
         if: inputs.operation == 'sync' || inputs.operation == 'backfill' || inputs.operation == 'garmin-auth-refresh'
         env:
+          CACHE_RETENTION_DAYS: "90"
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
