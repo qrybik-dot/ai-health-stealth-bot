@@ -13,10 +13,10 @@ Coach Potato отправляет короткие data-driven вердикты 
 ## Источники данных
 
 - Garmin Connect: сон, stress, body battery, RHR, шаги, HRV, respiration, SpO2, activity и другие доступные метрики.
-- **Текущий production source of truth:** private GitHub Gist с `cache.json`. Он содержит накопленную Garmin-историю и runtime-state.
-- Firestore-код и безопасный мигратор уже есть, но Firestore не считается production-хранилищем, пока не настроены credentials и не прошла полная проверка архива.
-- Garmin day snapshots нельзя удалять/обрезать из Gist до подтверждённой durable-копии: `firestore_archive_verification=ok` или эквивалентной проверки нового archive store.
-- `CACHE_RETENTION_DAYS` сейчас ограничивает runtime cache (по умолчанию 365 дней); это **не политика хранения будущего канонического Garmin-архива**.
+- **Production storage:** runtime private Gist хранит последние ~90 дней и runtime-state; отдельный private append-only archive Gist хранит полную Garmin-историю по месяцам.
+- Полный архив проверен 207/207 дней перед первой компактацией runtime и дальше пополняется после каждого sync/backfill.
+- Runtime cache можно компактировать только после успешного archive verification; архивные Garmin day snapshots не удаляются.
+- Firestore-код оставлен как экспериментальная заготовка и не участвует в production runtime.
 - Backfill ограничен `BACKFILL_MAX_DAYS` (по умолчанию 90) для защиты от Garmin rate-limit.
 
 Подробно: `docs/ARCHITECTURE.md`.
