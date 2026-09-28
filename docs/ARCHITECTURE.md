@@ -27,9 +27,11 @@ Telegram          Telegram
 
 ## Storage truth
 
-Сегодня private Gist — единственная подтверждённая полная production-копия накопленной Garmin-истории.
+Production использует два слоя private Gist:
+- runtime Gist — последние ~90 дней + runtime-state;
+- append-only Garmin archive Gist — полная история по месячным JSON-файлам.
 
-Firestore implementation и verified migration tooling уже присутствуют, но Firestore не считается active source of truth до настройки credentials и успешного `firestore_archive_verification=ok`.
+Архив был проверен 207/207 дней перед первой компактацией runtime и затем пополняется каждым sync/backfill. Firestore-код остаётся экспериментальной заготовкой и не участвует в production runtime.
 
 ### Hard rule
 
