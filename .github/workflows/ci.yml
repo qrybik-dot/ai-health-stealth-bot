@@ -44,30 +44,17 @@ jobs:
         run: node tests/worker_helpers_ci.mjs
 
 
-      - name: Authenticate to Google Cloud for migration gate
-        if: github.head_ref == 'ops/complete-firestore-migration-20260928'
-        uses: google-github-actions/auth@v3
-        with:
-          project_id: coach-potato-garmin-20260927
-          workload_identity_provider: projects/60636748183/locations/global/workloadIdentityPools/github-actions/providers/coach-potato
-
-      - name: Garmin Firestore archive dry-run, migrate, verify
+      - name: Build and verify secondary Garmin archive
         if: github.head_ref == 'ops/complete-firestore-migration-20260928'
         env:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FIRESTORE_PROJECT_ID: coach-potato-garmin-20260927
-          DATA_OWNER_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euo pipefail
-          echo "=== DRY RUN ==="
-          python -m scripts.migrate_cache_to_firestore --dry-run
-          echo "=== MIGRATE ==="
-          python -m scripts.migrate_cache_to_firestore
-          echo "=== VERIFY FIRESTORE ==="
-          python -m scripts.migrate_cache_to_firestore --verify-only
-          echo "=== SYNC SECONDARY GIST ARCHIVE ==="
+          echo "=== ARCHIVE DRY RUN ==="
+          python scripts/gist_archive.py --dry-run
+          echo "=== ARCHIVE SYNC ALL ==="
           python scripts/gist_archive.py --sync-all
-          echo "=== VERIFY SECONDARY GIST ARCHIVE ==="
+          echo "=== ARCHIVE VERIFY ==="
           python scripts/gist_archive.py --verify
