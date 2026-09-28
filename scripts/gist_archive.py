@@ -296,7 +296,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    cache_payload, meta = load_cache_with_meta()
+    cache_payload, meta = load_cache_with_meta(hydrate_history=False)
     days = collect_days(cache_payload if isinstance(cache_payload, dict) else {})
     if not days:
         raise SystemExit(
