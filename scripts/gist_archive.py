@@ -130,6 +130,10 @@ class GistArchiveClient:
                 raise RuntimeError("Unexpected Gist list response")
             for row in rows:
                 if isinstance(row, dict) and row.get("description") == ARCHIVE_DESCRIPTION:
+                    if bool(row.get("public", False)):
+                        raise RuntimeError(
+                            "Garmin archive Gist must be private; refusing to use a public archive"
+                        )
                     matches.append(str(row.get("id", "")))
             if len(rows) < 100:
                 break
@@ -143,6 +147,11 @@ class GistArchiveClient:
     def ensure_archive(self) -> str:
         existing = self.find_archive()
         if existing:
+            meta = self._metadata(existing)
+            if bool(meta.get("public", False)):
+                raise RuntimeError(
+                    "Garmin archive Gist must be private; refusing to use a public archive"
+                )
             return existing
         response = self._request(
             "POST",
@@ -321,6 +330,11 @@ def main() -> None:
     client = GistArchiveClient(token)
 
     if args.verify:
+        gist_id = client.find_archive()
+        if not gist_id:
+            raise RuntimeError("Garmin archive Gist not found")
+        archive_meta = client._metadata(gist_id)
+        print(f"archive_private={not bool(archive_meta.get('public', False))}")
         verified, mismatches = verify_archive(client, days)
         print(f"archive_verify verified={verified}/{len(days)} mismatches={len(mismatches)}")
         if mismatches:
