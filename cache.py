@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import requests
 from datetime import date, datetime, timedelta, timezone
@@ -7,6 +8,8 @@ from zoneinfo import ZoneInfo
 from firestore_store import STORE as FIRESTORE
 
 CACHE_FILE = "cache.json"
+log = logging.getLogger(__name__)
+
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -182,7 +185,7 @@ def _hydrate_day_history(primary_cache: Dict[str, Any], chat_id: str = DEFAULT_C
     }
 
 
-def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def load_cache_with_meta(*, hydrate_history: bool = True) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     If CACHE_GIST_ID env var is set, fetches the cache from the Gist.
     Otherwise, reads the local cache.json file.
@@ -209,8 +212,20 @@ def load_cache_with_meta() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         }
 
     def _finalize(cache_payload: Dict[str, Any], meta_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        hydrated, hydration_meta = _hydrate_day_history(cache_payload, chat_id=DEFAULT_CHAT_SCOPE, history_days=HISTORY_HYDRATION_DAYS)
         out_meta = dict(meta_payload)
+        if not hydrate_history:
+            out_meta["remote_history_days"] = 0
+            out_meta["remote_error"] = ""
+            out_meta["history_days_target"] = 0
+            out_meta["hydrated_days_persisted"] = 0
+            out_meta["hydration_persisted"] = False
+            out_meta["hydrated_history_days"] = len(_history_day_keys(cache_payload))
+            return cache_payload, out_meta
+        hydrated, hydration_meta = _hydrate_day_history(
+            cache_payload,
+            chat_id=DEFAULT_CHAT_SCOPE,
+            history_days=HISTORY_HYDRATION_DAYS,
+        )
         out_meta.update(hydration_meta)
         out_meta.update(_persist_hydrated_days_to_local(hydrated))
         out_meta["hydrated_history_days"] = len(_history_day_keys(hydrated))
@@ -969,9 +984,12 @@ def get_day_snapshot(day_key: str, chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[st
     if isinstance(snapshot, dict) and snapshot:
         return snapshot
     if FIRESTORE.enabled:
-        remote = FIRESTORE.get_day(chat_id, day_key)
-        if isinstance(remote, dict) and remote:
-            return remote
+        try:
+            remote = FIRESTORE.get_day(chat_id, day_key)
+            if isinstance(remote, dict) and remote:
+                return remote
+        except Exception as exc:
+            log.warning("firestore_get_day_failed fallback=local day=%s error=%s", day_key, exc)
     return snapshot if isinstance(snapshot, dict) else {}
 
 
@@ -984,7 +1002,11 @@ def upsert_day_snapshot(day_key: str, snapshot_data: Dict[str, Any], chat_id: st
     cache[day_key] = merged
     _write_cache(cache)
     if FIRESTORE.enabled:
-        FIRESTORE.upsert_day(chat_id, day_key, merged)
+        try:
+            FIRESTORE.upsert_day(chat_id, day_key, merged)
+        except Exception as exc:
+            # Firestore is an archive, never a gate for the runtime/Gist fallback.
+            log.warning("firestore_upsert_day_failed fallback=local day=%s error=%s", day_key, exc)
     prune_cache(retention_days=RETENTION_DAYS)
     return merged
 
@@ -1292,19 +1314,22 @@ def mark_sent_record(
 ) -> None:
     if FIRESTORE.enabled:
         key = _sent_key(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type)
-        FIRESTORE.set_sent(
-            chat_id,
-            key,
-            {
-                "sent_at": sent_ts,
-                "slot": slot,
-                "msg_type": message_type,
-                "trigger_source": trigger_source,
-                "run_id": run_id,
-                "manual_preview": bool(manual_preview),
-                "date_msk": send_date,
-            },
-        )
+        try:
+            FIRESTORE.set_sent(
+                chat_id,
+                key,
+                {
+                    "sent_at": sent_ts,
+                    "slot": slot,
+                    "msg_type": message_type,
+                    "trigger_source": trigger_source,
+                    "run_id": run_id,
+                    "manual_preview": bool(manual_preview),
+                    "date_msk": send_date,
+                },
+            )
+        except Exception as exc:
+            log.warning("firestore_set_sent_failed fallback=local key=%s error=%s", key, exc)
     cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
@@ -1327,8 +1352,11 @@ def was_slot_sent(chat_id: str, send_date: str, slot: str) -> bool:
 def was_sent_record(chat_id: str, send_date: str, slot: str, message_type: str) -> bool:
     if FIRESTORE.enabled:
         key = _sent_key(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type)
-        if FIRESTORE.get_sent(chat_id, key):
-            return True
+        try:
+            if FIRESTORE.get_sent(chat_id, key):
+                return True
+        except Exception as exc:
+            log.warning("firestore_get_sent_failed fallback=local key=%s error=%s", key, exc)
     cache = load_cache()
     state = cache.get(PUSH_STATE_KEY, {})
     if not isinstance(state, dict):
@@ -1384,11 +1412,15 @@ def upsert_user_prefs(chat_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
 
 def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
     if FIRESTORE.enabled:
-        FIRESTORE.set_sent(
-            chat_id,
-            f"weekly|{week_id}|{chat_id}",
-            {"sent_at": sent_ts, "slot": "weekly", "msg_type": "weekly_map", "date_msk": ""},
-        )
+        weekly_key = f"weekly|{week_id}|{chat_id}"
+        try:
+            FIRESTORE.set_sent(
+                chat_id,
+                weekly_key,
+                {"sent_at": sent_ts, "slot": "weekly", "msg_type": "weekly_map", "date_msk": ""},
+            )
+        except Exception as exc:
+            log.warning("firestore_set_sent_failed fallback=local key=%s error=%s", weekly_key, exc)
     cache, _ = _load_local_cache()
     state = cache.get(PUSH_STATE_KEY)
     if not isinstance(state, dict):
@@ -1401,8 +1433,12 @@ def mark_weekly_report_sent(chat_id: str, week_id: str, sent_ts: str) -> None:
 
 def was_weekly_report_sent(chat_id: str, week_id: str) -> bool:
     if FIRESTORE.enabled:
-        if FIRESTORE.get_sent(chat_id, f"weekly|{week_id}|{chat_id}"):
-            return True
+        weekly_key = f"weekly|{week_id}|{chat_id}"
+        try:
+            if FIRESTORE.get_sent(chat_id, weekly_key):
+                return True
+        except Exception as exc:
+            log.warning("firestore_get_sent_failed fallback=local key=%s error=%s", weekly_key, exc)
     cache = load_cache()
     state = cache.get(PUSH_STATE_KEY, {})
     if not isinstance(state, dict):
@@ -1509,7 +1545,12 @@ def get_latest_sync_trace() -> Optional[Dict[str, Any]]:
 
 def get_garmin_auth_state(chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
     if FIRESTORE.enabled:
-        return FIRESTORE.get_auth(chat_id, provider="garmin")
+        try:
+            remote = FIRESTORE.get_auth(chat_id, provider="garmin")
+            if isinstance(remote, dict) and remote:
+                return remote
+        except Exception as exc:
+            log.warning("firestore_get_auth_failed fallback=local error=%s", exc)
     cache = load_cache()
     state = cache.get(AUTH_STATE_KEY, {})
     if not isinstance(state, dict):
@@ -1520,7 +1561,10 @@ def get_garmin_auth_state(chat_id: str = DEFAULT_CHAT_SCOPE) -> Dict[str, Any]:
 
 def upsert_garmin_auth_state(payload: Dict[str, Any], chat_id: str = DEFAULT_CHAT_SCOPE) -> None:
     if FIRESTORE.enabled:
-        FIRESTORE.set_auth(chat_id, payload, provider="garmin")
+        try:
+            FIRESTORE.set_auth(chat_id, payload, provider="garmin")
+        except Exception as exc:
+            log.warning("firestore_set_auth_failed fallback=local error=%s", exc)
     cache, _ = _load_local_cache()
     state = cache.get(AUTH_STATE_KEY)
     if not isinstance(state, dict):
