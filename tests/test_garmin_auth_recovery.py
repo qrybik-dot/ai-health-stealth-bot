@@ -149,6 +149,44 @@ class GarminAuthRecoveryTests(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def test_gist_upload_blocks_durable_auth_or_preferences_loss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                local_payload = {
+                    "2026-06-12": {"sleep": {}},
+                    "_auth_state": {},
+                    "_user_prefs": {},
+                }
+                remote_payload = {
+                    "2026-06-12": {"sleep": {}},
+                    "_auth_state": {"chat": {"tokenstore": "present"}},
+                    "_user_prefs": {"chat": {"units": "metric"}},
+                }
+                with open("cache.json", "w", encoding="utf-8") as f:
+                    json.dump(local_payload, f)
+                remote = {"files": {"cache.json": {"content": json.dumps(remote_payload)}}}
+                get_resp = type("Resp", (), {"status_code": 200, "json": lambda self: remote})()
+                with patch.dict(
+                    os.environ,
+                    {
+                        "CACHE_GIST_ID": "gist-id",
+                        "GIST_TOKEN": "token",
+                        "CACHE_RETENTION_DAYS": "90",
+                    },
+                    clear=False,
+                ), patch.object(gist_upload.requests, "get", return_value=get_resp), patch.object(
+                    gist_upload.requests, "patch"
+                ) as patch_request:
+                    with self.assertRaises(RuntimeError) as caught:
+                        gist_upload.main()
+                    self.assertIn("_auth_state", str(caught.exception))
+                    self.assertIn("_user_prefs", str(caught.exception))
+                    patch_request.assert_not_called()
+            finally:
+                os.chdir(cwd)
+
     def test_gist_upload_allows_pruned_old_push_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             cwd = os.getcwd()
