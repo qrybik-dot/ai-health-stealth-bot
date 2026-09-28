@@ -70,6 +70,29 @@ class GistArchiveTests(unittest.TestCase):
         self.assertTrue(archived["2026-09-01"]["archive_only"])
         self.assertIn("2026-09-03", archived)
 
+    def test_archive_manifest_total_never_shrinks_with_compact_runtime_source(self):
+        client = _FakeClient()
+        full_source = {
+            "2026-08-31": {"source": "garmin", "x": 1},
+            "2026-09-01": {"source": "garmin", "x": 2},
+        }
+        first = gist_archive.sync_archive(client, full_source, current_only=False)
+        self.assertEqual(first["archive_total_days"], 2)
+        self.assertEqual(client.files["manifest.json"]["archived_day_count"], 2)
+        self.assertEqual(client.files["manifest.json"]["archived_first_day"], "2026-08-31")
+
+        compact_source = {"2026-09-01": {"source": "garmin", "x": 3}}
+        second = gist_archive.sync_archive(client, compact_source, current_only=True)
+        self.assertEqual(second["archive_total_days"], 2)
+        self.assertEqual(client.files["manifest.json"]["archived_day_count"], 2)
+        self.assertEqual(client.files["manifest.json"]["archived_first_day"], "2026-08-31")
+
+        next_day = {"2026-09-02": {"source": "garmin", "x": 4}}
+        third = gist_archive.sync_archive(client, next_day, current_only=True)
+        self.assertEqual(third["archive_total_days"], 3)
+        self.assertEqual(client.files["manifest.json"]["archived_day_count"], 3)
+        self.assertEqual(client.files["manifest.json"]["archived_last_day"], "2026-09-02")
+
     def test_sync_current_only_updates_latest_day(self):
         client = _FakeClient()
         source = {
