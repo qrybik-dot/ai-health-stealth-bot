@@ -3780,6 +3780,20 @@ def main() -> None:
             require_usable_today=require_usable_today,
             min_history_days=min_history_days,
         )
+    elif mode == "cache-prune":
+        days = 90
+        if len(sys.argv) >= 3:
+            try:
+                days = max(30, min(3650, int(sys.argv[2])))
+            except ValueError:
+                print("Error: cache-prune requires integer days")
+                return
+        summary = prune_cache(retention_days=days)
+        print(
+            "cache-prune done "
+            f"retention_days={days} daily_removed={summary['daily_removed']} "
+            f"daily_kept={summary['daily_kept']}"
+        )
     elif mode == "debug-sync":
         print(build_debug_sync_message())
     elif mode == "serve":
@@ -3844,7 +3858,7 @@ def main() -> None:
         print("today-status-self-check ok")
     else:
         print(
-            f"Error: Unknown mode '{mode}'. Use sync, backfill, garmin-audit, garmin-auth-refresh, push, poll-once, poll-self-check, push-self-check, cache-self-check, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
+            f"Error: Unknown mode '{mode}'. Use sync, backfill, garmin-audit, garmin-auth-refresh, push, poll-once, poll-self-check, push-self-check, cache-self-check, cache-prune, debug-sync, serve, schedule-debug, schedule-self-check, color-self-check, "
             "color-card-self-check, today-card-self-check, or today-status-self-check."
         )
         sys.exit(1)
