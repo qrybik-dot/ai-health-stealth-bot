@@ -82,7 +82,7 @@ jobs:
         run: |
           echo "FIRESTORE_PROJECT_ID=coach-potato-garmin-20260927"
           echo "GCP_WORKLOAD_IDENTITY_PROVIDER=configured"
-          echo "GCP_SERVICE_ACCOUNT=coach-potato-garmin@coach-potato-garmin-20260927.iam.gserviceaccount.com"
+          echo "GCP_AUTH_MODE=direct-wif"
 
       - name: Authenticate to Google Cloud
         if: startsWith(inputs.operation, 'firestore-')
@@ -90,7 +90,6 @@ jobs:
         with:
           project_id: coach-potato-garmin-20260927
           workload_identity_provider: projects/60636748183/locations/global/workloadIdentityPools/github-actions/providers/coach-potato
-          service_account: coach-potato-garmin@coach-potato-garmin-20260927.iam.gserviceaccount.com
 
       - name: Firestore archive migration / verification
         if: startsWith(inputs.operation, 'firestore-')
