@@ -65,5 +65,9 @@ jobs:
           python -m scripts.migrate_cache_to_firestore --dry-run
           echo "=== MIGRATE ==="
           python -m scripts.migrate_cache_to_firestore
-          echo "=== VERIFY ==="
+          echo "=== VERIFY FIRESTORE ==="
           python -m scripts.migrate_cache_to_firestore --verify-only
+          echo "=== SYNC SECONDARY GIST ARCHIVE ==="
+          python scripts/gist_archive.py --sync-all
+          echo "=== VERIFY SECONDARY GIST ARCHIVE ==="
+          python scripts/gist_archive.py --verify
