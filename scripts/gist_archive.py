@@ -309,10 +309,9 @@ def sync_archive(
         or manifest.get("last_source_day_count")
         or 0
     )
-    baseline_total = previous_total
+    archived_total = previous_total + new_days_added
     if not current_only:
-        baseline_total = max(baseline_total, int(source["days"]))
-    archived_total = baseline_total + new_days_added
+        archived_total = max(archived_total, int(source["days"]))
     archived_first_day = str(manifest.get("archived_first_day") or source["first_day"])
     archived_last_day = max(
         str(manifest.get("archived_last_day") or ""),
