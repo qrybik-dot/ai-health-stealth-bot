@@ -4,14 +4,14 @@
 
 ## Data Safety Rule
 
-На 2026-09-27 private Gist остаётся единственной подтверждённой полной production-копией накопленной Garmin-истории. Не уменьшать retention, не удалять старые YYYY-MM-DD snapshots и не разделять Gist до успешной миграции и верификации durable archive.
+Production recovery опирается на два private Gist-слоя: runtime cache (~90 дней) и полный append-only Garmin archive.
 
-Для Firestore уже доступны безопасные операции Recovery Controls:
-- `firestore-migrate-dry-run` — только читает source cache и считает dataset summary/hash;
-- `firestore-migrate` — идемпотентно upsert-ит дни и затем читает каждый день обратно;
-- `firestore-verify` — только сверяет source days с Firestore.
+Доступные archive-операции Recovery Controls:
+- `archive-gist-dry-run` — только считает source summary/hash;
+- `archive-gist-sync` — merge/preserve переносит доступную историю в месячные archive-файлы;
+- `archive-gist-verify` — проверяет текущий source against archive.
 
-Успех миграции подтверждается строкой `firestore_archive_verification=ok`. До неё Gist не чистить.
+Перед любой дальнейшей компактацией/чисткой archive verification должен завершаться успешно. Firestore не является production recovery dependency.
 
 
 ## Required Secrets
