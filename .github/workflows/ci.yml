@@ -63,8 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== DRY RUN ==="
-          python scripts/migrate_cache_to_firestore.py --dry-run
+          python -m scripts.migrate_cache_to_firestore --dry-run
           echo "=== MIGRATE ==="
-          python scripts/migrate_cache_to_firestore.py
+          python -m scripts.migrate_cache_to_firestore
           echo "=== VERIFY ==="
-          python scripts/migrate_cache_to_firestore.py --verify-only
+          python -m scripts.migrate_cache_to_firestore --verify-only
