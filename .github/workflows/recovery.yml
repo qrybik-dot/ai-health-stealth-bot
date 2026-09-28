@@ -238,3 +238,11 @@ jobs:
           REQUIRE_RECOVERY_UPLOAD_OK: "1"
           RECOVERY_UPLOAD_OK_FILE: .recovery_ok_to_upload
         run: python scripts/gist_upload.py
+
+      - name: Mirror recovered Garmin history to archive Gist
+        if: inputs.operation == 'sync' || inputs.operation == 'backfill'
+        env:
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/gist_archive.py --sync-all
