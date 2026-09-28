@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -15,6 +16,13 @@ from cache import load_cache_with_meta
 
 
 GITHUB_GISTS_API = "https://api.github.com/gists"
+GIST_REQUEST_ATTEMPTS = max(1, min(10, int(os.getenv("GIST_ARCHIVE_ATTEMPTS", "6") or "6")))
+GIST_REQUEST_BACKOFF_BASE_SECONDS = max(1, min(30, int(os.getenv("GIST_ARCHIVE_BACKOFF_BASE_SECONDS", "2") or "2")))
+GIST_REQUEST_BACKOFF_MAX_SECONDS = max(
+    GIST_REQUEST_BACKOFF_BASE_SECONDS,
+    min(120, int(os.getenv("GIST_ARCHIVE_BACKOFF_MAX_SECONDS", "30") or "30")),
+)
+RETRYABLE_GIST_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 ARCHIVE_DESCRIPTION = os.getenv(
     "GARMIN_ARCHIVE_GIST_DESCRIPTION",
     "coach-potato-garmin-archive-v1",
@@ -110,12 +118,51 @@ class GistArchiveClient:
         }
 
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        response = requests.request(method, url, headers=self.headers, timeout=120, **kwargs)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"Gist API {method} failed status={response.status_code} body={response.text[:300]}"
+        last_error: Optional[Exception] = None
+        for attempt in range(1, GIST_REQUEST_ATTEMPTS + 1):
+            try:
+                response = requests.request(method, url, headers=self.headers, timeout=120, **kwargs)
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= GIST_REQUEST_ATTEMPTS:
+                    raise RuntimeError(
+                        f"Gist API {method} failed after {attempt} attempts: {type(exc).__name__}: {exc}"
+                    ) from exc
+                delay = min(
+                    GIST_REQUEST_BACKOFF_MAX_SECONDS,
+                    GIST_REQUEST_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
+                )
+                print(
+                    f"archive_gist transient_error method={method} attempt={attempt}/{GIST_REQUEST_ATTEMPTS} "
+                    f"type={type(exc).__name__} retry_in={delay}s"
+                )
+                time.sleep(delay)
+                continue
+
+            if response.status_code < 400:
+                return response
+
+            if response.status_code not in RETRYABLE_GIST_STATUSES or attempt >= GIST_REQUEST_ATTEMPTS:
+                raise RuntimeError(
+                    f"Gist API {method} failed status={response.status_code} body={response.text[:300]}"
+                )
+
+            retry_after = str(response.headers.get("Retry-After", "")).strip()
+            delay = (
+                max(1, min(GIST_REQUEST_BACKOFF_MAX_SECONDS, int(retry_after)))
+                if retry_after.isdigit()
+                else min(
+                    GIST_REQUEST_BACKOFF_MAX_SECONDS,
+                    GIST_REQUEST_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
+                )
             )
-        return response
+            print(
+                f"archive_gist retryable_status method={method} status={response.status_code} "
+                f"attempt={attempt}/{GIST_REQUEST_ATTEMPTS} retry_in={delay}s"
+            )
+            time.sleep(delay)
+
+        raise RuntimeError(f"Gist API {method} failed: {last_error}")
 
     def find_archive(self) -> Optional[str]:
         matches = []
@@ -130,6 +177,10 @@ class GistArchiveClient:
                 raise RuntimeError("Unexpected Gist list response")
             for row in rows:
                 if isinstance(row, dict) and row.get("description") == ARCHIVE_DESCRIPTION:
+                    if bool(row.get("public", False)):
+                        raise RuntimeError(
+                            "Garmin archive Gist must be private; refusing to use a public archive"
+                        )
                     matches.append(str(row.get("id", "")))
             if len(rows) < 100:
                 break
@@ -143,6 +194,11 @@ class GistArchiveClient:
     def ensure_archive(self) -> str:
         existing = self.find_archive()
         if existing:
+            meta = self._metadata(existing)
+            if bool(meta.get("public", False)):
+                raise RuntimeError(
+                    "Garmin archive Gist must be private; refusing to use a public archive"
+                )
             return existing
         response = self._request(
             "POST",
@@ -321,6 +377,11 @@ def main() -> None:
     client = GistArchiveClient(token)
 
     if args.verify:
+        gist_id = client.find_archive()
+        if not gist_id:
+            raise RuntimeError("Garmin archive Gist not found")
+        archive_meta = client._metadata(gist_id)
+        print(f"archive_private={not bool(archive_meta.get('public', False))}")
         verified, mismatches = verify_archive(client, days)
         print(f"archive_verify verified={verified}/{len(days)} mismatches={len(mismatches)}")
         if mismatches:
