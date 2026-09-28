@@ -1,6 +1,11 @@
 name: Sync Garmin Cache
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync.yml"
   schedule:
     - cron: "0 */3 * * *"   # каждые 3 часа по UTC
   workflow_dispatch:
