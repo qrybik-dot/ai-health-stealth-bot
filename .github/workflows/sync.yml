@@ -54,7 +54,6 @@ jobs:
         with:
           project_id: coach-potato-garmin-20260927
           workload_identity_provider: projects/60636748183/locations/global/workloadIdentityPools/github-actions/providers/coach-potato
-          service_account: coach-potato-garmin@coach-potato-garmin-20260927.iam.gserviceaccount.com
 
       - name: Run sync
         env:
