@@ -124,7 +124,7 @@ def main() -> None:
         )
         raise SystemExit(f"Firestore disabled: {detail}")
 
-    cache_payload, meta = load_cache_with_meta()
+    cache_payload, meta = load_cache_with_meta(hydrate_history=False)
     if not isinstance(cache_payload, dict) or not cache_payload:
         raise SystemExit(
             f"Source cache unavailable: source={meta.get('source', 'unknown')} "
