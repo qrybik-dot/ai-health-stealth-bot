@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock, patch
 
 from scripts import gist_archive
 
@@ -89,6 +90,35 @@ class GistArchiveTests(unittest.TestCase):
         verified, mismatches = gist_archive.verify_archive(client, source)
         self.assertEqual(verified, 0)
         self.assertEqual(mismatches, ["2026-09-01"])
+
+
+    def test_find_archive_refuses_public_gist(self):
+        client = gist_archive.GistArchiveClient("token")
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = [
+            {
+                "id": "public-archive",
+                "description": gist_archive.ARCHIVE_DESCRIPTION,
+                "public": True,
+            }
+        ]
+        with patch.object(client, "_request", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "must be private"):
+                client.find_archive()
+
+    def test_request_retries_transient_gist_status(self):
+        client = gist_archive.GistArchiveClient("token")
+        first = Mock(status_code=503, headers={}, text="temporary")
+        second = Mock(status_code=200, headers={}, text="ok")
+        with patch("scripts.gist_archive.requests.request", side_effect=[first, second]) as request_mock, patch(
+            "scripts.gist_archive.time.sleep"
+        ) as sleep_mock:
+            result = client._request("GET", "https://api.github.com/gists")
+
+        self.assertIs(result, second)
+        self.assertEqual(request_mock.call_count, 2)
+        sleep_mock.assert_called_once()
 
     def test_hash_is_stable_for_key_order(self):
         left = {"b": 2, "a": {"y": 2, "x": 1}}
