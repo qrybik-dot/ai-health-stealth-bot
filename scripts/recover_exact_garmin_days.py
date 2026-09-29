@@ -167,20 +167,37 @@ def main() -> None:
     manifest["last_recovery_days"] = targets
     client.write_json(gist_id, "manifest.json", manifest)
 
-    manifest = client.read_json(gist_id, "manifest.json")
-    first_day = str(manifest.get("archived_first_day") or "2026-03-04")
-    last_day = str(manifest.get("archived_last_day") or max(targets))
+    archive_meta = client._metadata(gist_id)
+    archive_files = sorted(
+        name
+        for name in (archive_meta.get("files") or {})
+        if name.startswith("garmin_") and name.endswith(".json")
+    )
     archived_days = set()
-    for filename in iter_month_files(first_day, last_day):
+    for filename in archive_files:
         month_payload = client.read_json(gist_id, filename)
         archived_days.update(k for k in month_payload if is_day_key(k))
 
+    if not archived_days:
+        raise RuntimeError("Archive contains no Garmin day files")
+
+    first_day = min(archived_days)
+    last_day = max(archived_days)
     expected = calendar_days(first_day, last_day)
     missing = [day for day in expected if day not in archived_days]
+
+    manifest = client.read_json(gist_id, "manifest.json")
+    manifest["archived_day_count"] = len(archived_days)
+    manifest["archived_first_day"] = first_day
+    manifest["archived_last_day"] = last_day
+    manifest["inventory_verified_at_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    client.write_json(gist_id, "manifest.json", manifest)
+
     print(
         f"recover_result requested={len(targets)} added={added} "
         f"archive_days={len(archived_days)} expected_calendar_days={len(expected)} "
-        f"missing={len(missing)} private={not bool(archive_meta.get('public', False))}"
+        f"first={first_day} last={last_day} missing={len(missing)} "
+        f"private={not bool(archive_meta.get('public', False))}"
     )
     if missing:
         print("recover_missing_days=" + ",".join(missing))
