@@ -137,6 +137,7 @@ def main() -> None:
     for day, payload in recovered.items():
         by_file.setdefault(month_file(day), {})[day] = payload
 
+    added_days = set()
     for filename, incoming in by_file.items():
         remote = client.read_json(gist_id, filename)
         merged = dict(remote)
@@ -146,13 +147,33 @@ def main() -> None:
                 continue
             merged[day] = payload
             added += 1
+            added_days.add(day)
         if merged != remote:
             client.write_json(gist_id, filename, merged)
 
         verified = client.read_json(gist_id, filename)
         for day, payload in incoming.items():
-            if not subset_equal(payload, verified.get(day)):
-                raise RuntimeError(f"{day}: archive verification failed after write")
+            archived = verified.get(day)
+            if not isinstance(archived, dict):
+                raise RuntimeError(f"{day}: archive day missing after recovery")
+            if day in added_days:
+                if not subset_equal(payload, archived):
+                    raise RuntimeError(f"{day}: archive verification failed after write")
+            else:
+                meaningful_archived = [
+                    key for key in GARMIN_CALLS
+                    if meaningful(archived.get(key))
+                ]
+                core_archived = [
+                    key for key in meaningful_archived
+                    if key in CORE_METRICS
+                ]
+                if archived.get("date") != day or len(meaningful_archived) < 3 or len(core_archived) < 1:
+                    raise RuntimeError(f"{day}: existing archive snapshot is not usable")
+                print(
+                    f"recover_verify_existing day={day} "
+                    f"meaningful={len(meaningful_archived)} core={len(core_archived)}"
+                )
 
     manifest = client.read_json(gist_id, "manifest.json")
     previous_total = int(
