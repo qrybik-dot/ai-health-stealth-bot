@@ -41,3 +41,17 @@ jobs:
 
       - name: Cloudflare Worker helper tests
         run: node tests/worker_helpers_ci.mjs
+
+
+      - name: Recover missing Garmin days 2026-06-10 and 2026-06-11
+        if: github.head_ref == 'ops/recover-garmin-june-10-11-20260929'
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_TOKENSTORE: ${{ secrets.GARMIN_TOKENSTORE }}
+          GARMIN_TOKENSTORE_PATH: ${{ secrets.GARMIN_TOKENSTORE_PATH }}
+          GARMIN_PASSWORD_FALLBACK: "0"
+          CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/recover_exact_garmin_days.py 2026-06-10 2026-06-11
