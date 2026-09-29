@@ -1,7 +1,11 @@
 import argparse
 import datetime as dt
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from main import (
     GARMIN_CALLS,
