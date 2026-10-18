@@ -242,7 +242,9 @@ class GistArchiveClient:
             raw_url = file_payload.get("raw_url")
             if not raw_url:
                 raise RuntimeError(f"{filename}: truncated but raw_url missing")
-            raw = self._request("GET", str(raw_url))
+            # Large Gist files use raw-content CDN URLs. Avoid stale
+            # cached responses when verifying a just-updated archive.
+            raw = self._request("GET", str(raw_url), params={"_": str(time.time_ns())})
             content = raw.text
         if not content:
             return {}
@@ -296,11 +298,20 @@ def sync_archive(
             client.write_json(gist_id, filename, merged)
             months_written += 1
 
-        verified_month = client.read_json(gist_id, filename)
-        for day_key, snapshot in incoming_days.items():
-            if not subset_equal(snapshot, verified_month.get(day_key)):
-                raise RuntimeError(f"Archive verification failed for {day_key}")
-            days_verified += 1
+        # Gist read-after-write may lag briefly. Retry reads, not writes.
+        for attempt in range(3):
+            verified_month = client.read_json(gist_id, filename)
+            mismatches = [
+                day_key for day_key, snapshot in incoming_days.items()
+                if not subset_equal(snapshot, verified_month.get(day_key))
+            ]
+            if not mismatches:
+                days_verified += len(incoming_days)
+                break
+            if attempt < 2:
+                time.sleep(attempt + 1)
+        else:
+            raise RuntimeError(f"Archive verification failed for {mismatches[0]} after 3 reads")
 
     manifest = client.read_json(gist_id, "manifest.json")
     source = dataset_summary(days)
