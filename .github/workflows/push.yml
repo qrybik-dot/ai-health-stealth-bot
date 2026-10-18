@@ -2,13 +2,18 @@ name: Push Daily Insights
 
 on:
   schedule:
-    # Fixed timezone policy: GMT+3 (Europe/Moscow).
-    # 09:30 / 14:07 / 20:07 MSK -> 06:30 / 11:07 / 17:07 UTC. Avoid :00 GitHub Actions load peaks.
-    - cron: "30 6 * * *"
-    - cron: "30 7 * * *"
-    - cron: "30 8 * * *"
-    - cron: "7 11 * * *"
-    - cron: "7 17 * * *"
+    # Moscow local time; later morning slots are existing retry opportunities.
+    # GitHub schedule delivery is best-effort and may still be delayed.
+    - cron: "30 9 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "30 10 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "30 11 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "7 14 * * *"
+      timezone: "Europe/Moscow"
+    - cron: "7 20 * * *"
+      timezone: "Europe/Moscow"
   workflow_dispatch:
 
 jobs:
