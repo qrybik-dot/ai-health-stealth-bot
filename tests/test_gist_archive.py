@@ -104,6 +104,43 @@ class GistArchiveTests(unittest.TestCase):
         self.assertNotIn("garmin_2026_08.json", client.files)
         self.assertEqual(client.files["garmin_2026_09.json"]["2026-09-01"]["x"], 2)
 
+    def test_sync_readback_retries_stale_gist_without_rewriting(self):
+        class LaggyClient(_FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.month_reads = 0
+
+            def read_json(self, gist_id, filename):
+                if filename == "garmin_2026_09.json":
+                    self.month_reads += 1
+                    if self.month_reads == 2:
+                        return {}  # first read immediately after write is stale
+                return super().read_json(gist_id, filename)
+
+        client = LaggyClient()
+        with patch("scripts.gist_archive.time.sleep") as sleep_mock:
+            result = gist_archive.sync_archive(client, {
+                "2026-09-02": {"stress": {"avgStressLevel": 23}}
+            }, current_only=True)
+
+        self.assertEqual(result["days_verified"], 1)
+        self.assertEqual(client.writes.count("garmin_2026_09.json"), 1)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_large_gist_raw_read_uses_fresh_request(self):
+        client = gist_archive.GistArchiveClient("token")
+        response = Mock(text='{"2026-09-02":{"x":1}}')
+        metadata = {"files": {"garmin_2026_09.json": {
+            "truncated": True, "raw_url": "https://gist.githubusercontent.com/owner/raw"
+        }}}
+        with patch.object(client, "_metadata", return_value=metadata), patch.object(
+            client, "_request", return_value=response
+        ) as request_mock:
+            result = client.read_json("archive", "garmin_2026_09.json")
+
+        self.assertEqual(result["2026-09-02"]["x"], 1)
+        self.assertIn("_", request_mock.call_args.kwargs["params"])
+
     def test_verify_detects_mismatch(self):
         client = _FakeClient()
         client.files["garmin_2026_09.json"] = {
