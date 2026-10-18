@@ -550,11 +550,11 @@ SLOT_WINDOWS: Dict[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
 }
 
 SCHEDULE_CRON_TO_SLOT: Dict[str, str] = {
-    "30 6 * * *": "morning",
-    "30 7 * * *": "morning",
-    "30 8 * * *": "morning",
-    "7 11 * * *": "midday",
-    "7 17 * * *": "evening",
+    "30 9 * * *": "morning",
+    "30 10 * * *": "morning",
+    "30 11 * * *": "morning",
+    "7 14 * * *": "midday",
+    "7 20 * * *": "evening",
 }
 
 def _minutes(hh: int, mm: int) -> int:
