@@ -15,6 +15,19 @@ on:
     - cron: "7 20 * * *"
       timezone: "Europe/Moscow"
   workflow_dispatch:
+    inputs:
+      schedule_cron:
+        description: "Original Moscow-local cron supplied by the trusted Worker timer"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize cron + Worker-dispatched runs so they do not race over the Gist.
+concurrency:
+  group: garmin-daily-push
+  cancel-in-progress: false
 
 jobs:
   push:
@@ -64,7 +77,7 @@ jobs:
           CACHE_GIST_ID: ${{ secrets.CACHE_GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUSH_SCHEDULE_CRON: ${{ github.event.schedule }}
+          PUSH_SCHEDULE_CRON: ${{ github.event.schedule || inputs.schedule_cron }}
         run: python main.py push scheduled
 
       - name: Persist push state to Gist
