@@ -1,6 +1,12 @@
 name: Cloudflare Worker Deploy
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare/**"
+      - ".github/workflows/push.yml"
+      - ".github/workflows/cloudflare_worker_deploy.yml"
   workflow_dispatch:
     inputs:
       operation:
@@ -39,7 +45,7 @@ jobs:
               echo "${name}=present"
             fi
           done
-          if [ "${{ inputs.operation }}" = "deploy" ] && [ "$missing" -ne 0 ]; then
+          if { [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.operation }}" = "deploy" ]; } && [ "$missing" -ne 0 ]; then
             echo "deploy blocked: Cloudflare secrets missing"
             exit 1
           fi
@@ -50,8 +56,23 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npx wrangler@4.92.0 deploy --dry-run
 
+      - name: Confirm dispatch token is configured (names only)
+        if: github.event_name == 'push' || inputs.operation == 'deploy'
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler@4.92.0 secret list --format json | python -c '
+          import json, sys
+          names = {item.get("name") for item in json.load(sys.stdin)}
+          if "GITHUB_DISPATCH_TOKEN" not in names:
+              print("Worker GITHUB_DISPATCH_TOKEN=missing. Deployment blocked; existing Worker untouched.")
+              sys.exit(1)
+          print("Worker GITHUB_DISPATCH_TOKEN=present (value not read)")
+          '
+
       - name: Deploy Worker
-        if: inputs.operation == 'deploy'
+        if: github.event_name == 'push' || inputs.operation == 'deploy'
         working-directory: cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
