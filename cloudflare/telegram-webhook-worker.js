@@ -197,12 +197,18 @@ async function handleCallback(callback, env, _ctx) {
     await sendMessage(env, chatId, buildWhyMessage(snapshot, day, slot), null);
     return { action: "why", chat_id: chatId };
   }
+  if (action === "color_story") {
+    const weekId = parts[1] || currentIsoWeekId();
+    await answerCallback(env, callback.id);
+    await sendMessage(env, chatId, buildColorStoryMessage(cache, weekId));
+    return { action: "color_story", chat_id: chatId };
+  }
   if (action === "color_vote") {
     const weekId = parts[1] || currentIsoWeekId();
     const vote = parts[2] || "partial";
     const result = await storeColorVote(env, cache, chatId, weekId, vote);
     await answerCallback(env, callback.id, result.saved ? "Голос учтён" : `Уже учтено: ${voteLabel(result.existing || vote)}`);
-    await editMessageReplyMarkup(env, chatId, callback.message?.message_id, votedKeyboard(result.existing || vote));
+    await editMessageReplyMarkup(env, chatId, callback.message?.message_id, votedKeyboardKeepingActions(callback.message, result.existing || vote, "color"));
     return { action: "color_vote", chat_id: chatId, saved: result.saved };
   }
   if (action === "today_vote") {
@@ -210,7 +216,7 @@ async function handleCallback(callback, env, _ctx) {
     const vote = parts[2] || "partial";
     const result = await storeTodayVote(env, cache, chatId, voteDay, vote);
     await answerCallback(env, callback.id, result.saved ? "Голос учтён" : `Уже учтено: ${voteLabel(result.existing || vote)}`);
-    await editMessageReplyMarkup(env, chatId, callback.message?.message_id, votedKeyboard(result.existing || vote));
+    await editMessageReplyMarkup(env, chatId, callback.message?.message_id, votedKeyboardKeepingActions(callback.message, result.existing || vote, "today"));
     return { action: "today_vote", chat_id: chatId, saved: result.saved };
   }
   if (action === "noop") {
@@ -840,6 +846,21 @@ function buildColorMessage(cache) {
   ].filter(Boolean).join("\n");
 }
 
+function buildColorStoryMessage(cache, weekId) {
+  const color = cache?._weekly_state?.[weekId];
+  if (!color || !color.name_ru) {
+    return "🎨 История цвета недели пока недоступна: цвет ещё не сохранён.";
+  }
+  const rarity = { common: "классический", rare: "редкий", exotic: "экзотический" }[color.rarity_level] || "классический";
+  return [
+    "🎨 <b>История цвета недели</b>",
+    "",
+    `<b>${escapeHtml(color.name_ru)}</b> · ${escapeHtml(color.hex || "")}`,
+    `Характер: ${rarity} оттенок.`,
+    "Идея недели: ровный темп и внимание к главному, без лишнего шума.",
+  ].join("\n");
+}
+
 function buildStatsMessage(cache, chatId) {
   const weekId = currentIsoWeekId();
   const colorStats = collectColorVoteStats(cache, chatId, weekId);
@@ -965,6 +986,20 @@ function voteLabel(value) {
 
 function votedKeyboard(vote) {
   return { inline_keyboard: [[{ text: `🗳 Ваш выбор: ${voteLabel(vote)}`, callback_data: "noop" }]] };
+}
+
+// Preserve detail/story actions on the original Telegram message after a vote.
+// Without this, selecting feedback removes every other inline button.
+function votedKeyboardKeepingActions(message, vote, kind) {
+  const allowed = new Set(kind === "color"
+    ? ["color_story"]
+    : ["why", "facts", "roast", "what15"]);
+  const previousRows = message?.reply_markup?.inline_keyboard;
+  const actionRows = Array.isArray(previousRows)
+    ? previousRows.filter((row) => Array.isArray(row) && row.length > 0 &&
+        row.every((button) => allowed.has(String(button.callback_data || "").split(":")[0]))).slice(0, 2)
+    : [];
+  return { inline_keyboard: [...actionRows, ...votedKeyboard(vote).inline_keyboard] };
 }
 
 async function storeColorVote(env, cache, chatId, weekId, rawVote) {
