@@ -41,3 +41,10 @@ jobs:
 
       - name: Cloudflare Worker helper tests
         run: node tests/worker_helpers_ci.mjs
+
+      - name: Cloudflare scheduler dispatch tests
+        run: node tests/worker_schedule_ci.mjs
+
+      - name: Cloudflare Worker configuration dry run
+        working-directory: cloudflare
+        run: npx wrangler@4.92.0 deploy --dry-run

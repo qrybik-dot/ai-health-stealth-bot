@@ -4,6 +4,13 @@
   "main": "telegram-webhook-worker.js",
   "account_id": "0c6d1b47eb7fa09887d0ecb17ccaf7e1",
   "compatibility_date": "2026-05-15",
+  "triggers": {
+    "crons": [
+      "30 6 * * *",
+      "7 11 * * *",
+      "7 17 * * *"
+    ]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

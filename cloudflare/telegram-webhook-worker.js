@@ -1,4 +1,10 @@
 const MSK_TZ = "Europe/Moscow";
+// Cloudflare cron triggers are UTC; these correspond to 09:30, 14:07, 20:07 MSK.
+const PUSH_CRON_UTC_TO_MSK = {
+  "30 6 * * *": "30 9 * * *",
+  "7 11 * * *": "7 14 * * *",
+  "7 17 * * *": "7 20 * * *",
+};
 const KEY_METRICS = ["sleep", "body_battery", "rhr", "stress"];
 const METRIC_LABELS = {
   sleep: "сон",
@@ -18,6 +24,12 @@ const SLOT_FOCUS = {
 };
 
 export default {
+  async scheduled(controller, env) {
+    const scheduleCron = PUSH_CRON_UTC_TO_MSK[controller.cron];
+    if (!scheduleCron) throw new Error("Unknown scheduled push cron");
+    await dispatchScheduledPush(env, scheduleCron);
+    console.log(JSON.stringify({ event: "push_dispatch_accepted", schedule_cron: scheduleCron }));
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
@@ -315,6 +327,26 @@ async function saveCache(env, cache) {
   });
   if (!response.ok) {
     throw new Error(`Gist cache save failed ${response.status}`);
+  }
+}
+
+async function dispatchScheduledPush(env, scheduleCron) {
+  // Keep report rendering, Gist state and deduplication in the Python workflow.
+  if (!env.GITHUB_DISPATCH_TOKEN) throw new Error("GITHUB_DISPATCH_TOKEN missing");
+  const repo = env.GITHUB_REPO || "qrybik-dot/ai-health-stealth-bot";
+  if (repo !== "qrybik-dot/ai-health-stealth-bot") throw new Error("Unexpected GitHub repository");
+  const response = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/push.yml/dispatches`, {
+    method: "POST",
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+      "content-type": "application/json",
+      "user-agent": "coach-potato-cloudflare-worker",
+    },
+    body: JSON.stringify({ ref: "main", inputs: { schedule_cron: scheduleCron } }),
+  });
+  if (response.status !== 204) {
+    throw new Error(`GitHub scheduled push dispatch failed (HTTP ${response.status})`);
   }
 }
 
