@@ -652,11 +652,36 @@ def _build_schedule_decision(now_msk: dt.datetime, chat_id: str, override: Optio
 
 
 
+def _effective_sent_record(chat_id: str, send_date: str, slot: str, message_type: str) -> bool:
+    if not was_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type):
+        return False
+    if slot not in SLOT_WINDOWS:
+        return True
+    # Ignore a stored scheduled event that arrived after midnight before this
+    # Moscow day's slot had started. Do not delete user data or other records.
+    key = f"{send_date}|{chat_id}|{slot}|{message_type}"
+    record = get_today_sent_registry(chat_id=chat_id, send_date=send_date).get(key)
+    if not isinstance(record, dict) or record.get("trigger_source") != "schedule":
+        return True
+    try:
+        ts = dt.datetime.fromisoformat(str(record.get("ts", "")).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            return True
+        sent_msk = ts.astimezone(TZ_MSK_FIXED)
+    except (ValueError, TypeError, OverflowError):
+        return True
+    earliest, _target, _end = SLOT_WINDOWS[slot]
+    return not (
+        sent_msk.date().isoformat() == send_date
+        and _minutes(sent_msk.hour, sent_msk.minute) < _minutes(*earliest)
+    )
+
+
 def _already_sent_for_slot(chat_id: str, send_date: str, slot: str) -> bool:
     message_types = ["verdict"]
     if slot == "morning":
         message_types.append("color")
-    return any(was_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=mt) for mt in message_types)
+    return any(_effective_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=mt) for mt in message_types)
 
 
 def _state_to_asset(status_tag: str) -> str:
@@ -719,7 +744,7 @@ def _send_once(
     sender: Any,
     force: bool = False,
 ) -> bool:
-    if (not force) and was_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type):
+    if (not force) and _effective_sent_record(chat_id=chat_id, send_date=send_date, slot=slot, message_type=message_type):
         log.info("dedupe_skip key=%s|%s|%s|%s source=%s", chat_id, send_date, slot, message_type, trigger_source)
         return False
     sender()
