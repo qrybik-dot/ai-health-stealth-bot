@@ -593,8 +593,15 @@ def _slot_stale_after(slot: str) -> Tuple[int, int]:
 
 
 def _is_slot_stale(now_msk: dt.datetime, slot: str) -> bool:
+    # A scheduled run arriving after midnight belongs to yesterday's slot.
+    # Checking only the upper bound used to treat an overnight-delayed evening
+    # cron as *today's* evening and sent an empty report at 00:25 MSK.
+    if slot not in SLOT_WINDOWS:
+        return True
+    start, _target, _end = SLOT_WINDOWS[slot]
     stale_after = _slot_stale_after(slot)
-    return _minutes(now_msk.hour, now_msk.minute) > _minutes(*stale_after)
+    now_min = _minutes(now_msk.hour, now_msk.minute)
+    return not (_minutes(*start) <= now_min <= _minutes(*stale_after))
 
 
 def _resolve_scheduled_push_kind(now_msk: dt.datetime, override: Optional[str] = None) -> str:
@@ -1670,7 +1677,7 @@ def run_schedule_debug(at_iso: str, chat_id: Optional[str] = None) -> None:
         now_msk = now_msk.astimezone(TZ_MSK_FIXED)
     decision = _build_schedule_decision(now_msk, raw_chat_id)
     _log_schedule_decision(decision)
-    would_send = decision["slot_id"] is not None and not decision["already_sent"]
+    would_send = decision["slot_id"] is not None and not decision["already_sent"] and not decision["stale_schedule"]
     print(f"would_send={str(would_send).lower()}")
 
 
